@@ -591,6 +591,14 @@ export interface StoryIllustratorSettings {
    * 未设置的模式回退到 llmSource。
    */
   modeChannels: Partial<Record<CreationMode, string>>;
+  /**
+   * 每个创作模式各自指定「出图方案」（柏宝绘 nai.plans 里的方案 id）。
+   * 留空/未设置 = 跟随柏宝绘当前方案（不切换）。
+   *
+   * 注意：柏宝绘公开出图接口不接受 planId 参数，只能切它自己的「当前方案」，
+   * 因此出图前会临时切到该模式的方案（串行队列内安全，出图后不自动切回）。
+   */
+  modeOutPlans: Partial<Record<CreationMode, string>>;
   // 各模式独立设置
   modes: Record<CreationMode, ModeSettings>;
   // Profile 列表（只保存 ID 引用和本插件参数）
@@ -650,6 +658,8 @@ export const DEFAULT_SETTINGS: StoryIllustratorSettings = {
   llmSource: 'auto',
   // 默认不指定，走 llmSource('auto' → 柏宝绘 tagGen 渠道)；用户在弹窗里可为每个模式分别指派
   modeChannels: {},
+  // 默认不指定，跟随柏宝绘当前出图方案；用户在弹窗里可为每个模式分别指派
+  modeOutPlans: {},
   modes: {
     'illustration': defaultModeSettings('illustration'),
     'comic': defaultModeSettings('comic'),

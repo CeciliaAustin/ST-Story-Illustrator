@@ -15,7 +15,6 @@
 import type { StorySegment, CreationMode } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import { getSettings, saveSettings } from '../host/sillytavern';
-import { listSharedChannelInfos, readTagGenChannelId } from '../baibai/secondaryLlm';
 import {
   buildSingleSegment,
   buildRangeSegment,
@@ -23,8 +22,12 @@ import {
   buildManualSegment,
   defaultFloor,
   getAvailableFloors,
+  getChatFloorCount,
   validateSegment,
 } from '../selection/storySegment';
+import type { FloorOption } from '../selection/storySegment';
+import { listSharedChannelInfos, readTagGenChannelId } from '../baibai/secondaryLlm';
+import { readOutConfig } from '../baibai/planConfig';
 
 // ============================================================
 // 常量
@@ -71,6 +74,8 @@ let rangeStart: number = -1;
 let rangeEnd: number = -1;
 let excludedFloors: Set<number> = new Set();
 let pickedFloors: number[] = [];
+/** 是否把隐藏楼层（is_system）也列出来供选择 */
+let includeHiddenFloors = false;
 /** 划线文本（打开面板时预填充到「局部」） */
 let selectedTextSeed: string = '';
 /** 划线所在楼（锚定楼层，供「局部」使用） */
@@ -145,7 +150,7 @@ function ensurePanel(): void {
 
 function renderPanel(): void {
   if (!panelElement) return;
-  const floors = getAvailableFloors();
+  const floors = getAvailableFloors({ includeHidden: includeHiddenFloors });
 
   panelElement.innerHTML = '';
 
@@ -171,6 +176,10 @@ function renderPanel(): void {
 
   const content = document.createElement('div');
   content.className = 'sti-panel-content';
+  // 「局部」不列楼层，无需隐藏楼层开关
+  if (currentMethod !== 'local' && currentMethod !== 'manual') {
+    content.appendChild(renderHiddenToggle());
+  }
   switch (currentMethod) {
     case 'local':
     case 'manual':
@@ -189,9 +198,41 @@ function renderPanel(): void {
   panelElement.appendChild(content);
 
   panelElement.appendChild(renderModeSelector());
-  panelElement.appendChild(renderApiChannelSelector());
+  panelElement.appendChild(renderLlmChannelSelector());
+  panelElement.appendChild(renderOutPlanSelector());
   panelElement.appendChild(renderPreview());
   panelElement.appendChild(renderActions());
+}
+
+/**
+ * 「查看所有楼层」开关。
+ * ST 的隐藏楼层就是 is_system，默认被过滤，勾上后一并列出（标「隐藏」）。
+ */
+function renderHiddenToggle(): HTMLElement {
+  const wrap = document.createElement('label');
+  wrap.className = 'sti-hidden-toggle';
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = includeHiddenFloors;
+  cb.addEventListener('change', () => {
+    includeHiddenFloors = cb.checked;
+    // 楼层列表变了，需要整体重绘
+    renderPanel();
+  });
+  wrap.appendChild(cb);
+
+  const text = document.createElement('span');
+  text.textContent = '查看所有楼层（含已隐藏的楼层）';
+  wrap.appendChild(text);
+
+  return wrap;
+}
+
+/** 楼层选项的显示文本，隐藏楼层加标记。 */
+function floorOptionText(f: FloorOption, previewLen = 40): string {
+  const mark = f.hidden ? '（隐藏）' : '';
+  return `[${f.floor}]${mark} ${f.speaker}: ${f.preview.slice(0, previewLen)}...`;
 }
 
 function methodLabel(method: SelectionMethod): string {
@@ -208,13 +249,13 @@ function methodLabel(method: SelectionMethod): string {
 // 单楼选择器
 // ============================================================
 
-function renderSingleSelector(floors: Array<{ floor: number; speaker: string; isUser: boolean; preview: string }>): HTMLElement {
+function renderSingleSelector(floors: FloorOption[]): HTMLElement {
   const container = document.createElement('div');
   container.className = 'sti-selector-container';
 
   const label = document.createElement('div');
   label.className = 'sti-selector-label';
-  label.textContent = '选择楼层：';
+  label.textContent = `选择楼层（共 ${floors.length} 层可选）：`;
   container.appendChild(label);
 
   const select = document.createElement('select');
@@ -222,7 +263,7 @@ function renderSingleSelector(floors: Array<{ floor: number; speaker: string; is
   for (const f of floors) {
     const opt = document.createElement('option');
     opt.value = String(f.floor);
-    opt.textContent = `[${f.floor}] ${f.speaker}: ${f.preview.slice(0, 40)}...`;
+    opt.textContent = floorOptionText(f);
     if (f.floor === selectedSingleFloor) opt.selected = true;
     select.appendChild(opt);
   }
@@ -239,12 +280,18 @@ function renderSingleSelector(floors: Array<{ floor: number; speaker: string; is
 }
 
 // ============================================================
-// 范围选择器
+// 范围选择器（直接填楼层号）
 // ============================================================
 
-function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isUser: boolean; preview: string }>): HTMLElement {
+function renderRangeSelector(floors: FloorOption[]): HTMLElement {
   const container = document.createElement('div');
   container.className = 'sti-selector-container';
+
+  const total = getChatFloorCount();
+  const hint = document.createElement('div');
+  hint.className = 'sti-selector-label';
+  hint.textContent = `填写楼层区间（当前共 ${total} 层，楼层号 0–${Math.max(0, total - 1)}）：`;
+  container.appendChild(hint);
 
   const rangeRow = document.createElement('div');
   rangeRow.className = 'sti-range-row';
@@ -252,21 +299,33 @@ function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isU
   const startLabel = document.createElement('span');
   startLabel.textContent = '从';
   rangeRow.appendChild(startLabel);
-  const startSelect = createFloorSelect(floors, rangeStart, (val) => {
-    rangeStart = val; rebuildSegment(); renderPreviewOnly();
+
+  const startInput = createFloorNumberInput(rangeStart, total, (val) => {
+    rangeStart = val;
+    rebuildSegment();
+    // 区间变化会影响排除列表，整体重绘该区域
+    renderPanel();
   });
-  rangeRow.appendChild(startSelect);
+  rangeRow.appendChild(startInput);
 
   const dash = document.createElement('span');
   dash.textContent = '到';
   rangeRow.appendChild(dash);
-  const endSelect = createFloorSelect(floors, rangeEnd, (val) => {
-    rangeEnd = val; rebuildSegment(); renderPreviewOnly();
+
+  const endInput = createFloorNumberInput(rangeEnd, total, (val) => {
+    rangeEnd = val;
+    rebuildSegment();
+    renderPanel();
   });
-  rangeRow.appendChild(endSelect);
+  rangeRow.appendChild(endInput);
+
+  const unit = document.createElement('span');
+  unit.textContent = '楼';
+  rangeRow.appendChild(unit);
+
   container.appendChild(rangeRow);
 
-  if (rangeStart >= 0 && rangeEnd >= 0) {
+  if (rangeStart >= 0 && rangeEnd >= 0 && floors.length > 0) {
     const lo = Math.min(rangeStart, rangeEnd);
     const hi = Math.max(rangeStart, rangeEnd);
     const rangeFloors = floors.filter(f => f.floor >= lo && f.floor <= hi);
@@ -279,7 +338,7 @@ function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isU
       excludeList.className = 'sti-exclude-list';
       for (const f of rangeFloors) {
         const item = document.createElement('label');
-        item.className = 'sti-exclude-item';
+        item.className = `sti-exclude-item ${f.hidden ? 'is-hidden-floor' : ''}`;
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = excludedFloors.has(f.floor);
@@ -289,20 +348,69 @@ function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isU
           rebuildSegment(); renderPreviewOnly();
         });
         item.appendChild(cb);
-        item.appendChild(document.createTextNode(` [${f.floor}] ${f.speaker}: ${f.preview.slice(0, 50)}...`));
+        item.appendChild(document.createTextNode(` ${floorOptionText(f, 50)}`));
         excludeList.appendChild(item);
       }
       container.appendChild(excludeList);
     }
   }
+
+  if (rangeStart >= 0 && rangeEnd >= 0 && Math.abs(rangeEnd - rangeStart) + 1 > 50) {
+    const warn = document.createElement('div');
+    warn.className = 'sti-manual-note';
+    warn.textContent = '区间超过 50 层，只会取前 50 条消息。';
+    container.appendChild(warn);
+  }
+
+  // 区间里有被隐藏的楼层时提醒：不勾「查看所有楼层」会被跳过
+  if (!includeHiddenFloors && rangeStart >= 0 && rangeEnd >= 0) {
+    const lo = Math.min(rangeStart, rangeEnd);
+    const hi = Math.max(rangeStart, rangeEnd);
+    const hiddenCount = getAvailableFloors({ includeHidden: true })
+      .filter(f => f.hidden && f.floor >= lo && f.floor <= hi).length;
+    if (hiddenCount > 0) {
+      const warn = document.createElement('div');
+      warn.className = 'sti-manual-note';
+      warn.textContent = `该区间有 ${hiddenCount} 层是隐藏楼层，当前会被跳过。需要的话勾选上方「查看所有楼层」。`;
+      container.appendChild(warn);
+    }
+  }
+
   return container;
+}
+
+/** 楼层号数字输入（允许直接敲，失焦/回车后生效）。 */
+function createFloorNumberInput(
+  currentValue: number,
+  total: number,
+  onChange: (val: number) => void,
+): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.className = 'sti-floor-number';
+  input.min = '0';
+  input.max = String(Math.max(0, total - 1));
+  input.value = currentValue >= 0 ? String(currentValue) : '';
+  input.placeholder = '0';
+  const commit = () => {
+    const raw = input.value.trim();
+    if (raw === '') return;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return;
+    onChange(Math.max(0, Math.min(total - 1, n)));
+  };
+  input.addEventListener('change', commit);
+  input.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+  });
+  return input;
 }
 
 // ============================================================
 // 勾选选择器
 // ============================================================
 
-function renderPickedSelector(floors: Array<{ floor: number; speaker: string; isUser: boolean; preview: string }>): HTMLElement {
+function renderPickedSelector(floors: FloorOption[]): HTMLElement {
   const container = document.createElement('div');
   container.className = 'sti-selector-container';
   const label = document.createElement('div');
@@ -314,7 +422,7 @@ function renderPickedSelector(floors: Array<{ floor: number; speaker: string; is
   list.className = 'sti-picked-list';
   for (const f of floors) {
     const item = document.createElement('label');
-    item.className = 'sti-picked-item';
+    item.className = `sti-picked-item ${f.hidden ? 'is-hidden-floor' : ''}`;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = pickedFloors.includes(f.floor);
@@ -327,7 +435,7 @@ function renderPickedSelector(floors: Array<{ floor: number; speaker: string; is
       rebuildSegment(); renderPreviewOnly();
     });
     item.appendChild(cb);
-    item.appendChild(document.createTextNode(` [${f.floor}] ${f.speaker}: ${f.preview.slice(0, 50)}...`));
+    item.appendChild(document.createTextNode(` ${floorOptionText(f, 50)}`));
     list.appendChild(item);
   }
   container.appendChild(list);
@@ -428,16 +536,16 @@ function renderModeSelector(): HTMLElement {
 }
 
 /**
- * API 渠道选择窗口：每个创作模式单独指派 LLM 渠道。
- * 渠道列表直接读柏宝绘的共享配置（用户在柏宝绘里加的 NAI5 / NAI4.5 等），本扩展不另造配置界面。
+ * LLM 渠道选择窗口：每个创作模式单独指派「读剧情 / 写 Tag」用的 LLM。
+ * 渠道列表直接读柏宝绘的共享配置（用户在柏宝绘里加的 ds3.2 等），本扩展不另造配置界面。
  */
-function renderApiChannelSelector(): HTMLElement {
+function renderLlmChannelSelector(): HTMLElement {
   const container = document.createElement('div');
   container.className = 'sti-api-channel-selector';
 
   const label = document.createElement('div');
   label.className = 'sti-selector-label';
-  label.textContent = 'LLM API 渠道（各模式分开指派；渠道自动同步自柏宝绘）：';
+  label.textContent = 'LLM 渠道（读剧情 / 写 Tag；各模式分开指派，渠道同步自柏宝绘）：';
   container.appendChild(label);
 
   const channels = listSharedChannelInfos();
@@ -510,6 +618,100 @@ function renderApiChannelSelector(): HTMLElement {
   }
 
   container.appendChild(list);
+  return container;
+}
+
+// ============================================================
+// 出图方案选择器（各模式分开指派柏宝绘方案）
+// ============================================================
+
+/**
+ * 出图方案选择窗口：每个创作模式指定用柏宝绘的哪套出图方案（模型 / 接入点 / 尺寸）。
+ *
+ * 技术约束：柏宝绘公开出图接口不接受 planId，只能用它自己的「当前方案」。
+ * 所以出图前会把这套方案切成当前（走柏宝绘自己的切换逻辑），串行队列天然安全。
+ */
+function renderOutPlanSelector(): HTMLElement {
+  const container = document.createElement('div');
+  container.className = 'sti-api-channel-selector';
+
+  const label = document.createElement('div');
+  label.className = 'sti-selector-label';
+  label.textContent = '出图方案（各模式分开指派，方案同步自柏宝绘）：';
+  container.appendChild(label);
+
+  const snap = readOutConfig();
+  const settings = getSettings(DEFAULT_SETTINGS);
+  const modePlans = settings.modeOutPlans ?? {};
+
+  if (snap.plans.length === 0) {
+    const hint = document.createElement('div');
+    hint.className = 'sti-api-hint';
+    hint.textContent = '柏宝绘里还没有出图方案。先去柏宝绘新建一套方案（例如 NAI4.5 省钱方案），这里会自动出现。';
+    container.appendChild(hint);
+    return container;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'sti-api-channel-list';
+
+  for (const mode of Object.keys(MODE_LABELS) as CreationMode[]) {
+    const row = document.createElement('label');
+    row.className = 'sti-api-channel-row';
+
+    const name = document.createElement('span');
+    name.className = 'sti-api-mode-name';
+    name.textContent = MODE_LABELS[mode];
+    row.appendChild(name);
+
+    const select = document.createElement('select');
+    select.className = 'sti-api-channel-select';
+
+    const followOpt = document.createElement('option');
+    followOpt.value = 'current';
+    followOpt.textContent = `跟随当前方案（${snap.activePlanName || '未设置'}）`;
+    select.appendChild(followOpt);
+
+    for (const plan of snap.plans) {
+      const opt = document.createElement('option');
+      opt.value = plan.id;
+      const family = plan.modelFamily !== 'unknown' ? ` · NAI${plan.modelFamily}` : '';
+      opt.textContent = `${plan.name}${family} · ${plan.endpointName}`;
+      select.appendChild(opt);
+    }
+
+    const current = modePlans[mode] ?? 'current';
+    // 方案被删了：补一个失效项，别让选中态悄悄丢
+    if (current !== 'current' && !snap.plans.some(p => p.id === current)) {
+      const stale = document.createElement('option');
+      stale.value = current;
+      stale.textContent = `已失效方案（${current.slice(0, 8)}…）`;
+      select.appendChild(stale);
+    }
+    select.value = current;
+
+    select.addEventListener('change', () => {
+      const next = getSettings(DEFAULT_SETTINGS);
+      const map = { ...(next.modeOutPlans ?? {}) };
+      if (select.value === 'current') delete map[mode];
+      else map[mode] = select.value;
+      next.modeOutPlans = map;
+      saveSettings(next);
+      window.dispatchEvent(new CustomEvent('sti-settings-changed'));
+    });
+
+    row.appendChild(select);
+    list.appendChild(row);
+  }
+
+  container.appendChild(list);
+
+  const hint = document.createElement('div');
+  hint.className = 'sti-api-hint';
+  hint.textContent = '指了方案的模式，出图前会先把柏宝绘切成该方案（可能短暂弹出柏宝绘面板）。'
+    + '柏宝绘的「当前方案」是全局的，所以切换对所有用柏宝绘出图的地方都生效。';
+  container.appendChild(hint);
+
   return container;
 }
 
@@ -628,26 +830,8 @@ function updateConfirmButton(): void {
 // 辅助
 // ============================================================
 
-function createFloorSelect(
-  floors: Array<{ floor: number; speaker: string; isUser: boolean; preview: string }>,
-  currentValue: number,
-  onChange: (val: number) => void,
-): HTMLSelectElement {
-  const select = document.createElement('select');
-  select.className = 'sti-floor-select';
-  for (const f of floors) {
-    const opt = document.createElement('option');
-    opt.value = String(f.floor);
-    opt.textContent = `[${f.floor}] ${f.speaker}`;
-    if (f.floor === currentValue) opt.selected = true;
-    select.appendChild(opt);
-  }
-  if (currentValue >= 0) select.value = String(currentValue);
-  select.addEventListener('change', () => onChange(parseInt(select.value, 10)));
-  return select;
-}
-
 function rebuildSegment(): void {
+  const options = { includeHidden: includeHiddenFloors };
   switch (currentMethod) {
     case 'local':
     case 'manual':
@@ -658,17 +842,17 @@ function rebuildSegment(): void {
       break;
     case 'single':
       currentSegment = selectedSingleFloor >= 0
-        ? buildSingleSegment(selectedSingleFloor)
+        ? buildSingleSegment(selectedSingleFloor, options)
         : null;
       break;
     case 'range':
       currentSegment = rangeStart >= 0 && rangeEnd >= 0
-        ? buildRangeSegment(rangeStart, rangeEnd, Array.from(excludedFloors))
+        ? buildRangeSegment(rangeStart, rangeEnd, Array.from(excludedFloors), options)
         : null;
       break;
     case 'picked':
       currentSegment = pickedFloors.length > 0
-        ? buildPickedSegment(pickedFloors)
+        ? buildPickedSegment(pickedFloors, options)
         : null;
       break;
   }

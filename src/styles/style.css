@@ -1192,3 +1192,41 @@
   cursor: pointer;
   font-size: 12px;
 }
+
+/* ── 查看所有楼层开关 ── */
+.sti-hidden-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.9;
+}
+
+.sti-hidden-toggle input {
+  cursor: pointer;
+}
+
+/* ── 楼层号数字输入 ── */
+.sti-floor-number {
+  flex: 0 0 84px;
+  width: 84px;
+  background: var(--SmartThemeBlurTintColor, rgba(50, 50, 50, 0.5));
+  color: inherit;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.sti-range-row .sti-floor-number {
+  flex: 0 0 84px;
+}
+
+/* 隐藏楼层在勾选列表里弱化显示 */
+.sti-picked-item.is-hidden-floor,
+.sti-exclude-item.is-hidden-floor {
+  opacity: 0.62;
+  font-style: italic;
+}

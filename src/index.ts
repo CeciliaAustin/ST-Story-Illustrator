@@ -122,15 +122,15 @@ function registerEvents(): void {
   });
   cleanupFunctions.push(offSettings);
 
-  // 选段弹窗里改了「模式 → API 渠道」后，立即刷新运行中的设置引用，无需重启酒馆
-  const onModeChannelsChanged = () => {
+  // 选段弹窗里改了「模式 → LLM 渠道 / 出图方案」后，立即刷新运行中的设置引用，无需重启酒馆
+  const onModeSettingsChanged = () => {
     settings = getSettings(DEFAULT_SETTINGS);
     applySettings();
     queue = null;
     initQueue();
   };
-  window.addEventListener('sti-settings-changed', onModeChannelsChanged);
-  cleanupFunctions.push(() => window.removeEventListener('sti-settings-changed', onModeChannelsChanged));
+  window.addEventListener('sti-settings-changed', onModeSettingsChanged);
+  cleanupFunctions.push(() => window.removeEventListener('sti-settings-changed', onModeSettingsChanged));
 
   const offReady = on(events.APP_READY, () => {
     const result = checkAvailability();

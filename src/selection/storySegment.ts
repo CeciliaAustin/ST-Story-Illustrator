@@ -22,6 +22,31 @@ const MAX_MESSAGES_IN_SEGMENT = 50;
 const MAX_MESSAGE_TEXT = 4000;
 
 // ============================================================
+// 选段选项
+// ============================================================
+
+/**
+ * 选段构建选项。
+ *
+ * ST 的「隐藏楼层」本质是 `message.is_system === true`（/hide 命令写入）。默认我们会
+ * 跳过它们（正常剧情选段不该包含隐藏内容），但用户可以勾「查看所有楼层」把它们放出来，
+ * 用于确实需要引用隐藏楼层的场景。
+ */
+export interface SegmentBuildOptions {
+  includeHidden?: boolean;
+}
+
+/** 楼层选项（供选段面板渲染）。 */
+export interface FloorOption {
+  floor: number;
+  speaker: string;
+  isUser: boolean;
+  preview: string;
+  /** 该楼层是被隐藏的（is_system） */
+  hidden: boolean;
+}
+
+// ============================================================
 // 清洗配置（由入口按设置注入）
 // ============================================================
 
@@ -44,12 +69,19 @@ function cleanMes(mes: string | undefined): string {
 /**
  * 从 ST chat 数组提取一条消息的选段信息。
  */
-export function extractMessage(floor: number, chatId: string): StorySegmentMessage | null {
+export function extractMessage(
+  floor: number,
+  chatId: string,
+  options: SegmentBuildOptions = {},
+): StorySegmentMessage | null {
   const chat = getChat();
   if (floor < 0 || floor >= chat.length) return null;
 
   const msg = chat[floor];
   if (!msg) return null;
+
+  // 隐藏楼层（is_system）默认跳过；勾「查看所有楼层」后放开
+  if (!options.includeHidden && isSystemMessage(msg)) return null;
 
   // 身份复核
   if (!stillCurrent(chatId, floor, getSwipeId(floor), getSendDate(floor) || undefined)) {
@@ -76,11 +108,11 @@ export function extractMessage(floor: number, chatId: string): StorySegmentMessa
 /**
  * 构建单楼选段。
  */
-export function buildSingleSegment(floor: number): StorySegment | null {
+export function buildSingleSegment(floor: number, options: SegmentBuildOptions = {}): StorySegment | null {
   const chatId = getCurrentChatId();
   if (!chatId) return null;
 
-  const msg = extractMessage(floor, chatId);
+  const msg = extractMessage(floor, chatId, options);
   if (!msg) return null;
 
   return {
@@ -94,22 +126,25 @@ export function buildSingleSegment(floor: number): StorySegment | null {
 }
 
 /**
- * 构建跨楼层范围选段。
+ * 构建跨楼层范围选段（按用户填写的楼层号区间）。
  *
  * @param startFloor 起始楼层（含）
  * @param endFloor 结束楼层（含）
  * @param excludeFloors 要排除的楼层列表
+ * @param options includeHidden=true 时把隐藏楼层也纳入
  */
 export function buildRangeSegment(
   startFloor: number,
   endFloor: number,
   excludeFloors: number[] = [],
+  options: SegmentBuildOptions = {},
 ): StorySegment | null {
   const chatId = getCurrentChatId();
   if (!chatId) return null;
 
-  const lo = Math.min(startFloor, endFloor);
-  const hi = Math.max(startFloor, endFloor);
+  const chat = getChat();
+  const lo = Math.max(0, Math.min(startFloor, endFloor));
+  const hi = Math.min(chat.length - 1, Math.max(startFloor, endFloor));
   const excludeSet = new Set(excludeFloors);
 
   const messages: StorySegmentMessage[] = [];
@@ -119,13 +154,8 @@ export function buildRangeSegment(
     if (excludeSet.has(floor)) continue;
     if (messages.length >= MAX_MESSAGES_IN_SEGMENT) break;
 
-    const msg = extractMessage(floor, chatId);
+    const msg = extractMessage(floor, chatId, options);
     if (!msg) continue;
-
-    // 默认过滤 system / narrator，保留用户消息和 AI 消息
-    const chat = getChat();
-    const raw = chat[floor];
-    if (raw && isSystemMessage(raw)) continue;
 
     messages.push(msg);
     floorIds.push(floor);
@@ -153,7 +183,10 @@ export function buildRangeSegment(
  *
  * @param floorIds 用户勾选的楼层列表（按顺序）
  */
-export function buildPickedSegment(floorIds: number[]): StorySegment | null {
+export function buildPickedSegment(
+  floorIds: number[],
+  options: SegmentBuildOptions = {},
+): StorySegment | null {
   const chatId = getCurrentChatId();
   if (!chatId || floorIds.length === 0) return null;
 
@@ -163,12 +196,8 @@ export function buildPickedSegment(floorIds: number[]): StorySegment | null {
   for (const floor of floorIds) {
     if (messages.length >= MAX_MESSAGES_IN_SEGMENT) break;
 
-    const msg = extractMessage(floor, chatId);
+    const msg = extractMessage(floor, chatId, options);
     if (!msg) continue;
-
-    const chat = getChat();
-    const raw = chat[floor];
-    if (raw && isSystemMessage(raw)) continue;
 
     messages.push(msg);
     validFloorIds.push(floor);
@@ -342,17 +371,20 @@ export function defaultFloor(): number {
 }
 
 /**
- * 获取聊天中可选的楼层列表（非系统消息）。
+ * 获取聊天中可选的楼层列表。
+ *
+ * 默认只列可见楼层；`includeHidden` 为 true 时把隐藏楼层（is_system）也列出来，
+ * 并用 `hidden` 标记，供面板加「（隐藏）」提示。
  */
-export function getAvailableFloors(): Array<{ floor: number; speaker: string; isUser: boolean; preview: string }> {
+export function getAvailableFloors(options: SegmentBuildOptions = {}): FloorOption[] {
   const chat = getChat();
-  const chatId = getCurrentChatId();
-  const result: Array<{ floor: number; speaker: string; isUser: boolean; preview: string }> = [];
+  const result: FloorOption[] = [];
 
   for (let i = 0; i < chat.length; i++) {
     const msg = chat[i];
     if (!msg) continue;
-    if (isSystemMessage(msg)) continue;
+    const hidden = isSystemMessage(msg);
+    if (hidden && !options.includeHidden) continue;
     const text = cleanMes(msg.mes);
     if (!text) continue;
 
@@ -361,8 +393,14 @@ export function getAvailableFloors(): Array<{ floor: number; speaker: string; is
       speaker: String(msg.name ?? (msg.is_user ? 'User' : 'Unknown')),
       isUser: msg.is_user === true,
       preview: text.slice(0, 80),
+      hidden,
     });
   }
 
   return result;
+}
+
+/** 当前聊天楼层总数（楼层号为 0..count-1）。 */
+export function getChatFloorCount(): number {
+  return getChat().length;
 }

@@ -59,6 +59,7 @@ import {
   getAnchorFloor,
   defaultFloor,
   getAvailableFloors,
+  getChatFloorCount,
   extractMessage,
 } from '../src/selection/storySegment';
 
@@ -340,5 +341,74 @@ describe('getAvailableFloors', () => {
   it('should return empty array for empty chat', () => {
     mockChat = [];
     expect(getAvailableFloors()).toEqual([]);
+  });
+});
+
+// ============================================================
+// 隐藏楼层（is_system）访问
+// ============================================================
+
+describe('hidden floors (is_system)', () => {
+  it('excludes hidden floors by default', () => {
+    const floors = getAvailableFloors();
+    expect(floors.some(f => f.floor === 5)).toBe(false);
+    expect(floors.every(f => f.hidden === false)).toBe(true);
+  });
+
+  it('lists hidden floors when includeHidden', () => {
+    const floors = getAvailableFloors({ includeHidden: true });
+    expect(floors.map(f => f.floor)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    const hidden = floors.find(f => f.floor === 5);
+    expect(hidden?.hidden).toBe(true);
+  });
+
+  it('extractMessage returns null for hidden floor by default', () => {
+    expect(extractMessage(5, 'test-chat-001')).toBeNull();
+  });
+
+  it('extractMessage returns hidden floor when includeHidden', () => {
+    const msg = extractMessage(5, 'test-chat-001', { includeHidden: true });
+    expect(msg).not.toBeNull();
+    expect(msg!.floor).toBe(5);
+    expect(msg!.text).toContain('系统提示');
+  });
+
+  it('buildSingleSegment can select a hidden floor', () => {
+    expect(buildSingleSegment(5)).toBeNull();
+    const seg = buildSingleSegment(5, { includeHidden: true });
+    expect(seg).not.toBeNull();
+    expect(seg!.floorIds).toEqual([5]);
+  });
+
+  it('buildRangeSegment skips hidden floors by default', () => {
+    const seg = buildRangeSegment(0, 6);
+    expect(seg!.floorIds).toEqual([0, 1, 2, 3, 4, 6]);
+  });
+
+  it('buildRangeSegment includes hidden floors when asked', () => {
+    const seg = buildRangeSegment(0, 6, [], { includeHidden: true });
+    expect(seg!.floorIds).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(seg!.text).toContain('系统提示');
+  });
+
+  it('buildPickedSegment skips hidden floors by default', () => {
+    expect(buildPickedSegment([5])).toBeNull();
+  });
+
+  it('buildPickedSegment includes hidden floors when asked', () => {
+    const seg = buildPickedSegment([1, 5], { includeHidden: true });
+    expect(seg!.floorIds).toEqual([1, 5]);
+  });
+
+  it('buildRangeSegment clamps range to chat bounds', () => {
+    const seg = buildRangeSegment(-5, 999);
+    // 上界被夹到最后一楼，下界夹到 0
+    expect(seg!.startFloor).toBe(0);
+    expect(seg!.endFloor).toBe(mockChat.length - 1);
+    expect(seg!.floorIds.every(f => f >= 0 && f < mockChat.length)).toBe(true);
+  });
+
+  it('getChatFloorCount reports chat length', () => {
+    expect(getChatFloorCount()).toBe(mockChat.length);
   });
 });

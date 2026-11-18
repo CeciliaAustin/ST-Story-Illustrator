@@ -521,6 +521,8 @@ const DEFAULT_SETTINGS = {
   llmSource: "auto",
   // 默认不指定，走 llmSource('auto' → 柏宝绘 tagGen 渠道)；用户在弹窗里可为每个模式分别指派
   modeChannels: {},
+  // 默认不指定，跟随柏宝绘当前出图方案；用户在弹窗里可为每个模式分别指派
+  modeOutPlans: {},
   modes: {
     "illustration": defaultModeSettings("illustration"),
     "comic": defaultModeSettings("comic"),
@@ -549,6 +551,382 @@ const DEFAULT_SETTINGS = {
   bubbleStyle: "classic",
   bubbleFont: "sans"
 };
+const SHARED_EXCLUDES_KEY = "baibai_exclude_settings";
+const DEFAULT_STRIP_TAGS = ["\\[mvu[\\s\\S]*?\\]"];
+function getBaiBaiCustomStripTags() {
+  var _a;
+  const ctx = getRuntimeContext();
+  if (!ctx) return [];
+  const ext = ctx.extensionSettings;
+  if (!ext) return [];
+  const raw = ext[SHARED_EXCLUDES_KEY];
+  if (!raw || typeof raw !== "object") return [];
+  const store = raw;
+  const direct = store.customStripTags;
+  const mirrored = (_a = store.excludes) == null ? void 0 : _a.customStripTags;
+  const source = Array.isArray(direct) ? direct : Array.isArray(mirrored) ? mirrored : null;
+  if (!source) return [];
+  const tags = source.filter((t) => typeof t === "string" && t.length > 0);
+  return tags.length ? tags : [];
+}
+function getSyncedStripTags() {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const tag of [...DEFAULT_STRIP_TAGS, ...getBaiBaiCustomStripTags()]) {
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      out.push(tag);
+    }
+  }
+  return out;
+}
+function getRuntimeContext() {
+  const g = globalThis;
+  const fn = g.getContext;
+  if (typeof fn !== "function") return null;
+  try {
+    const ctx = fn();
+    return ctx && typeof ctx === "object" ? ctx : null;
+  } catch {
+    return null;
+  }
+}
+const RE_THINK_BLOCK = /<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi;
+const RE_HTML_COMMENT = /<!--[\s\S]+?-->/g;
+const RE_HORAE = /<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi;
+const BBI_IMAGE_TAG_RE = /<bbi_image\b[^>]*>[\s\S]*?<\/bbi_image>/gi;
+const RE_CONTENT_BLOCK = /<content\b[^>]*>([\s\S]*?)<\/content>/gi;
+const HTML_ENTITIES = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'",
+  "&nbsp;": " ",
+  "&#x27;": "'"
+};
+function blockStripRegexes(tag) {
+  return [
+    new RegExp(`<${tag}(?=[\\s/>])[^>]*>[\\s\\S]*?</${tag}>`, "gi"),
+    new RegExp(`<\\/?${tag}(?=[\\s/>])[^>]*\\/?>`, "gi")
+  ];
+}
+function stripTagsByNames(s, tags) {
+  let out = s;
+  for (const tag of tags) {
+    if (!tag) continue;
+    for (const re of blockStripRegexes(tag)) out = out.replace(re, "");
+  }
+  return out;
+}
+function stripManagedBlock(s, tag) {
+  const openRe = new RegExp(`^[ \\t]*<${tag}\\b[^>]*>[ \\t]*$`, "m");
+  const closeRe = new RegExp(`^[ \\t]*</${tag}>[ \\t]*$`, "m");
+  let out = s;
+  let open;
+  let guard = 0;
+  while ((open = out.match(openRe)) && guard++ < 100) {
+    const start = open.index ?? 0;
+    const rest = out.slice(start + open[0].length);
+    const close = rest.match(closeRe);
+    if (!close) {
+      out = out.slice(0, start) + out.slice(start + open[0].length);
+      continue;
+    }
+    const end = start + open[0].length + (close.index ?? 0) + close[0].length;
+    out = out.slice(0, start) + out.slice(end);
+  }
+  return out;
+}
+function cleanMessageText(mes, options = {}) {
+  if (!mes || typeof mes !== "string") return "";
+  const { syncBaiBai = true, preferContent = false, extraStripTags = [] } = options;
+  let text = mes;
+  if (preferContent) {
+    const blocks = [];
+    text = text.replace(RE_CONTENT_BLOCK, (_m, inner) => {
+      blocks.push(inner);
+      return "\n";
+    });
+    if (blocks.length > 0) {
+      text = blocks.join("\n\n");
+    }
+  }
+  text = text.replace(BBI_IMAGE_TAG_RE, "");
+  text = text.replace(RE_THINK_BLOCK, "");
+  text = text.replace(RE_HTML_COMMENT, "");
+  text = text.replace(RE_HORAE, "");
+  const tags = [
+    ...syncBaiBai ? getSyncedStripTags() : [],
+    "bbs_items",
+    "bbs_vars",
+    "bbs_start",
+    "bbs_end",
+    ...extraStripTags
+  ];
+  text = stripTagsByNames(text, tags);
+  text = stripManagedBlock(text, "bbs_items");
+  text = stripManagedBlock(text, "bbs_vars");
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<\/p\s*>/gi, "\n");
+  text = text.replace(/<[^>]+>/g, "");
+  text = decodeHtmlEntities(text);
+  text = text.replace(/[ \t]+\n/g, "\n");
+  text = text.replace(/[ \t]+/g, " ");
+  text = text.replace(/\n{3,}/g, "\n\n");
+  text = text.trim();
+  return text;
+}
+function decodeHtmlEntities(text) {
+  text = text.replace(/&#(\d+);/g, (_, code) => {
+    const num = parseInt(code, 10);
+    if (num > 0 && num <= 1114111) {
+      try {
+        return String.fromCodePoint(num);
+      } catch {
+        return "";
+      }
+    }
+    return "";
+  });
+  text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+    const num = parseInt(hex, 16);
+    if (num > 0 && num <= 1114111) {
+      try {
+        return String.fromCodePoint(num);
+      } catch {
+        return "";
+      }
+    }
+    return "";
+  });
+  for (const [entity, char] of Object.entries(HTML_ENTITIES)) {
+    text = text.split(entity).join(char);
+  }
+  return text;
+}
+function isSystemMessage(msg) {
+  var _a;
+  if (msg.is_system === true) return true;
+  const name = (msg.name ?? "").toLowerCase().trim();
+  if (name === "system" || name === "narrator") return true;
+  const extraType = (_a = msg.extra) == null ? void 0 : _a.type;
+  if (typeof extraType === "string" && (extraType === "system" || extraType === "narrator")) {
+    return true;
+  }
+  return false;
+}
+const MAX_MESSAGES_IN_SEGMENT = 50;
+const MAX_MESSAGE_TEXT = 4e3;
+let cleanOptions = { syncBaiBai: true, preferContent: true };
+function setSegmentCleanOptions(options) {
+  cleanOptions = { ...cleanOptions, ...options };
+}
+function cleanMes(mes) {
+  return cleanMessageText(mes, cleanOptions);
+}
+function extractMessage(floor, chatId, options = {}) {
+  const chat = getChat();
+  if (floor < 0 || floor >= chat.length) return null;
+  const msg = chat[floor];
+  if (!msg) return null;
+  if (!options.includeHidden && isSystemMessage(msg)) return null;
+  if (!stillCurrent(chatId, floor, getSwipeId(floor), getSendDate(floor) || void 0)) {
+    return null;
+  }
+  const text = cleanMes(msg.mes).slice(0, MAX_MESSAGE_TEXT);
+  if (!text) return null;
+  return {
+    floor,
+    speaker: String(msg.name ?? (msg.is_user ? "User" : "Unknown")),
+    isUser: msg.is_user === true,
+    sendDate: typeof msg.send_date === "string" ? msg.send_date.trim() : void 0,
+    swipeId: typeof msg.swipe_id === "number" ? msg.swipe_id : 0,
+    text
+  };
+}
+function buildSingleSegment(floor, options = {}) {
+  const chatId = getCurrentChatId();
+  if (!chatId) return null;
+  const msg = extractMessage(floor, chatId, options);
+  if (!msg) return null;
+  return {
+    chatId,
+    sourceKind: "single",
+    floorIds: [floor],
+    text: msg.text,
+    messages: [msg],
+    createdAt: Date.now()
+  };
+}
+function buildRangeSegment(startFloor, endFloor, excludeFloors = [], options = {}) {
+  const chatId = getCurrentChatId();
+  if (!chatId) return null;
+  const chat = getChat();
+  const lo = Math.max(0, Math.min(startFloor, endFloor));
+  const hi = Math.min(chat.length - 1, Math.max(startFloor, endFloor));
+  const excludeSet = new Set(excludeFloors);
+  const messages = [];
+  const floorIds = [];
+  for (let floor = lo; floor <= hi; floor++) {
+    if (excludeSet.has(floor)) continue;
+    if (messages.length >= MAX_MESSAGES_IN_SEGMENT) break;
+    const msg = extractMessage(floor, chatId, options);
+    if (!msg) continue;
+    messages.push(msg);
+    floorIds.push(floor);
+  }
+  if (messages.length === 0) return null;
+  const text = messages.map((m) => m.text).join("\n\n");
+  return {
+    chatId,
+    sourceKind: "range",
+    floorIds,
+    startFloor: lo,
+    endFloor: hi,
+    text,
+    messages,
+    createdAt: Date.now()
+  };
+}
+function buildPickedSegment(floorIds, options = {}) {
+  const chatId = getCurrentChatId();
+  if (!chatId || floorIds.length === 0) return null;
+  const messages = [];
+  const validFloorIds = [];
+  for (const floor of floorIds) {
+    if (messages.length >= MAX_MESSAGES_IN_SEGMENT) break;
+    const msg = extractMessage(floor, chatId, options);
+    if (!msg) continue;
+    messages.push(msg);
+    validFloorIds.push(floor);
+  }
+  if (messages.length === 0) return null;
+  const text = messages.map((m) => m.text).join("\n\n");
+  return {
+    chatId,
+    sourceKind: "picked",
+    floorIds: validFloorIds,
+    text,
+    messages,
+    createdAt: Date.now()
+  };
+}
+function buildManualSegment(text, floorIds = []) {
+  const chatId = getCurrentChatId();
+  const cleanText = text.trim();
+  if (!cleanText) return null;
+  const messages = [];
+  if (floorIds.length > 0 && chatId) {
+    for (const floor of floorIds.slice(0, MAX_MESSAGES_IN_SEGMENT)) {
+      const msg = extractMessage(floor, chatId);
+      if (msg) messages.push(msg);
+    }
+  }
+  return {
+    chatId: chatId || "manual",
+    sourceKind: "manual",
+    floorIds,
+    text: cleanText,
+    messages,
+    createdAt: Date.now()
+  };
+}
+function validateSegment(segment) {
+  if (segment.sourceKind === "manual") {
+    return true;
+  }
+  const currentChatId = getCurrentChatId();
+  if (currentChatId !== segment.chatId) return false;
+  for (const msg of segment.messages) {
+    if (!stillCurrent(segment.chatId, msg.floor, msg.swipeId, msg.sendDate)) {
+      return false;
+    }
+  }
+  return true;
+}
+function getAnchorFloor(segment) {
+  if (segment.sourceKind === "manual") {
+    return segment.floorIds.length > 0 ? segment.floorIds[segment.floorIds.length - 1] : null;
+  }
+  if (segment.floorIds.length === 0) return null;
+  return segment.floorIds[segment.floorIds.length - 1];
+}
+function getSurroundingContext(segment, range = 1) {
+  if (segment.sourceKind === "manual" || segment.floorIds.length === 0) {
+    return {};
+  }
+  const chatId = segment.chatId;
+  if (getCurrentChatId() !== chatId) return {};
+  const firstFloor = Math.min(...segment.floorIds);
+  const lastFloor = Math.max(...segment.floorIds);
+  const previousMessages = [];
+  for (let f = firstFloor - 1; f >= Math.max(0, firstFloor - range); f--) {
+    const msg = extractMessage(f, chatId);
+    if (msg) {
+      const chat2 = getChat();
+      const raw = chat2[f];
+      if (raw && isSystemMessage(raw)) continue;
+      previousMessages.unshift(msg.text);
+    }
+  }
+  const nextMessages = [];
+  const chat = getChat();
+  for (let f = lastFloor + 1; f <= Math.min(chat.length - 1, lastFloor + range); f++) {
+    const msg = extractMessage(f, chatId);
+    if (msg) {
+      const raw = chat[f];
+      if (raw && isSystemMessage(raw)) continue;
+      nextMessages.push(msg.text);
+    }
+  }
+  return {
+    previousText: previousMessages.length > 0 ? previousMessages.join("\n\n") : void 0,
+    nextText: nextMessages.length > 0 ? nextMessages.join("\n\n") : void 0
+  };
+}
+function defaultFloor() {
+  const chat = getChat();
+  for (let i = chat.length - 1; i >= 0; i--) {
+    const msg = chat[i];
+    if (!msg) continue;
+    if (isSystemMessage(msg)) continue;
+    if (msg.is_user === true) continue;
+    const text = cleanMes(msg.mes);
+    if (text.length > 0) return i;
+  }
+  for (let i = chat.length - 1; i >= 0; i--) {
+    const msg = chat[i];
+    if (!msg) continue;
+    if (isSystemMessage(msg)) continue;
+    const text = cleanMes(msg.mes);
+    if (text.length > 0) return i;
+  }
+  return -1;
+}
+function getAvailableFloors(options = {}) {
+  const chat = getChat();
+  const result = [];
+  for (let i = 0; i < chat.length; i++) {
+    const msg = chat[i];
+    if (!msg) continue;
+    const hidden = isSystemMessage(msg);
+    if (hidden && !options.includeHidden) continue;
+    const text = cleanMes(msg.mes);
+    if (!text) continue;
+    result.push({
+      floor: i,
+      speaker: String(msg.name ?? (msg.is_user ? "User" : "Unknown")),
+      isUser: msg.is_user === true,
+      preview: text.slice(0, 80),
+      hidden
+    });
+  }
+  return result;
+}
+function getChatFloorCount() {
+  return getChat().length;
+}
 const CHANNELS_KEY = "baibai_api_channels";
 const IMAGE_SETTINGS_KEY$1 = "baibai_image";
 const CHAT_COMPLETIONS_URL = "/api/backends/chat-completions/generate";
@@ -724,381 +1102,92 @@ async function generateViaChannelId(channelId, system, user, signal) {
 async function generateViaSecondary(system, user, signal) {
   return await generateViaChannelId("tagGen", system, user);
 }
-const SHARED_EXCLUDES_KEY = "baibai_exclude_settings";
-const DEFAULT_STRIP_TAGS = ["\\[mvu[\\s\\S]*?\\]"];
-function getBaiBaiCustomStripTags() {
-  var _a;
-  const ctx = getRuntimeContext();
-  if (!ctx) return [];
-  const ext = ctx.extensionSettings;
-  if (!ext) return [];
-  const raw = ext[SHARED_EXCLUDES_KEY];
-  if (!raw || typeof raw !== "object") return [];
-  const store = raw;
-  const direct = store.customStripTags;
-  const mirrored = (_a = store.excludes) == null ? void 0 : _a.customStripTags;
-  const source = Array.isArray(direct) ? direct : Array.isArray(mirrored) ? mirrored : null;
-  if (!source) return [];
-  const tags = source.filter((t) => typeof t === "string" && t.length > 0);
-  return tags.length ? tags : [];
+const IMAGE_SETTINGS_KEY = "baibai_image";
+function asRecord(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : null;
 }
-function getSyncedStripTags() {
-  const seen = /* @__PURE__ */ new Set();
+function str(v, fallback = "") {
+  return typeof v === "string" ? v : fallback;
+}
+function detectModelFamily(model) {
+  const m = model.toLowerCase();
+  if (/4[._-]?5|v4\.5|nai45|diffusion-4-5|diffusion-4\.5/.test(m)) return "4.5";
+  if (/nai.?5|diffusion-5|v5\b|-5-full|-5$/.test(m)) return "5";
+  if (/4\b|diffusion-4|v4/.test(m)) return "4";
+  return "unknown";
+}
+function parseEndpoints(raw) {
+  if (!Array.isArray(raw)) return [];
   const out = [];
-  for (const tag of [...DEFAULT_STRIP_TAGS, ...getBaiBaiCustomStripTags()]) {
-    if (!seen.has(tag)) {
-      seen.add(tag);
-      out.push(tag);
-    }
-  }
-  return out;
-}
-function getRuntimeContext() {
-  const g = globalThis;
-  const fn = g.getContext;
-  if (typeof fn !== "function") return null;
-  try {
-    const ctx = fn();
-    return ctx && typeof ctx === "object" ? ctx : null;
-  } catch {
-    return null;
-  }
-}
-const RE_THINK_BLOCK = /<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi;
-const RE_HTML_COMMENT = /<!--[\s\S]+?-->/g;
-const RE_HORAE = /<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi;
-const BBI_IMAGE_TAG_RE = /<bbi_image\b[^>]*>[\s\S]*?<\/bbi_image>/gi;
-const RE_CONTENT_BLOCK = /<content\b[^>]*>([\s\S]*?)<\/content>/gi;
-const HTML_ENTITIES = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#39;": "'",
-  "&nbsp;": " ",
-  "&#x27;": "'"
-};
-function blockStripRegexes(tag) {
-  return [
-    new RegExp(`<${tag}(?=[\\s/>])[^>]*>[\\s\\S]*?</${tag}>`, "gi"),
-    new RegExp(`<\\/?${tag}(?=[\\s/>])[^>]*\\/?>`, "gi")
-  ];
-}
-function stripTagsByNames(s, tags) {
-  let out = s;
-  for (const tag of tags) {
-    if (!tag) continue;
-    for (const re of blockStripRegexes(tag)) out = out.replace(re, "");
-  }
-  return out;
-}
-function stripManagedBlock(s, tag) {
-  const openRe = new RegExp(`^[ \\t]*<${tag}\\b[^>]*>[ \\t]*$`, "m");
-  const closeRe = new RegExp(`^[ \\t]*</${tag}>[ \\t]*$`, "m");
-  let out = s;
-  let open;
-  let guard = 0;
-  while ((open = out.match(openRe)) && guard++ < 100) {
-    const start = open.index ?? 0;
-    const rest = out.slice(start + open[0].length);
-    const close = rest.match(closeRe);
-    if (!close) {
-      out = out.slice(0, start) + out.slice(start + open[0].length);
-      continue;
-    }
-    const end = start + open[0].length + (close.index ?? 0) + close[0].length;
-    out = out.slice(0, start) + out.slice(end);
-  }
-  return out;
-}
-function cleanMessageText(mes, options = {}) {
-  if (!mes || typeof mes !== "string") return "";
-  const { syncBaiBai = true, preferContent = false, extraStripTags = [] } = options;
-  let text = mes;
-  if (preferContent) {
-    const blocks = [];
-    text = text.replace(RE_CONTENT_BLOCK, (_m, inner) => {
-      blocks.push(inner);
-      return "\n";
+  for (const item of raw) {
+    const e = asRecord(item);
+    if (!e) continue;
+    const id = str(e.id).trim();
+    if (!id) continue;
+    const url = str(e.url).trim();
+    out.push({
+      id,
+      name: str(e.name).trim() || id,
+      url,
+      hasKey: str(e.key).trim().length > 0
     });
-    if (blocks.length > 0) {
-      text = blocks.join("\n\n");
-    }
   }
-  text = text.replace(BBI_IMAGE_TAG_RE, "");
-  text = text.replace(RE_THINK_BLOCK, "");
-  text = text.replace(RE_HTML_COMMENT, "");
-  text = text.replace(RE_HORAE, "");
-  const tags = [
-    ...syncBaiBai ? getSyncedStripTags() : [],
-    "bbs_items",
-    "bbs_vars",
-    "bbs_start",
-    "bbs_end",
-    ...extraStripTags
-  ];
-  text = stripTagsByNames(text, tags);
-  text = stripManagedBlock(text, "bbs_items");
-  text = stripManagedBlock(text, "bbs_vars");
-  text = text.replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<\/p\s*>/gi, "\n");
-  text = text.replace(/<[^>]+>/g, "");
-  text = decodeHtmlEntities(text);
-  text = text.replace(/[ \t]+\n/g, "\n");
-  text = text.replace(/[ \t]+/g, " ");
-  text = text.replace(/\n{3,}/g, "\n\n");
-  text = text.trim();
-  return text;
+  return out;
 }
-function decodeHtmlEntities(text) {
-  text = text.replace(/&#(\d+);/g, (_, code) => {
-    const num = parseInt(code, 10);
-    if (num > 0 && num <= 1114111) {
-      try {
-        return String.fromCodePoint(num);
-      } catch {
-        return "";
-      }
-    }
-    return "";
-  });
-  text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-    const num = parseInt(hex, 16);
-    if (num > 0 && num <= 1114111) {
-      try {
-        return String.fromCodePoint(num);
-      } catch {
-        return "";
-      }
-    }
-    return "";
-  });
-  for (const [entity, char] of Object.entries(HTML_ENTITIES)) {
-    text = text.split(entity).join(char);
-  }
-  return text;
-}
-function isSystemMessage(msg) {
+function parsePlans(raw, endpoints) {
   var _a;
-  if (msg.is_system === true) return true;
-  const name = (msg.name ?? "").toLowerCase().trim();
-  if (name === "system" || name === "narrator") return true;
-  const extraType = (_a = msg.extra) == null ? void 0 : _a.type;
-  if (typeof extraType === "string" && (extraType === "system" || extraType === "narrator")) {
-    return true;
-  }
-  return false;
-}
-const MAX_MESSAGES_IN_SEGMENT = 50;
-const MAX_MESSAGE_TEXT = 4e3;
-let cleanOptions = { syncBaiBai: true, preferContent: true };
-function setSegmentCleanOptions(options) {
-  cleanOptions = { ...cleanOptions, ...options };
-}
-function cleanMes(mes) {
-  return cleanMessageText(mes, cleanOptions);
-}
-function extractMessage(floor, chatId) {
-  const chat = getChat();
-  if (floor < 0 || floor >= chat.length) return null;
-  const msg = chat[floor];
-  if (!msg) return null;
-  if (!stillCurrent(chatId, floor, getSwipeId(floor), getSendDate(floor) || void 0)) {
-    return null;
-  }
-  const text = cleanMes(msg.mes).slice(0, MAX_MESSAGE_TEXT);
-  if (!text) return null;
-  return {
-    floor,
-    speaker: String(msg.name ?? (msg.is_user ? "User" : "Unknown")),
-    isUser: msg.is_user === true,
-    sendDate: typeof msg.send_date === "string" ? msg.send_date.trim() : void 0,
-    swipeId: typeof msg.swipe_id === "number" ? msg.swipe_id : 0,
-    text
-  };
-}
-function buildSingleSegment(floor) {
-  const chatId = getCurrentChatId();
-  if (!chatId) return null;
-  const msg = extractMessage(floor, chatId);
-  if (!msg) return null;
-  return {
-    chatId,
-    sourceKind: "single",
-    floorIds: [floor],
-    text: msg.text,
-    messages: [msg],
-    createdAt: Date.now()
-  };
-}
-function buildRangeSegment(startFloor, endFloor, excludeFloors = []) {
-  const chatId = getCurrentChatId();
-  if (!chatId) return null;
-  const lo = Math.min(startFloor, endFloor);
-  const hi = Math.max(startFloor, endFloor);
-  const excludeSet = new Set(excludeFloors);
-  const messages = [];
-  const floorIds = [];
-  for (let floor = lo; floor <= hi; floor++) {
-    if (excludeSet.has(floor)) continue;
-    if (messages.length >= MAX_MESSAGES_IN_SEGMENT) break;
-    const msg = extractMessage(floor, chatId);
-    if (!msg) continue;
-    const chat = getChat();
-    const raw = chat[floor];
-    if (raw && isSystemMessage(raw)) continue;
-    messages.push(msg);
-    floorIds.push(floor);
-  }
-  if (messages.length === 0) return null;
-  const text = messages.map((m) => m.text).join("\n\n");
-  return {
-    chatId,
-    sourceKind: "range",
-    floorIds,
-    startFloor: lo,
-    endFloor: hi,
-    text,
-    messages,
-    createdAt: Date.now()
-  };
-}
-function buildPickedSegment(floorIds) {
-  const chatId = getCurrentChatId();
-  if (!chatId || floorIds.length === 0) return null;
-  const messages = [];
-  const validFloorIds = [];
-  for (const floor of floorIds) {
-    if (messages.length >= MAX_MESSAGES_IN_SEGMENT) break;
-    const msg = extractMessage(floor, chatId);
-    if (!msg) continue;
-    const chat = getChat();
-    const raw = chat[floor];
-    if (raw && isSystemMessage(raw)) continue;
-    messages.push(msg);
-    validFloorIds.push(floor);
-  }
-  if (messages.length === 0) return null;
-  const text = messages.map((m) => m.text).join("\n\n");
-  return {
-    chatId,
-    sourceKind: "picked",
-    floorIds: validFloorIds,
-    text,
-    messages,
-    createdAt: Date.now()
-  };
-}
-function buildManualSegment(text, floorIds = []) {
-  const chatId = getCurrentChatId();
-  const cleanText = text.trim();
-  if (!cleanText) return null;
-  const messages = [];
-  if (floorIds.length > 0 && chatId) {
-    for (const floor of floorIds.slice(0, MAX_MESSAGES_IN_SEGMENT)) {
-      const msg = extractMessage(floor, chatId);
-      if (msg) messages.push(msg);
-    }
-  }
-  return {
-    chatId: chatId || "manual",
-    sourceKind: "manual",
-    floorIds,
-    text: cleanText,
-    messages,
-    createdAt: Date.now()
-  };
-}
-function validateSegment(segment) {
-  if (segment.sourceKind === "manual") {
-    return true;
-  }
-  const currentChatId = getCurrentChatId();
-  if (currentChatId !== segment.chatId) return false;
-  for (const msg of segment.messages) {
-    if (!stillCurrent(segment.chatId, msg.floor, msg.swipeId, msg.sendDate)) {
-      return false;
-    }
-  }
-  return true;
-}
-function getAnchorFloor(segment) {
-  if (segment.sourceKind === "manual") {
-    return segment.floorIds.length > 0 ? segment.floorIds[segment.floorIds.length - 1] : null;
-  }
-  if (segment.floorIds.length === 0) return null;
-  return segment.floorIds[segment.floorIds.length - 1];
-}
-function getSurroundingContext(segment, range = 1) {
-  if (segment.sourceKind === "manual" || segment.floorIds.length === 0) {
-    return {};
-  }
-  const chatId = segment.chatId;
-  if (getCurrentChatId() !== chatId) return {};
-  const firstFloor = Math.min(...segment.floorIds);
-  const lastFloor = Math.max(...segment.floorIds);
-  const previousMessages = [];
-  for (let f = firstFloor - 1; f >= Math.max(0, firstFloor - range); f--) {
-    const msg = extractMessage(f, chatId);
-    if (msg) {
-      const chat2 = getChat();
-      const raw = chat2[f];
-      if (raw && isSystemMessage(raw)) continue;
-      previousMessages.unshift(msg.text);
-    }
-  }
-  const nextMessages = [];
-  const chat = getChat();
-  for (let f = lastFloor + 1; f <= Math.min(chat.length - 1, lastFloor + range); f++) {
-    const msg = extractMessage(f, chatId);
-    if (msg) {
-      const raw = chat[f];
-      if (raw && isSystemMessage(raw)) continue;
-      nextMessages.push(msg.text);
-    }
-  }
-  return {
-    previousText: previousMessages.length > 0 ? previousMessages.join("\n\n") : void 0,
-    nextText: nextMessages.length > 0 ? nextMessages.join("\n\n") : void 0
-  };
-}
-function defaultFloor() {
-  const chat = getChat();
-  for (let i = chat.length - 1; i >= 0; i--) {
-    const msg = chat[i];
-    if (!msg) continue;
-    if (isSystemMessage(msg)) continue;
-    if (msg.is_user === true) continue;
-    const text = cleanMes(msg.mes);
-    if (text.length > 0) return i;
-  }
-  for (let i = chat.length - 1; i >= 0; i--) {
-    const msg = chat[i];
-    if (!msg) continue;
-    if (isSystemMessage(msg)) continue;
-    const text = cleanMes(msg.mes);
-    if (text.length > 0) return i;
-  }
-  return -1;
-}
-function getAvailableFloors() {
-  const chat = getChat();
-  getCurrentChatId();
-  const result = [];
-  for (let i = 0; i < chat.length; i++) {
-    const msg = chat[i];
-    if (!msg) continue;
-    if (isSystemMessage(msg)) continue;
-    const text = cleanMes(msg.mes);
-    if (!text) continue;
-    result.push({
-      floor: i,
-      speaker: String(msg.name ?? (msg.is_user ? "User" : "Unknown")),
-      isUser: msg.is_user === true,
-      preview: text.slice(0, 80)
+  if (!Array.isArray(raw)) return [];
+  const byId = new Map(endpoints.map((e) => [e.id, e]));
+  const out = [];
+  for (const item of raw) {
+    const p = asRecord(item);
+    if (!p) continue;
+    const id = str(p.id).trim();
+    if (!id) continue;
+    const endpointId = str(p.endpointId).trim();
+    out.push({
+      id,
+      name: str(p.name).trim() || "未命名方案",
+      model: str(p.model).trim(),
+      endpointId,
+      endpointName: ((_a = byId.get(endpointId)) == null ? void 0 : _a.name) ?? (endpointId || "(未指定)"),
+      // 柏宝绘里尺寸直接存成形如 "832×1216" 的字符串
+      portraitSize: str(p.portraitSize).trim(),
+      landscapeSize: str(p.landscapeSize).trim(),
+      modelFamily: detectModelFamily(str(p.model))
     });
   }
-  return result;
+  return out;
+}
+function parseOutConfig(raw) {
+  const settings2 = asRecord(raw) ?? {};
+  const nai = asRecord(settings2.nai) ?? {};
+  const endpoints = parseEndpoints(nai.endpoints);
+  const plans = parsePlans(nai.plans, endpoints);
+  const activePlanId = str(nai.activePlanId).trim();
+  const active = plans.find((p) => p.id === activePlanId) ?? plans[0];
+  const activeEndpoint = endpoints.find((e) => e.id === (active == null ? void 0 : active.endpointId));
+  return {
+    backend: str(settings2.defaultBackend, "nai"),
+    endpoints,
+    plans,
+    activePlanId: (active == null ? void 0 : active.id) ?? "",
+    activePlanName: (active == null ? void 0 : active.name) ?? "",
+    activeEndpointConfigured: !!activeEndpoint && activeEndpoint.url.length > 0
+  };
+}
+function readOutConfig() {
+  var _a;
+  const ctx = getContext();
+  return parseOutConfig((_a = ctx.extensionSettings) == null ? void 0 : _a[IMAGE_SETTINGS_KEY]);
+}
+function moneySavingHint(snap) {
+  const active = snap.plans.find((p) => p.id === snap.activePlanId);
+  if (!active) return "";
+  if (active.modelFamily === "5" && snap.plans.some((p) => p.modelFamily === "4.5" || p.modelFamily === "4")) {
+    return "当前用的是 NAI5（较贵）。柏宝绘里已有更便宜的方案，可在柏宝绘里切到 NAI4.5 省钱。";
+  }
+  return "";
 }
 const PANEL_ID$1 = "sti-selection-panel";
 const PANEL_OVERLAY_ID = "sti-selection-panel-overlay";
@@ -1128,6 +1217,7 @@ let rangeStart = -1;
 let rangeEnd = -1;
 let excludedFloors = /* @__PURE__ */ new Set();
 let pickedFloors = [];
+let includeHiddenFloors = false;
 let selectedTextSeed = "";
 let selectedFloorSeed = -1;
 function showSelectionPanel(initialFloorOrOptions, onConfirm) {
@@ -1171,7 +1261,7 @@ function ensurePanel$1() {
 }
 function renderPanel() {
   if (!panelElement) return;
-  const floors = getAvailableFloors();
+  const floors = getAvailableFloors({ includeHidden: includeHiddenFloors });
   panelElement.innerHTML = "";
   const title = document.createElement("div");
   title.className = "sti-panel-title";
@@ -1192,6 +1282,9 @@ function renderPanel() {
   panelElement.appendChild(methodTabs);
   const content = document.createElement("div");
   content.className = "sti-panel-content";
+  if (currentMethod !== "local" && currentMethod !== "manual") {
+    content.appendChild(renderHiddenToggle());
+  }
   switch (currentMethod) {
     case "local":
     case "manual":
@@ -1209,9 +1302,30 @@ function renderPanel() {
   }
   panelElement.appendChild(content);
   panelElement.appendChild(renderModeSelector());
-  panelElement.appendChild(renderApiChannelSelector());
+  panelElement.appendChild(renderLlmChannelSelector());
+  panelElement.appendChild(renderOutPlanSelector());
   panelElement.appendChild(renderPreview());
   panelElement.appendChild(renderActions());
+}
+function renderHiddenToggle() {
+  const wrap = document.createElement("label");
+  wrap.className = "sti-hidden-toggle";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = includeHiddenFloors;
+  cb.addEventListener("change", () => {
+    includeHiddenFloors = cb.checked;
+    renderPanel();
+  });
+  wrap.appendChild(cb);
+  const text = document.createElement("span");
+  text.textContent = "查看所有楼层（含已隐藏的楼层）";
+  wrap.appendChild(text);
+  return wrap;
+}
+function floorOptionText(f, previewLen = 40) {
+  const mark = f.hidden ? "（隐藏）" : "";
+  return `[${f.floor}]${mark} ${f.speaker}: ${f.preview.slice(0, previewLen)}...`;
 }
 function methodLabel(method) {
   switch (method) {
@@ -1232,14 +1346,14 @@ function renderSingleSelector(floors) {
   container.className = "sti-selector-container";
   const label = document.createElement("div");
   label.className = "sti-selector-label";
-  label.textContent = "选择楼层：";
+  label.textContent = `选择楼层（共 ${floors.length} 层可选）：`;
   container.appendChild(label);
   const select = document.createElement("select");
   select.className = "sti-floor-select";
   for (const f of floors) {
     const opt = document.createElement("option");
     opt.value = String(f.floor);
-    opt.textContent = `[${f.floor}] ${f.speaker}: ${f.preview.slice(0, 40)}...`;
+    opt.textContent = floorOptionText(f);
     if (f.floor === selectedSingleFloor) opt.selected = true;
     select.appendChild(opt);
   }
@@ -1255,28 +1369,36 @@ function renderSingleSelector(floors) {
 function renderRangeSelector(floors) {
   const container = document.createElement("div");
   container.className = "sti-selector-container";
+  const total = getChatFloorCount();
+  const hint = document.createElement("div");
+  hint.className = "sti-selector-label";
+  hint.textContent = `填写楼层区间（当前共 ${total} 层，楼层号 0–${Math.max(0, total - 1)}）：`;
+  container.appendChild(hint);
   const rangeRow = document.createElement("div");
   rangeRow.className = "sti-range-row";
   const startLabel = document.createElement("span");
   startLabel.textContent = "从";
   rangeRow.appendChild(startLabel);
-  const startSelect = createFloorSelect(floors, rangeStart, (val) => {
+  const startInput = createFloorNumberInput(rangeStart, total, (val) => {
     rangeStart = val;
     rebuildSegment();
-    renderPreviewOnly();
+    renderPanel();
   });
-  rangeRow.appendChild(startSelect);
+  rangeRow.appendChild(startInput);
   const dash = document.createElement("span");
   dash.textContent = "到";
   rangeRow.appendChild(dash);
-  const endSelect = createFloorSelect(floors, rangeEnd, (val) => {
+  const endInput = createFloorNumberInput(rangeEnd, total, (val) => {
     rangeEnd = val;
     rebuildSegment();
-    renderPreviewOnly();
+    renderPanel();
   });
-  rangeRow.appendChild(endSelect);
+  rangeRow.appendChild(endInput);
+  const unit = document.createElement("span");
+  unit.textContent = "楼";
+  rangeRow.appendChild(unit);
   container.appendChild(rangeRow);
-  if (rangeStart >= 0 && rangeEnd >= 0) {
+  if (rangeStart >= 0 && rangeEnd >= 0 && floors.length > 0) {
     const lo = Math.min(rangeStart, rangeEnd);
     const hi = Math.max(rangeStart, rangeEnd);
     const rangeFloors = floors.filter((f) => f.floor >= lo && f.floor <= hi);
@@ -1289,7 +1411,7 @@ function renderRangeSelector(floors) {
       excludeList.className = "sti-exclude-list";
       for (const f of rangeFloors) {
         const item = document.createElement("label");
-        item.className = "sti-exclude-item";
+        item.className = `sti-exclude-item ${f.hidden ? "is-hidden-floor" : ""}`;
         const cb = document.createElement("input");
         cb.type = "checkbox";
         cb.checked = excludedFloors.has(f.floor);
@@ -1300,13 +1422,54 @@ function renderRangeSelector(floors) {
           renderPreviewOnly();
         });
         item.appendChild(cb);
-        item.appendChild(document.createTextNode(` [${f.floor}] ${f.speaker}: ${f.preview.slice(0, 50)}...`));
+        item.appendChild(document.createTextNode(` ${floorOptionText(f, 50)}`));
         excludeList.appendChild(item);
       }
       container.appendChild(excludeList);
     }
   }
+  if (rangeStart >= 0 && rangeEnd >= 0 && Math.abs(rangeEnd - rangeStart) + 1 > 50) {
+    const warn = document.createElement("div");
+    warn.className = "sti-manual-note";
+    warn.textContent = "区间超过 50 层，只会取前 50 条消息。";
+    container.appendChild(warn);
+  }
+  if (!includeHiddenFloors && rangeStart >= 0 && rangeEnd >= 0) {
+    const lo = Math.min(rangeStart, rangeEnd);
+    const hi = Math.max(rangeStart, rangeEnd);
+    const hiddenCount = getAvailableFloors({ includeHidden: true }).filter((f) => f.hidden && f.floor >= lo && f.floor <= hi).length;
+    if (hiddenCount > 0) {
+      const warn = document.createElement("div");
+      warn.className = "sti-manual-note";
+      warn.textContent = `该区间有 ${hiddenCount} 层是隐藏楼层，当前会被跳过。需要的话勾选上方「查看所有楼层」。`;
+      container.appendChild(warn);
+    }
+  }
   return container;
+}
+function createFloorNumberInput(currentValue, total, onChange) {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.className = "sti-floor-number";
+  input.min = "0";
+  input.max = String(Math.max(0, total - 1));
+  input.value = currentValue >= 0 ? String(currentValue) : "";
+  input.placeholder = "0";
+  const commit = () => {
+    const raw = input.value.trim();
+    if (raw === "") return;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) return;
+    onChange(Math.max(0, Math.min(total - 1, n)));
+  };
+  input.addEventListener("change", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    }
+  });
+  return input;
 }
 function renderPickedSelector(floors) {
   const container = document.createElement("div");
@@ -1319,7 +1482,7 @@ function renderPickedSelector(floors) {
   list.className = "sti-picked-list";
   for (const f of floors) {
     const item = document.createElement("label");
-    item.className = "sti-picked-item";
+    item.className = `sti-picked-item ${f.hidden ? "is-hidden-floor" : ""}`;
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = pickedFloors.includes(f.floor);
@@ -1333,7 +1496,7 @@ function renderPickedSelector(floors) {
       renderPreviewOnly();
     });
     item.appendChild(cb);
-    item.appendChild(document.createTextNode(` [${f.floor}] ${f.speaker}: ${f.preview.slice(0, 50)}...`));
+    item.appendChild(document.createTextNode(` ${floorOptionText(f, 50)}`));
     list.appendChild(item);
   }
   container.appendChild(list);
@@ -1409,12 +1572,12 @@ function renderModeSelector() {
   container.appendChild(modeList);
   return container;
 }
-function renderApiChannelSelector() {
+function renderLlmChannelSelector() {
   const container = document.createElement("div");
   container.className = "sti-api-channel-selector";
   const label = document.createElement("div");
   label.className = "sti-selector-label";
-  label.textContent = "LLM API 渠道（各模式分开指派；渠道自动同步自柏宝绘）：";
+  label.textContent = "LLM 渠道（读剧情 / 写 Tag；各模式分开指派，渠道同步自柏宝绘）：";
   container.appendChild(label);
   const channels = listSharedChannelInfos();
   const tagGenId = readTagGenChannelId();
@@ -1470,6 +1633,72 @@ function renderApiChannelSelector() {
     list.appendChild(row);
   }
   container.appendChild(list);
+  return container;
+}
+function renderOutPlanSelector() {
+  const container = document.createElement("div");
+  container.className = "sti-api-channel-selector";
+  const label = document.createElement("div");
+  label.className = "sti-selector-label";
+  label.textContent = "出图方案（各模式分开指派，方案同步自柏宝绘）：";
+  container.appendChild(label);
+  const snap = readOutConfig();
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const modePlans = settings2.modeOutPlans ?? {};
+  if (snap.plans.length === 0) {
+    const hint2 = document.createElement("div");
+    hint2.className = "sti-api-hint";
+    hint2.textContent = "柏宝绘里还没有出图方案。先去柏宝绘新建一套方案（例如 NAI4.5 省钱方案），这里会自动出现。";
+    container.appendChild(hint2);
+    return container;
+  }
+  const list = document.createElement("div");
+  list.className = "sti-api-channel-list";
+  for (const mode of Object.keys(MODE_LABELS$1)) {
+    const row = document.createElement("label");
+    row.className = "sti-api-channel-row";
+    const name = document.createElement("span");
+    name.className = "sti-api-mode-name";
+    name.textContent = MODE_LABELS$1[mode];
+    row.appendChild(name);
+    const select = document.createElement("select");
+    select.className = "sti-api-channel-select";
+    const followOpt = document.createElement("option");
+    followOpt.value = "current";
+    followOpt.textContent = `跟随当前方案（${snap.activePlanName || "未设置"}）`;
+    select.appendChild(followOpt);
+    for (const plan of snap.plans) {
+      const opt = document.createElement("option");
+      opt.value = plan.id;
+      const family = plan.modelFamily !== "unknown" ? ` · NAI${plan.modelFamily}` : "";
+      opt.textContent = `${plan.name}${family} · ${plan.endpointName}`;
+      select.appendChild(opt);
+    }
+    const current = modePlans[mode] ?? "current";
+    if (current !== "current" && !snap.plans.some((p) => p.id === current)) {
+      const stale = document.createElement("option");
+      stale.value = current;
+      stale.textContent = `已失效方案（${current.slice(0, 8)}…）`;
+      select.appendChild(stale);
+    }
+    select.value = current;
+    select.addEventListener("change", () => {
+      const next = getSettings(DEFAULT_SETTINGS);
+      const map = { ...next.modeOutPlans ?? {} };
+      if (select.value === "current") delete map[mode];
+      else map[mode] = select.value;
+      next.modeOutPlans = map;
+      saveSettings(next);
+      window.dispatchEvent(new CustomEvent("sti-settings-changed"));
+    });
+    row.appendChild(select);
+    list.appendChild(row);
+  }
+  container.appendChild(list);
+  const hint = document.createElement("div");
+  hint.className = "sti-api-hint";
+  hint.textContent = "指了方案的模式，出图前会先把柏宝绘切成该方案（可能短暂弹出柏宝绘面板）。柏宝绘的「当前方案」是全局的，所以切换对所有用柏宝绘出图的地方都生效。";
+  container.appendChild(hint);
   return container;
 }
 function renderPreview() {
@@ -1560,34 +1789,21 @@ function updateConfirmButton() {
   const btn = document.getElementById("sti-confirm-btn");
   if (btn) btn.textContent = `确认选段 · 生成 ${selectedModes.size} 份`;
 }
-function createFloorSelect(floors, currentValue, onChange) {
-  const select = document.createElement("select");
-  select.className = "sti-floor-select";
-  for (const f of floors) {
-    const opt = document.createElement("option");
-    opt.value = String(f.floor);
-    opt.textContent = `[${f.floor}] ${f.speaker}`;
-    if (f.floor === currentValue) opt.selected = true;
-    select.appendChild(opt);
-  }
-  if (currentValue >= 0) select.value = String(currentValue);
-  select.addEventListener("change", () => onChange(parseInt(select.value, 10)));
-  return select;
-}
 function rebuildSegment() {
+  const options = { includeHidden: includeHiddenFloors };
   switch (currentMethod) {
     case "local":
     case "manual":
       currentSegment = localText.trim() ? buildManualSegment(localText, selectedFloorSeed >= 0 ? [selectedFloorSeed] : []) : null;
       break;
     case "single":
-      currentSegment = selectedSingleFloor >= 0 ? buildSingleSegment(selectedSingleFloor) : null;
+      currentSegment = selectedSingleFloor >= 0 ? buildSingleSegment(selectedSingleFloor, options) : null;
       break;
     case "range":
-      currentSegment = rangeStart >= 0 && rangeEnd >= 0 ? buildRangeSegment(rangeStart, rangeEnd, Array.from(excludedFloors)) : null;
+      currentSegment = rangeStart >= 0 && rangeEnd >= 0 ? buildRangeSegment(rangeStart, rangeEnd, Array.from(excludedFloors), options) : null;
       break;
     case "picked":
-      currentSegment = pickedFloors.length > 0 ? buildPickedSegment(pickedFloors) : null;
+      currentSegment = pickedFloors.length > 0 ? buildPickedSegment(pickedFloors, options) : null;
       break;
   }
 }
@@ -1647,93 +1863,6 @@ function destroyLightbox() {
     overlay = null;
   }
 }
-const IMAGE_SETTINGS_KEY = "baibai_image";
-function asRecord(v) {
-  return v && typeof v === "object" && !Array.isArray(v) ? v : null;
-}
-function str(v, fallback = "") {
-  return typeof v === "string" ? v : fallback;
-}
-function detectModelFamily(model) {
-  const m = model.toLowerCase();
-  if (/4[._-]?5|v4\.5|nai45|diffusion-4-5|diffusion-4\.5/.test(m)) return "4.5";
-  if (/nai.?5|diffusion-5|v5\b|-5-full|-5$/.test(m)) return "5";
-  if (/4\b|diffusion-4|v4/.test(m)) return "4";
-  return "unknown";
-}
-function parseEndpoints(raw) {
-  if (!Array.isArray(raw)) return [];
-  const out = [];
-  for (const item of raw) {
-    const e = asRecord(item);
-    if (!e) continue;
-    const id = str(e.id).trim();
-    if (!id) continue;
-    const url = str(e.url).trim();
-    out.push({
-      id,
-      name: str(e.name).trim() || id,
-      url,
-      hasKey: str(e.key).trim().length > 0
-    });
-  }
-  return out;
-}
-function parsePlans(raw, endpoints) {
-  var _a;
-  if (!Array.isArray(raw)) return [];
-  const byId = new Map(endpoints.map((e) => [e.id, e]));
-  const out = [];
-  for (const item of raw) {
-    const p = asRecord(item);
-    if (!p) continue;
-    const id = str(p.id).trim();
-    if (!id) continue;
-    const endpointId = str(p.endpointId).trim();
-    out.push({
-      id,
-      name: str(p.name).trim() || "未命名方案",
-      model: str(p.model).trim(),
-      endpointId,
-      endpointName: ((_a = byId.get(endpointId)) == null ? void 0 : _a.name) ?? (endpointId || "(未指定)"),
-      // 柏宝绘里尺寸直接存成形如 "832×1216" 的字符串
-      portraitSize: str(p.portraitSize).trim(),
-      landscapeSize: str(p.landscapeSize).trim(),
-      modelFamily: detectModelFamily(str(p.model))
-    });
-  }
-  return out;
-}
-function parseOutConfig(raw) {
-  const settings2 = asRecord(raw) ?? {};
-  const nai = asRecord(settings2.nai) ?? {};
-  const endpoints = parseEndpoints(nai.endpoints);
-  const plans = parsePlans(nai.plans, endpoints);
-  const activePlanId = str(nai.activePlanId).trim();
-  const active = plans.find((p) => p.id === activePlanId) ?? plans[0];
-  const activeEndpoint = endpoints.find((e) => e.id === (active == null ? void 0 : active.endpointId));
-  return {
-    backend: str(settings2.defaultBackend, "nai"),
-    endpoints,
-    plans,
-    activePlanId: (active == null ? void 0 : active.id) ?? "",
-    activePlanName: (active == null ? void 0 : active.name) ?? "",
-    activeEndpointConfigured: !!activeEndpoint && activeEndpoint.url.length > 0
-  };
-}
-function readOutConfig() {
-  var _a;
-  const ctx = getContext();
-  return parseOutConfig((_a = ctx.extensionSettings) == null ? void 0 : _a[IMAGE_SETTINGS_KEY]);
-}
-function moneySavingHint(snap) {
-  const active = snap.plans.find((p) => p.id === snap.activePlanId);
-  if (!active) return "";
-  if (active.modelFamily === "5" && snap.plans.some((p) => p.modelFamily === "4.5" || p.modelFamily === "4")) {
-    return "当前用的是 NAI5（较贵）。柏宝绘里已有更便宜的方案，可在柏宝绘里切到 NAI4.5 省钱。";
-  }
-  return "";
-}
 function findPlanRadio(root, planName) {
   const radios = Array.from(root.querySelectorAll('button.item-main[role="radio"]'));
   for (const btn of radios) {
@@ -1756,7 +1885,29 @@ function openBaiBaiBackendPanel() {
   const orb = document.querySelector('.bbi-orb, [class*="bbi-floating-orb"]');
   orb == null ? void 0 : orb.click();
 }
-async function switchBaiBaiPlan(planId, timeoutMs = 6e3) {
+function tryClickPlanRadio(planName) {
+  const shadow = getBaiBaiShadowRoot();
+  if (!shadow) return false;
+  const radio = findPlanRadio(shadow, planName);
+  if (!radio || radio.hasAttribute("disabled")) return false;
+  radio.click();
+  return true;
+}
+async function confirmSwitched(planId, targetName) {
+  const confirmDeadline = Date.now() + 2500;
+  while (Date.now() < confirmDeadline) {
+    if (readOutConfig().activePlanId === planId) {
+      return { ok: true, reason: "switched", message: `已切到「${targetName}」。` };
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return {
+    ok: false,
+    reason: "no-ui",
+    message: "已点击方案按钮，但未能确认切换结果。请到柏宝绘里确认当前方案是否为「" + targetName + "」。"
+  };
+}
+async function switchBaiBaiPlan(planId, timeoutMs = 8e3) {
   const snap = readOutConfig();
   const target = snap.plans.find((p) => p.id === planId);
   if (!target) {
@@ -1765,6 +1916,9 @@ async function switchBaiBaiPlan(planId, timeoutMs = 6e3) {
   if (snap.activePlanId === planId) {
     return { ok: false, reason: "already", message: `「${target.name}」已经是当前方案。` };
   }
+  if (tryClickPlanRadio(target.name)) {
+    return await confirmSwitched(planId, target.name);
+  }
   try {
     openBaiBaiBackendPanel();
   } catch {
@@ -1772,14 +1926,9 @@ async function switchBaiBaiPlan(planId, timeoutMs = 6e3) {
   const deadline = Date.now() + timeoutMs;
   let clicked = false;
   while (Date.now() < deadline) {
-    const shadow = getBaiBaiShadowRoot();
-    if (shadow) {
-      const radio = findPlanRadio(shadow, target.name);
-      if (radio && !radio.hasAttribute("disabled")) {
-        radio.click();
-        clicked = true;
-        break;
-      }
+    if (tryClickPlanRadio(target.name)) {
+      clicked = true;
+      break;
     }
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -1790,22 +1939,18 @@ async function switchBaiBaiPlan(planId, timeoutMs = 6e3) {
       message: "没能定位到柏宝绘的方案按钮。请打开柏宝绘设置（魔杖菜单 → 柏宝绘 → 后端），手动选「" + target.name + "」，本面板会自动同步。"
     };
   }
-  const confirmDeadline = Date.now() + 2e3;
-  while (Date.now() < confirmDeadline) {
-    if (readOutConfig().activePlanId === planId) {
-      return { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return {
-    ok: false,
-    reason: "no-ui",
-    message: "已点击方案按钮，但未能确认切换结果。请到柏宝绘里确认当前方案是否为「" + target.name + "」。"
-  };
+  return await confirmSwitched(planId, target.name);
 }
 const PANEL_ID = "sti-config-panel";
 const OVERLAY_ID = "sti-config-overlay";
 const MENU_ID = "sti-config-menu-item";
+const MODE_LABEL = {
+  "illustration": "正文插画",
+  "comic": "正文漫画分镜",
+  "chibi-status": "QQ 人状态栏",
+  "chibi-bonus": "QQ 人彩蛋",
+  "bw-manga": "黑白漫小剧场"
+};
 let panelEl = null;
 let overlayEl = null;
 function ensurePanel() {
@@ -1880,6 +2025,26 @@ function render(panel) {
     cur.appendChild(hintEl);
   }
   body.appendChild(cur);
+  const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
+  const assigned = Object.entries(modePlans).filter(([, id]) => !!id);
+  if (assigned.length > 0) {
+    const perMode = section(
+      "各创作模式指定的方案",
+      "出图前会自动把柏宝绘切到对应方案（串行执行，不会互相打断）。要改请到选段弹窗底部「出图方案」。"
+    );
+    const box = document.createElement("div");
+    box.className = "sti-config-eplist";
+    for (const [mode, planId] of assigned) {
+      const plan = snap.plans.find((p) => p.id === planId);
+      const row = document.createElement("div");
+      row.className = "sti-config-ep";
+      const label = MODE_LABEL[mode] ?? mode;
+      row.textContent = plan ? `${label} → ${plan.name} · ${plan.endpointName}` : `${label} → 方案已失效（${planId.slice(0, 8)}…）`;
+      box.appendChild(row);
+    }
+    perMode.appendChild(box);
+    body.appendChild(perMode);
+  }
   const plans = section("切换方案", "点「切为当前」会在柏宝绘里切到该方案（走它自己的逻辑，落盘也同步）。若按钮无响应，请先打开一次柏宝绘设置面板。");
   const planList = document.createElement("div");
   planList.className = "sti-config-list";
@@ -3773,6 +3938,25 @@ function toNormalizedInput(prompt, nl, negative, profile) {
     save: true
   };
 }
+async function ensureModeOutPlan(mode, deps) {
+  var _a;
+  const planId = (_a = deps.fullSettings.modeOutPlans) == null ? void 0 : _a[mode];
+  if (!planId) return;
+  const snap = readOutConfig();
+  if (!snap.plans.some((p) => p.id === planId)) {
+    console.warn(`[ST-Story-Illustrator] ${mode} 指定的出图方案已不存在，改用当前方案。`);
+    return;
+  }
+  if (snap.activePlanId === planId) return;
+  try {
+    const result = await switchBaiBaiPlan(planId);
+    if (!result.ok && result.reason !== "already") {
+      console.warn(`[ST-Story-Illustrator] 切换出图方案失败（继续用当前方案）：${result.message}`);
+    }
+  } catch (e) {
+    console.warn("[ST-Story-Illustrator] 切换出图方案异常（继续用当前方案）:", e);
+  }
+}
 async function runIllustration(task, ctx, deps) {
   var _a, _b;
   const segment = task.source;
@@ -3800,6 +3984,7 @@ async function runIllustration(task, ctx, deps) {
   if (!prompt.trim()) throw new Error("组装后的英文 prompt 为空。");
   const profile = pickProfile(deps.settings, "illustration");
   ctx.report({ stage: "generating" });
+  await ensureModeOutPlan("illustration", deps);
   const result = await baiBaiAdapter.generate(
     toNormalizedInput(prompt, plan.data.nl, plan.data.negative),
     profile ?? fallbackProfile("illustration")
@@ -3881,6 +4066,7 @@ async function runComic(task, ctx, deps) {
   const profile = pickProfile(deps.settings, "comic");
   const totalPanels = plan.data.reduce((sum, page) => sum + page.panels.length, 0);
   let done = 0;
+  await ensureModeOutPlan("comic", deps);
   for (const page of plan.data) {
     for (const panel of page.panels) {
       if (ctx.signal.aborted) return;
@@ -3933,6 +4119,7 @@ async function runTheaterMode(task, ctx, deps) {
   const modeSettings = deps.fullSettings.modes[mode];
   const characters = await getCharacters(floor);
   ctx.report({ stage: "reading" });
+  await ensureModeOutPlan(mode, deps);
   const result = await runTheaterOne({
     kind,
     chatId: task.chatId,
@@ -4078,14 +4265,14 @@ function registerEvents() {
     initQueue();
   });
   cleanupFunctions.push(offSettings);
-  const onModeChannelsChanged = () => {
+  const onModeSettingsChanged = () => {
     settings = getSettings(DEFAULT_SETTINGS);
     applySettings();
     queue = null;
     initQueue();
   };
-  window.addEventListener("sti-settings-changed", onModeChannelsChanged);
-  cleanupFunctions.push(() => window.removeEventListener("sti-settings-changed", onModeChannelsChanged));
+  window.addEventListener("sti-settings-changed", onModeSettingsChanged);
+  cleanupFunctions.push(() => window.removeEventListener("sti-settings-changed", onModeSettingsChanged));
   const offReady = on(events.APP_READY, () => {
     const result = checkAvailability();
     if (result.status === "available") {

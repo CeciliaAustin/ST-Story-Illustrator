@@ -19,10 +19,21 @@ import {
   readTagGenChannelId,
   type SharedChannelInfo,
 } from '../baibai/secondaryLlm';
+import { getSettings } from '../host/sillytavern';
+import { DEFAULT_SETTINGS } from '../types';
 
 const PANEL_ID = 'sti-config-panel';
 const OVERLAY_ID = 'sti-config-overlay';
 const MENU_ID = 'sti-config-menu-item';
+
+/** 模式中文名（与选段弹窗保持一致） */
+const MODE_LABEL: Record<string, string> = {
+  'illustration': '正文插画',
+  'comic': '正文漫画分镜',
+  'chibi-status': 'QQ 人状态栏',
+  'chibi-bonus': 'QQ 人彩蛋',
+  'bw-manga': '黑白漫小剧场',
+};
 
 let panelEl: HTMLElement | null = null;
 let overlayEl: HTMLElement | null = null;
@@ -113,6 +124,30 @@ function render(panel: HTMLElement): void {
     cur.appendChild(hintEl);
   }
   body.appendChild(cur);
+
+  // ── 各模式指定方案（只读，改在选段弹窗）──
+  const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
+  const assigned = Object.entries(modePlans).filter(([, id]) => !!id) as Array<[string, string]>;
+  if (assigned.length > 0) {
+    const perMode = section(
+      '各创作模式指定的方案',
+      '出图前会自动把柏宝绘切到对应方案（串行执行，不会互相打断）。要改请到选段弹窗底部「出图方案」。',
+    );
+    const box = document.createElement('div');
+    box.className = 'sti-config-eplist';
+    for (const [mode, planId] of assigned) {
+      const plan = snap.plans.find(p => p.id === planId);
+      const row = document.createElement('div');
+      row.className = 'sti-config-ep';
+      const label = MODE_LABEL[mode] ?? mode;
+      row.textContent = plan
+        ? `${label} → ${plan.name} · ${plan.endpointName}`
+        : `${label} → 方案已失效（${planId.slice(0, 8)}…）`;
+      box.appendChild(row);
+    }
+    perMode.appendChild(box);
+    body.appendChild(perMode);
+  }
 
   // ── 方案切换 ──
   const plans = section('切换方案', '点「切为当前」会在柏宝绘里切到该方案（走它自己的逻辑，落盘也同步）。若按钮无响应，请先打开一次柏宝绘设置面板。');
