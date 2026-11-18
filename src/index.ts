@@ -120,6 +120,16 @@ function registerEvents(): void {
   });
   cleanupFunctions.push(offSettings);
 
+  // 选段弹窗里改了「模式 → API 渠道」后，立即刷新运行中的设置引用，无需重启酒馆
+  const onModeChannelsChanged = () => {
+    settings = getSettings(DEFAULT_SETTINGS);
+    applySettings();
+    queue = null;
+    initQueue();
+  };
+  window.addEventListener('sti-settings-changed', onModeChannelsChanged);
+  cleanupFunctions.push(() => window.removeEventListener('sti-settings-changed', onModeChannelsChanged));
+
   const offReady = on(events.APP_READY, () => {
     const result = checkAvailability();
     if (result.status === 'available') {

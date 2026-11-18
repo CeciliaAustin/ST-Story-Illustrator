@@ -13,6 +13,9 @@
  */
 
 import type { StorySegment, CreationMode } from '../types';
+import { DEFAULT_SETTINGS } from '../types';
+import { getSettings, saveSettings } from '../host/sillytavern';
+import { listSharedChannelInfos, readTagGenChannelId } from '../baibai/secondaryLlm';
 import {
   buildSingleSegment,
   buildRangeSegment,
@@ -186,6 +189,7 @@ function renderPanel(): void {
   panelElement.appendChild(content);
 
   panelElement.appendChild(renderModeSelector());
+  panelElement.appendChild(renderApiChannelSelector());
   panelElement.appendChild(renderPreview());
   panelElement.appendChild(renderActions());
 }
@@ -420,6 +424,92 @@ function renderModeSelector(): HTMLElement {
     modeList.appendChild(item);
   }
   container.appendChild(modeList);
+  return container;
+}
+
+/**
+ * API 渠道选择窗口：每个创作模式单独指派 LLM 渠道。
+ * 渠道列表直接读柏宝绘的共享配置（用户在柏宝绘里加的 NAI5 / NAI4.5 等），本扩展不另造配置界面。
+ */
+function renderApiChannelSelector(): HTMLElement {
+  const container = document.createElement('div');
+  container.className = 'sti-api-channel-selector';
+
+  const label = document.createElement('div');
+  label.className = 'sti-selector-label';
+  label.textContent = 'LLM API 渠道（各模式分开指派；渠道自动同步自柏宝绘）：';
+  container.appendChild(label);
+
+  const channels = listSharedChannelInfos();
+  const tagGenId = readTagGenChannelId();
+  const settings = getSettings(DEFAULT_SETTINGS);
+  const modeChannels = settings.modeChannels ?? {};
+
+  if (channels.length === 0) {
+    const hint = document.createElement('div');
+    hint.className = 'sti-api-hint';
+    hint.textContent = '柏宝绘还没有副 API 渠道。在柏宝绘设置里添加渠道后，这里会自动出现，不用重启。';
+    container.appendChild(hint);
+  }
+
+  const list = document.createElement('div');
+  list.className = 'sti-api-channel-list';
+
+  for (const mode of Object.keys(MODE_LABELS) as CreationMode[]) {
+    const row = document.createElement('label');
+    row.className = 'sti-api-channel-row';
+
+    const name = document.createElement('span');
+    name.className = 'sti-api-mode-name';
+    name.textContent = MODE_LABELS[mode];
+    row.appendChild(name);
+
+    const select = document.createElement('select');
+    select.className = 'sti-api-channel-select';
+
+    const tagGenOpt = document.createElement('option');
+    tagGenOpt.value = 'tagGen';
+    const tagGenChannel = channels.find(c => c.id === tagGenId);
+    tagGenOpt.textContent = tagGenId
+      ? `跟随柏宝绘 tagGen（${tagGenChannel?.name ?? tagGenId}）`
+      : '跟随柏宝绘 tagGen（未指派 → 回退主 API）';
+    select.appendChild(tagGenOpt);
+
+    const mainOpt = document.createElement('option');
+    mainOpt.value = 'main';
+    mainOpt.textContent = '酒馆主 API';
+    select.appendChild(mainOpt);
+
+    for (const ch of channels) {
+      const opt = document.createElement('option');
+      opt.value = ch.id;
+      opt.textContent = `${ch.name}${ch.model ? ` · ${ch.model}` : ''}`;
+      select.appendChild(opt);
+    }
+
+    const current = modeChannels[mode] ?? 'tagGen';
+    // 存了已删除的渠道：补一个失效项，避免选中态悄悄丢掉
+    if (current !== 'tagGen' && current !== 'main' && !channels.some(c => c.id === current)) {
+      const stale = document.createElement('option');
+      stale.value = current;
+      stale.textContent = `已失效渠道（${current.slice(0, 10)}…）`;
+      select.appendChild(stale);
+    }
+    select.value = current;
+
+    select.addEventListener('change', () => {
+      const next = getSettings(DEFAULT_SETTINGS);
+      next.modeChannels = { ...(next.modeChannels ?? {}), [mode]: select.value };
+      saveSettings(next);
+      // 通知运行中的队列刷新 settings 引用，改完立刻生效，不用重启
+      window.dispatchEvent(new CustomEvent('sti-settings-changed'));
+    });
+
+    row.appendChild(select);
+    list.appendChild(row);
+  }
+
+  container.appendChild(list);
   return container;
 }
 

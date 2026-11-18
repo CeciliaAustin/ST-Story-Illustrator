@@ -10,9 +10,14 @@
  * 这样可在测试里塞 mock caller，无需真实 ST 环境；也符合 ANALYSIS.md 的「mock adapter」策略。
  */
 
-import type { GeneratePromptResponse, ComicPagePlan, BaiBaiCharacter } from '../types';
+import type { GeneratePromptResponse, ComicPagePlan, BaiBaiCharacter, CreationMode } from '../types';
 import { generateQuietPrompt as stGenerateQuietPrompt } from '../host/sillytavern';
-import { generateViaSecondary } from '../baibai/secondaryLlm';
+import {
+  generateViaSecondary,
+  generateViaChannelId,
+  resolveChannelId,
+  type ModeChannelMap,
+} from '../baibai/secondaryLlm';
 import {
   buildIllustrationSystemPrompt,
   buildIllustrationUserPrompt,
@@ -59,6 +64,23 @@ export function makeLlmCaller(source: 'auto' | 'secondary' | 'main'): LlmCaller 
     };
   }
   return defaultLlmCaller; // auto
+}
+
+/**
+ * 按创作模式构造调用器：读该模式在弹窗里指派的渠道（柏宝绘共享渠道 id / tagGen / main）。
+ * 指定渠道不可用时回退酒馆主 API，保证任务不中断。
+ */
+export function makeModeLlmCaller(
+  settings: { modeChannels?: ModeChannelMap; llmSource?: 'auto' | 'main' | 'secondary' },
+  mode: CreationMode,
+): LlmCaller {
+  const channelId = resolveChannelId(mode, settings.modeChannels, settings.llmSource);
+  if (channelId === 'main') return mainApiLlmCaller;
+  return async (system, user) => {
+    const viaChannel = await generateViaChannelId(channelId, system, user);
+    if (viaChannel !== null) return viaChannel;
+    return await mainApiLlmCaller(system, user);
+  };
 }
 
 // ============================================================

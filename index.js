@@ -105,6 +105,16 @@ function getSettings(defaults) {
   }
   return { ...defaults, ...stored };
 }
+function saveSettings(settings2) {
+  const ctx = getContext();
+  if (!ctx.extensionSettings) {
+    ctx.extensionSettings = {};
+  }
+  ctx.extensionSettings[SETTINGS_KEY] = settings2;
+  if (typeof ctx.saveSettingsDebounced === "function") {
+    ctx.saveSettingsDebounced();
+  }
+}
 function getChatMetadata(key, defaults) {
   const ctx = getContext();
   const meta = ctx.chatMetadata ?? {};
@@ -456,6 +466,263 @@ function destroyToolbar() {
     toolbarElement = null;
   }
   onGenerateCallback = null;
+}
+function defaultMountMode(mode) {
+  switch (mode) {
+    case "illustration":
+    case "comic":
+      return "inline";
+    case "chibi-status":
+    case "chibi-bonus":
+    case "bw-manga":
+      return "trailing";
+    default:
+      return "trailing";
+  }
+}
+function defaultModeSettings(mode) {
+  const base = {
+    enabled: false,
+    autoTrigger: false,
+    profileId: "",
+    shots: 1
+  };
+  switch (mode) {
+    case "illustration":
+      return { ...base, enabled: true, illustrationMultiImage: false };
+    case "comic":
+      return {
+        ...base,
+        comicLayout: "regular",
+        comicPageType: "auto",
+        comicMaxPages: 1,
+        comicDialoguePolicy: "auto",
+        comicBubbleStyle: "classic",
+        comicBubbleFont: "sans",
+        comicShowComposite: true
+      };
+    case "chibi-status":
+      return { ...base, chibiStyle: "card" };
+    case "chibi-bonus":
+      return { ...base, chibiBonusChance: 25 };
+    case "bw-manga":
+      return { ...base, bwMangaSafeMode: true, bwMangaArtistId: "" };
+    default:
+      return base;
+  }
+}
+const DEFAULT_SETTINGS = {
+  enabled: false,
+  contextRange: 1,
+  includeChinese: true,
+  includeNl: false,
+  syncBaiBaiExcludes: true,
+  preferContentTag: true,
+  llmSource: "auto",
+  // 默认不指定，走 llmSource('auto' → 柏宝绘 tagGen 渠道)；用户在弹窗里可为每个模式分别指派
+  modeChannels: {},
+  modes: {
+    "illustration": defaultModeSettings("illustration"),
+    "comic": defaultModeSettings("comic"),
+    "chibi-status": defaultModeSettings("chibi-status"),
+    "chibi-bonus": defaultModeSettings("chibi-bonus"),
+    "bw-manga": defaultModeSettings("bw-manga")
+  },
+  profiles: [],
+  // 遗留字段
+  chibiMode: false,
+  chibiStatusBar: false,
+  chibiStatusShots: 1,
+  chibiStatusStyle: "card",
+  chibiBonusEnabled: false,
+  chibiBonusChance: 25,
+  chibiBonusShots: 1,
+  mangaEnabled: false,
+  mangaShots: 1,
+  mangaSafe: true,
+  mangaArtistId: "",
+  panelMode: false,
+  panelLayout: "regular",
+  panelPageType: "auto",
+  dialogueEnabled: false,
+  dialoguePolicy: "auto",
+  bubbleStyle: "classic",
+  bubbleFont: "sans"
+};
+const CHANNELS_KEY = "baibai_api_channels";
+const IMAGE_SETTINGS_KEY = "baibai_image";
+const CHAT_COMPLETIONS_URL = "/api/backends/chat-completions/generate";
+function normalizeChannel(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const c = raw;
+  const id = typeof c.id === "string" ? c.id.trim() : "";
+  const url = typeof c.url === "string" ? c.url.trim() : "";
+  if (!id || !url) return null;
+  return {
+    id,
+    name: typeof c.name === "string" && c.name.trim() ? c.name.trim() : id,
+    url,
+    key: typeof c.key === "string" ? c.key : "",
+    model: typeof c.model === "string" ? c.model.trim() : "",
+    temperature: typeof c.temperature === "number" && Number.isFinite(c.temperature) ? c.temperature : 1,
+    maxTokens: typeof c.maxTokens === "number" && c.maxTokens > 0 ? Math.floor(c.maxTokens) : 65535,
+    timeoutSec: typeof c.timeoutSec === "number" && c.timeoutSec > 0 ? Math.floor(c.timeoutSec) : 180,
+    stream: typeof c.stream === "boolean" ? c.stream : false,
+    excludeParams: Array.isArray(c.excludeParams) ? c.excludeParams.filter((x) => typeof x === "string" && x.trim().length > 0).map((x) => x.trim()) : [],
+    reasoningEffort: typeof c.reasoningEffort === "string" ? c.reasoningEffort.trim() : ""
+  };
+}
+function parseSharedChannels(raw) {
+  if (!raw || typeof raw !== "object") return [];
+  const store = raw;
+  const arr = Array.isArray(store.channels) ? store.channels : Array.isArray(raw) ? raw : [];
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of arr) {
+    const ch = normalizeChannel(item);
+    if (!ch || seen.has(ch.id)) continue;
+    seen.add(ch.id);
+    out.push(ch);
+  }
+  return out;
+}
+function listSharedChannels() {
+  var _a;
+  const ctx = getContext();
+  return parseSharedChannels((_a = ctx.extensionSettings) == null ? void 0 : _a[CHANNELS_KEY]);
+}
+function listSharedChannelInfos() {
+  return listSharedChannels().map((c) => ({
+    id: c.id,
+    name: c.name || c.id,
+    model: c.model,
+    url: c.url
+  }));
+}
+function readTagGenChannelId() {
+  var _a;
+  const ctx = getContext();
+  const raw = (_a = ctx.extensionSettings) == null ? void 0 : _a[IMAGE_SETTINGS_KEY];
+  if (!raw || typeof raw !== "object") return "";
+  const settings2 = raw;
+  const assignments = settings2.assignments;
+  const id = assignments == null ? void 0 : assignments.tagGen;
+  return typeof id === "string" ? id.trim() : "";
+}
+function resolveChannelId(mode, modeChannels, llmSource) {
+  const explicit = modeChannels == null ? void 0 : modeChannels[mode];
+  if (explicit) return explicit;
+  return llmSource === "main" ? "main" : "tagGen";
+}
+function buildChannelRequestBody(channel, messages, stream = false) {
+  const effort = (channel.reasoningEffort ?? "").trim();
+  const common = {
+    model: channel.model,
+    messages,
+    temperature: channel.temperature ?? 1,
+    max_tokens: channel.maxTokens ?? 65535,
+    stream,
+    tool_choice: "none",
+    presence_penalty: 0,
+    frequency_penalty: 0
+  };
+  const body = effort ? {
+    chat_completion_source: "custom",
+    custom_url: channel.url,
+    custom_include_headers: JSON.stringify({ Authorization: `Bearer ${channel.key || ""}` }),
+    custom_include_body: JSON.stringify({ reasoning_effort: effort }),
+    ...common
+  } : {
+    chat_completion_source: "openai",
+    reverse_proxy: channel.url,
+    proxy_password: channel.key || "",
+    ...common
+  };
+  for (const p of channel.excludeParams ?? []) {
+    const key = p.trim();
+    if (key) delete body[key];
+  }
+  return body;
+}
+function extractCompletionText(data) {
+  if (!data || typeof data !== "object") return null;
+  const d = data;
+  if (typeof d.error === "object" && d.error !== null) {
+    const msg = d.error.message;
+    console.warn("[ST-Story-Illustrator] 副 API 返回错误：", typeof msg === "string" ? msg : "未知错误");
+    return null;
+  }
+  const choices = Array.isArray(d.choices) ? d.choices : [];
+  for (const choice of choices) {
+    if (!choice || typeof choice !== "object") continue;
+    const c = choice;
+    const message = c.message;
+    const parts = [message == null ? void 0 : message.content, c.text, d.content];
+    for (const part of parts) {
+      const text = textFromContent(part);
+      if (text) return text;
+    }
+  }
+  return textFromContent(d.content);
+}
+function textFromContent(value) {
+  if (typeof value === "string") return value.trim() ? value.trim() : null;
+  if (Array.isArray(value)) {
+    const texts = [];
+    for (const part of value) {
+      if (!part || typeof part !== "object") continue;
+      const p = part;
+      if (typeof p.text === "string") texts.push(p.text);
+    }
+    return texts.join("").trim() || null;
+  }
+  return null;
+}
+async function generateViaChannelId(channelId, system, user, signal) {
+  const id = (channelId || "").trim();
+  if (!id || id === "main") return null;
+  const ctx = getContext();
+  const all = listSharedChannels();
+  const targetId = id === "tagGen" ? readTagGenChannelId() : id;
+  if (!targetId) return null;
+  const channel = all.find((c) => c.id === targetId);
+  if (!channel) return null;
+  if (!channel.model) {
+    console.warn(`[ST-Story-Illustrator] 渠道「${channel.name}」未填模型，跳过。`);
+    return null;
+  }
+  const headers = typeof ctx.getRequestHeaders === "function" ? ctx.getRequestHeaders() : {};
+  const controller = new AbortController();
+  const timeoutMs = Math.max(5, channel.timeoutSec) * 1e3;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(buildChannelRequestBody(channel, [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ])),
+      signal: controller.signal
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      console.warn(`[ST-Story-Illustrator] 渠道「${channel.name}」请求失败 (${resp.status})：${detail.slice(0, 200)}`);
+      return null;
+    }
+    const data = await resp.json().catch(() => null);
+    return extractCompletionText(data);
+  } catch (err) {
+    {
+      console.warn(`[ST-Story-Illustrator] 渠道「${channel.name}」不可用：`, err instanceof Error ? err.message : String(err));
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function generateViaSecondary(system, user, signal) {
+  return await generateViaChannelId("tagGen", system, user);
 }
 const SHARED_EXCLUDES_KEY = "baibai_exclude_settings";
 const DEFAULT_STRIP_TAGS = ["\\[mvu[\\s\\S]*?\\]"];
@@ -942,6 +1209,7 @@ function renderPanel() {
   }
   panelElement.appendChild(content);
   panelElement.appendChild(renderModeSelector());
+  panelElement.appendChild(renderApiChannelSelector());
   panelElement.appendChild(renderPreview());
   panelElement.appendChild(renderActions());
 }
@@ -1139,6 +1407,69 @@ function renderModeSelector() {
     modeList.appendChild(item);
   }
   container.appendChild(modeList);
+  return container;
+}
+function renderApiChannelSelector() {
+  const container = document.createElement("div");
+  container.className = "sti-api-channel-selector";
+  const label = document.createElement("div");
+  label.className = "sti-selector-label";
+  label.textContent = "LLM API 渠道（各模式分开指派；渠道自动同步自柏宝绘）：";
+  container.appendChild(label);
+  const channels = listSharedChannelInfos();
+  const tagGenId = readTagGenChannelId();
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const modeChannels = settings2.modeChannels ?? {};
+  if (channels.length === 0) {
+    const hint = document.createElement("div");
+    hint.className = "sti-api-hint";
+    hint.textContent = "柏宝绘还没有副 API 渠道。在柏宝绘设置里添加渠道后，这里会自动出现，不用重启。";
+    container.appendChild(hint);
+  }
+  const list = document.createElement("div");
+  list.className = "sti-api-channel-list";
+  for (const mode of Object.keys(MODE_LABELS$1)) {
+    const row = document.createElement("label");
+    row.className = "sti-api-channel-row";
+    const name = document.createElement("span");
+    name.className = "sti-api-mode-name";
+    name.textContent = MODE_LABELS$1[mode];
+    row.appendChild(name);
+    const select = document.createElement("select");
+    select.className = "sti-api-channel-select";
+    const tagGenOpt = document.createElement("option");
+    tagGenOpt.value = "tagGen";
+    const tagGenChannel = channels.find((c) => c.id === tagGenId);
+    tagGenOpt.textContent = tagGenId ? `跟随柏宝绘 tagGen（${(tagGenChannel == null ? void 0 : tagGenChannel.name) ?? tagGenId}）` : "跟随柏宝绘 tagGen（未指派 → 回退主 API）";
+    select.appendChild(tagGenOpt);
+    const mainOpt = document.createElement("option");
+    mainOpt.value = "main";
+    mainOpt.textContent = "酒馆主 API";
+    select.appendChild(mainOpt);
+    for (const ch of channels) {
+      const opt = document.createElement("option");
+      opt.value = ch.id;
+      opt.textContent = `${ch.name}${ch.model ? ` · ${ch.model}` : ""}`;
+      select.appendChild(opt);
+    }
+    const current = modeChannels[mode] ?? "tagGen";
+    if (current !== "tagGen" && current !== "main" && !channels.some((c) => c.id === current)) {
+      const stale = document.createElement("option");
+      stale.value = current;
+      stale.textContent = `已失效渠道（${current.slice(0, 10)}…）`;
+      select.appendChild(stale);
+    }
+    select.value = current;
+    select.addEventListener("change", () => {
+      const next = getSettings(DEFAULT_SETTINGS);
+      next.modeChannels = { ...next.modeChannels ?? {}, [mode]: select.value };
+      saveSettings(next);
+      window.dispatchEvent(new CustomEvent("sti-settings-changed"));
+    });
+    row.appendChild(select);
+    list.appendChild(row);
+  }
+  container.appendChild(list);
   return container;
 }
 function renderPreview() {
@@ -1610,86 +1941,6 @@ function buildTheaterCard(floor, bucket, story) {
   card.appendChild(body);
   return card;
 }
-function defaultMountMode(mode) {
-  switch (mode) {
-    case "illustration":
-    case "comic":
-      return "inline";
-    case "chibi-status":
-    case "chibi-bonus":
-    case "bw-manga":
-      return "trailing";
-    default:
-      return "trailing";
-  }
-}
-function defaultModeSettings(mode) {
-  const base = {
-    enabled: false,
-    autoTrigger: false,
-    profileId: "",
-    shots: 1
-  };
-  switch (mode) {
-    case "illustration":
-      return { ...base, enabled: true, illustrationMultiImage: false };
-    case "comic":
-      return {
-        ...base,
-        comicLayout: "regular",
-        comicPageType: "auto",
-        comicMaxPages: 1,
-        comicDialoguePolicy: "auto",
-        comicBubbleStyle: "classic",
-        comicBubbleFont: "sans",
-        comicShowComposite: true
-      };
-    case "chibi-status":
-      return { ...base, chibiStyle: "card" };
-    case "chibi-bonus":
-      return { ...base, chibiBonusChance: 25 };
-    case "bw-manga":
-      return { ...base, bwMangaSafeMode: true, bwMangaArtistId: "" };
-    default:
-      return base;
-  }
-}
-const DEFAULT_SETTINGS = {
-  enabled: false,
-  contextRange: 1,
-  includeChinese: true,
-  includeNl: false,
-  syncBaiBaiExcludes: true,
-  preferContentTag: true,
-  llmSource: "auto",
-  modes: {
-    "illustration": defaultModeSettings("illustration"),
-    "comic": defaultModeSettings("comic"),
-    "chibi-status": defaultModeSettings("chibi-status"),
-    "chibi-bonus": defaultModeSettings("chibi-bonus"),
-    "bw-manga": defaultModeSettings("bw-manga")
-  },
-  profiles: [],
-  // 遗留字段
-  chibiMode: false,
-  chibiStatusBar: false,
-  chibiStatusShots: 1,
-  chibiStatusStyle: "card",
-  chibiBonusEnabled: false,
-  chibiBonusChance: 25,
-  chibiBonusShots: 1,
-  mangaEnabled: false,
-  mangaShots: 1,
-  mangaSafe: true,
-  mangaArtistId: "",
-  panelMode: false,
-  panelLayout: "regular",
-  panelPageType: "auto",
-  dialogueEnabled: false,
-  dialoguePolicy: "auto",
-  bubbleStyle: "classic",
-  bubbleFont: "sans"
-};
 class TaskQueue {
   constructor(runner, options = {}) {
     this.pending = [];
@@ -1826,91 +2077,6 @@ const baiBaiAdapter = {
     };
   }
 };
-const CHANNELS_KEY = "baibai_api_channels";
-const IMAGE_SETTINGS_KEY = "baibai_image";
-function readChannels() {
-  const ctx = getContext();
-  const ext = ctx.extensionSettings ?? {};
-  const raw = ext[CHANNELS_KEY];
-  if (!raw || typeof raw !== "object") return [];
-  const store = raw;
-  const arr = Array.isArray(store.channels) ? store.channels : Array.isArray(raw) ? raw : [];
-  return arr.filter(
-    (c) => !!c && typeof c === "object" && typeof c.url === "string" && typeof c.model === "string"
-  );
-}
-function readTagGenChannelId() {
-  const ctx = getContext();
-  const ext = ctx.extensionSettings ?? {};
-  const raw = ext[IMAGE_SETTINGS_KEY];
-  if (!raw || typeof raw !== "object") return "";
-  const settings2 = raw;
-  const assignments = settings2.assignments;
-  const id = assignments == null ? void 0 : assignments.tagGen;
-  return typeof id === "string" ? id.trim() : "";
-}
-function getActiveSecondaryChannel() {
-  const id = readTagGenChannelId();
-  if (!id) return null;
-  const channel = readChannels().find((c) => c.id === id);
-  if (!channel) return null;
-  return {
-    id: channel.id,
-    name: channel.name || channel.id,
-    model: channel.model,
-    url: channel.url
-  };
-}
-async function generateViaSecondary(system, user, signal) {
-  var _a, _b, _c;
-  const info = getActiveSecondaryChannel();
-  if (!info) return null;
-  const channel = readChannels().find((c) => c.id === info.id);
-  if (!channel) return null;
-  const url = channel.url.replace(/\/+$/, "");
-  const endpoint = /\/chat\/completions$/i.test(url) ? url : `${url}/chat/completions`;
-  const body = {
-    model: channel.model,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user }
-    ]
-  };
-  if (typeof channel.temperature === "number") body.temperature = channel.temperature;
-  if (typeof channel.maxTokens === "number" && channel.maxTokens > 0) body.max_tokens = channel.maxTokens;
-  for (const key of channel.excludeParams ?? []) delete body[key];
-  const headers = { "Content-Type": "application/json" };
-  if (channel.key) headers.Authorization = `Bearer ${channel.key}`;
-  const timeoutMs = Math.max(5, channel.timeoutSec ?? 180) * 1e3;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    if (!resp.ok) {
-      console.warn(`[ST-Story-Illustrator] 副 API 请求失败 (${resp.status})，回退主 API。`);
-      return null;
-    }
-    const data = await resp.json();
-    if (data.error) {
-      console.warn("[ST-Story-Illustrator] 副 API 返回错误，回退主 API：", data.error.message);
-      return null;
-    }
-    const content = (_c = (_b = (_a = data.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
-    return typeof content === "string" && content.trim() ? content : null;
-  } catch (err) {
-    {
-      console.warn("[ST-Story-Illustrator] 副 API 不可用，回退主 API：", err instanceof Error ? err.message : String(err));
-    }
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 const PANEL_BUBBLE_AREAS = [
   "tl",
   "tc",
@@ -2425,16 +2591,14 @@ const defaultLlmCaller = async (system, user) => {
   if (viaSecondary !== null) return viaSecondary;
   return await mainApiLlmCaller(system, user);
 };
-function makeLlmCaller(source) {
-  if (source === "main") return mainApiLlmCaller;
-  if (source === "secondary") {
-    return async (system, user) => {
-      const viaSecondary = await generateViaSecondary(system, user);
-      if (viaSecondary !== null) return viaSecondary;
-      throw new Error("未配置柏宝绘副 API 渠道（或请求失败）。请在柏宝绘设置里指派 tagGen 渠道，或切换到主 API。");
-    };
-  }
-  return defaultLlmCaller;
+function makeModeLlmCaller(settings2, mode) {
+  const channelId = resolveChannelId(mode, settings2.modeChannels, settings2.llmSource);
+  if (channelId === "main") return mainApiLlmCaller;
+  return async (system, user) => {
+    const viaChannel = await generateViaChannelId(channelId, system, user);
+    if (viaChannel !== null) return viaChannel;
+    return await mainApiLlmCaller(system, user);
+  };
 }
 async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
@@ -3248,7 +3412,7 @@ async function runIllustration(task, ctx, deps) {
       includeNl: deps.fullSettings.includeNl,
       includeNegative: true
     },
-    caller: makeLlmCaller(deps.fullSettings.llmSource ?? "auto")
+    caller: makeModeLlmCaller(deps.fullSettings, "illustration")
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? "Tag 计划生成失败。");
   ctx.report({ stage: "review" });
@@ -3335,7 +3499,7 @@ async function runComic(task, ctx, deps) {
       includeChinese: deps.fullSettings.includeChinese,
       maxPages: modeSettings.comicMaxPages ?? 1
     },
-    caller: makeLlmCaller(deps.fullSettings.llmSource ?? "auto")
+    caller: makeModeLlmCaller(deps.fullSettings, "comic")
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
   const profile = pickProfile(deps.settings, "comic");
@@ -3406,8 +3570,9 @@ async function runTheaterMode(task, ctx, deps) {
     backend: "nai",
     profile: pickProfile(deps.settings, mode),
     llm: async (prompt) => {
+      const caller = makeModeLlmCaller(deps.fullSettings, mode);
       try {
-        return await makeLlmCaller(deps.fullSettings.llmSource ?? "auto")("", prompt);
+        return await caller("", prompt);
       } catch {
         return await generateQuietPrompt(prompt);
       }
@@ -3536,6 +3701,14 @@ function registerEvents() {
     initQueue();
   });
   cleanupFunctions.push(offSettings);
+  const onModeChannelsChanged = () => {
+    settings = getSettings(DEFAULT_SETTINGS);
+    applySettings();
+    queue = null;
+    initQueue();
+  };
+  window.addEventListener("sti-settings-changed", onModeChannelsChanged);
+  cleanupFunctions.push(() => window.removeEventListener("sti-settings-changed", onModeChannelsChanged));
   const offReady = on(events.APP_READY, () => {
     const result = checkAvailability();
     if (result.status === "available") {

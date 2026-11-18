@@ -23,7 +23,7 @@ import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
 import { generateQuietPrompt } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
-import { generateIllustrationPlan, generateComicPlan, makeLlmCaller } from '../manga/planGenerator';
+import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { createArtifactId, appendArtifact } from '../storage/repository';
@@ -89,7 +89,7 @@ async function runIllustration(
       includeNl: deps.fullSettings.includeNl,
       includeNegative: true,
     },
-    caller: makeLlmCaller(deps.fullSettings.llmSource ?? 'auto'),
+    caller: makeModeLlmCaller(deps.fullSettings, 'illustration'),
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? 'Tag 计划生成失败。');
 
@@ -191,7 +191,7 @@ async function runComic(
       includeChinese: deps.fullSettings.includeChinese,
       maxPages: modeSettings.comicMaxPages ?? 1,
     },
-    caller: makeLlmCaller(deps.fullSettings.llmSource ?? 'auto'),
+    caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
 
@@ -277,9 +277,10 @@ async function runTheaterMode(
     backend: 'nai',
     profile: pickProfile(deps.settings, mode),
     llm: async (prompt) => {
-      // 小剧场文本同样优先走副 API，失败回退主 API（makeLlmCaller('auto') 已实现回退）
+      // 小剧场文本按该模式指派的渠道生成，失败回退主 API
+      const caller = makeModeLlmCaller(deps.fullSettings, mode);
       try {
-        return await makeLlmCaller(deps.fullSettings.llmSource ?? 'auto')('', prompt);
+        return await caller('', prompt);
       } catch {
         return await generateQuietPrompt(prompt);
       }

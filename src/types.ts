@@ -583,8 +583,14 @@ export interface StoryIllustratorSettings {
   syncBaiBaiExcludes: boolean;
   /** 选段清洗：正文含 <content> 时只提取其中内容（默认 true，兼容思维链插件） */
   preferContentTag: boolean;
-  /** Tag 生成用的 LLM 来源：auto=优先柏宝绘副API，main=主API，secondary=强制副API */
+  /** Tag 生成用的 LLM 来源：auto=优先柏宝绘副API，main=主API，secondary=强制副API（全局兜底） */
   llmSource: 'auto' | 'main' | 'secondary';
+  /**
+   * 每个创作模式各自指定 LLM 渠道：
+   * 'main' = 酒馆主 API；'tagGen' = 跟随柏宝绘 tagGen 指派；其他 = 柏宝绘共享渠道 id。
+   * 未设置的模式回退到 llmSource。
+   */
+  modeChannels: Partial<Record<CreationMode, string>>;
   // 各模式独立设置
   modes: Record<CreationMode, ModeSettings>;
   // Profile 列表（只保存 ID 引用和本插件参数）
@@ -642,6 +648,8 @@ export const DEFAULT_SETTINGS: StoryIllustratorSettings = {
   syncBaiBaiExcludes: true,
   preferContentTag: true,
   llmSource: 'auto',
+  // 默认不指定，走 llmSource('auto' → 柏宝绘 tagGen 渠道)；用户在弹窗里可为每个模式分别指派
+  modeChannels: {},
   modes: {
     'illustration': defaultModeSettings('illustration'),
     'comic': defaultModeSettings('comic'),
