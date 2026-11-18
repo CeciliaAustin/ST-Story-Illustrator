@@ -550,7 +550,7 @@ const DEFAULT_SETTINGS = {
   bubbleFont: "sans"
 };
 const CHANNELS_KEY = "baibai_api_channels";
-const IMAGE_SETTINGS_KEY = "baibai_image";
+const IMAGE_SETTINGS_KEY$1 = "baibai_image";
 const CHAT_COMPLETIONS_URL = "/api/backends/chat-completions/generate";
 function normalizeChannel(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -602,7 +602,7 @@ function listSharedChannelInfos() {
 function readTagGenChannelId() {
   var _a;
   const ctx = getContext();
-  const raw = (_a = ctx.extensionSettings) == null ? void 0 : _a[IMAGE_SETTINGS_KEY];
+  const raw = (_a = ctx.extensionSettings) == null ? void 0 : _a[IMAGE_SETTINGS_KEY$1];
   if (!raw || typeof raw !== "object") return "";
   const settings2 = raw;
   const assignments = settings2.assignments;
@@ -1100,7 +1100,7 @@ function getAvailableFloors() {
   }
   return result;
 }
-const PANEL_ID = "sti-selection-panel";
+const PANEL_ID$1 = "sti-selection-panel";
 const PANEL_OVERLAY_ID = "sti-selection-panel-overlay";
 const METHOD_ORDER = ["local", "single", "range", "picked"];
 const MODE_LABELS$1 = {
@@ -1143,14 +1143,14 @@ function showSelectionPanel(initialFloorOrOptions, onConfirm) {
   selectedFloorSeed = seedFloor;
   localText = selectedTextSeed;
   onConfirmCallback = onConfirm ?? null;
-  ensurePanel();
+  ensurePanel$1();
   renderPanel();
 }
 function hideSelectionPanel() {
   if (overlayElement) overlayElement.style.display = "none";
   if (panelElement) panelElement.style.display = "none";
 }
-function ensurePanel() {
+function ensurePanel$1() {
   if (!overlayElement) {
     overlayElement = document.createElement("div");
     overlayElement.id = PANEL_OVERLAY_ID;
@@ -1162,7 +1162,7 @@ function ensurePanel() {
   }
   if (!panelElement) {
     panelElement = document.createElement("div");
-    panelElement.id = PANEL_ID;
+    panelElement.id = PANEL_ID$1;
     panelElement.className = "sti-selection-panel";
     document.body.appendChild(panelElement);
   }
@@ -1646,6 +1646,382 @@ function destroyLightbox() {
     overlay.remove();
     overlay = null;
   }
+}
+const IMAGE_SETTINGS_KEY = "baibai_image";
+function asRecord(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+}
+function str(v, fallback = "") {
+  return typeof v === "string" ? v : fallback;
+}
+function detectModelFamily(model) {
+  const m = model.toLowerCase();
+  if (/4[._-]?5|v4\.5|nai45|diffusion-4-5|diffusion-4\.5/.test(m)) return "4.5";
+  if (/nai.?5|diffusion-5|v5\b|-5-full|-5$/.test(m)) return "5";
+  if (/4\b|diffusion-4|v4/.test(m)) return "4";
+  return "unknown";
+}
+function parseEndpoints(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    const e = asRecord(item);
+    if (!e) continue;
+    const id = str(e.id).trim();
+    if (!id) continue;
+    const url = str(e.url).trim();
+    out.push({
+      id,
+      name: str(e.name).trim() || id,
+      url,
+      hasKey: str(e.key).trim().length > 0
+    });
+  }
+  return out;
+}
+function parsePlans(raw, endpoints) {
+  var _a;
+  if (!Array.isArray(raw)) return [];
+  const byId = new Map(endpoints.map((e) => [e.id, e]));
+  const out = [];
+  for (const item of raw) {
+    const p = asRecord(item);
+    if (!p) continue;
+    const id = str(p.id).trim();
+    if (!id) continue;
+    const endpointId = str(p.endpointId).trim();
+    out.push({
+      id,
+      name: str(p.name).trim() || "未命名方案",
+      model: str(p.model).trim(),
+      endpointId,
+      endpointName: ((_a = byId.get(endpointId)) == null ? void 0 : _a.name) ?? (endpointId || "(未指定)"),
+      // 柏宝绘里尺寸直接存成形如 "832×1216" 的字符串
+      portraitSize: str(p.portraitSize).trim(),
+      landscapeSize: str(p.landscapeSize).trim(),
+      modelFamily: detectModelFamily(str(p.model))
+    });
+  }
+  return out;
+}
+function parseOutConfig(raw) {
+  const settings2 = asRecord(raw) ?? {};
+  const nai = asRecord(settings2.nai) ?? {};
+  const endpoints = parseEndpoints(nai.endpoints);
+  const plans = parsePlans(nai.plans, endpoints);
+  const activePlanId = str(nai.activePlanId).trim();
+  const active = plans.find((p) => p.id === activePlanId) ?? plans[0];
+  const activeEndpoint = endpoints.find((e) => e.id === (active == null ? void 0 : active.endpointId));
+  return {
+    backend: str(settings2.defaultBackend, "nai"),
+    endpoints,
+    plans,
+    activePlanId: (active == null ? void 0 : active.id) ?? "",
+    activePlanName: (active == null ? void 0 : active.name) ?? "",
+    activeEndpointConfigured: !!activeEndpoint && activeEndpoint.url.length > 0
+  };
+}
+function readOutConfig() {
+  var _a;
+  const ctx = getContext();
+  return parseOutConfig((_a = ctx.extensionSettings) == null ? void 0 : _a[IMAGE_SETTINGS_KEY]);
+}
+function moneySavingHint(snap) {
+  const active = snap.plans.find((p) => p.id === snap.activePlanId);
+  if (!active) return "";
+  if (active.modelFamily === "5" && snap.plans.some((p) => p.modelFamily === "4.5" || p.modelFamily === "4")) {
+    return "当前用的是 NAI5（较贵）。柏宝绘里已有更便宜的方案，可在柏宝绘里切到 NAI4.5 省钱。";
+  }
+  return "";
+}
+function findPlanRadio(root, planName) {
+  const radios = Array.from(root.querySelectorAll('button.item-main[role="radio"]'));
+  for (const btn of radios) {
+    const nameEl = btn.querySelector(".item-name");
+    const label = ((nameEl == null ? void 0 : nameEl.textContent) ?? btn.textContent ?? "").trim();
+    if (label === planName || planName && label.includes(planName)) return btn;
+  }
+  return null;
+}
+function getBaiBaiShadowRoot() {
+  const host = document.getElementById("bbi-app-host");
+  return (host == null ? void 0 : host.shadowRoot) ?? null;
+}
+function openBaiBaiBackendPanel() {
+  const menuItem = document.getElementById("bbi-menu-item");
+  if (menuItem) {
+    menuItem.click();
+    return;
+  }
+  const orb = document.querySelector('.bbi-orb, [class*="bbi-floating-orb"]');
+  orb == null ? void 0 : orb.click();
+}
+async function switchBaiBaiPlan(planId, timeoutMs = 6e3) {
+  const snap = readOutConfig();
+  const target = snap.plans.find((p) => p.id === planId);
+  if (!target) {
+    return { ok: false, reason: "error", message: "方案不存在（可能已被删除）。" };
+  }
+  if (snap.activePlanId === planId) {
+    return { ok: false, reason: "already", message: `「${target.name}」已经是当前方案。` };
+  }
+  try {
+    openBaiBaiBackendPanel();
+  } catch {
+  }
+  const deadline = Date.now() + timeoutMs;
+  let clicked = false;
+  while (Date.now() < deadline) {
+    const shadow = getBaiBaiShadowRoot();
+    if (shadow) {
+      const radio = findPlanRadio(shadow, target.name);
+      if (radio && !radio.hasAttribute("disabled")) {
+        radio.click();
+        clicked = true;
+        break;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (!clicked) {
+    return {
+      ok: false,
+      reason: "no-ui",
+      message: "没能定位到柏宝绘的方案按钮。请打开柏宝绘设置（魔杖菜单 → 柏宝绘 → 后端），手动选「" + target.name + "」，本面板会自动同步。"
+    };
+  }
+  const confirmDeadline = Date.now() + 2e3;
+  while (Date.now() < confirmDeadline) {
+    if (readOutConfig().activePlanId === planId) {
+      return { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return {
+    ok: false,
+    reason: "no-ui",
+    message: "已点击方案按钮，但未能确认切换结果。请到柏宝绘里确认当前方案是否为「" + target.name + "」。"
+  };
+}
+const PANEL_ID = "sti-config-panel";
+const OVERLAY_ID = "sti-config-overlay";
+const MENU_ID = "sti-config-menu-item";
+let panelEl = null;
+let overlayEl = null;
+function ensurePanel() {
+  if (panelEl && overlayEl && document.body.contains(panelEl)) {
+    return { panel: panelEl, overlay: overlayEl };
+  }
+  const overlay2 = document.createElement("div");
+  overlay2.id = OVERLAY_ID;
+  overlay2.className = "sti-config-overlay";
+  overlay2.addEventListener("click", () => hideConfigPanel());
+  document.body.appendChild(overlay2);
+  const panel = document.createElement("div");
+  panel.id = PANEL_ID;
+  panel.className = "sti-config-panel";
+  document.body.appendChild(panel);
+  panelEl = panel;
+  overlayEl = overlay2;
+  return { panel, overlay: overlay2 };
+}
+function showConfigPanel() {
+  const { panel, overlay: overlay2 } = ensurePanel();
+  render(panel);
+  panel.style.display = "flex";
+  overlay2.style.display = "block";
+}
+function hideConfigPanel() {
+  if (panelEl) panelEl.style.display = "none";
+  if (overlayEl) overlayEl.style.display = "none";
+}
+function section(title, subtitle) {
+  const wrap = document.createElement("div");
+  wrap.className = "sti-config-section";
+  const h = document.createElement("div");
+  h.className = "sti-config-h";
+  h.textContent = title;
+  wrap.appendChild(h);
+  if (subtitle) {
+    const s = document.createElement("div");
+    s.className = "sti-config-sub";
+    s.textContent = subtitle;
+    wrap.appendChild(s);
+  }
+  return wrap;
+}
+function render(panel) {
+  panel.innerHTML = "";
+  const snap = readOutConfig();
+  const head = document.createElement("div");
+  head.className = "sti-config-head";
+  const title = document.createElement("h2");
+  title.textContent = "出图配置同步";
+  head.appendChild(title);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "sti-config-close";
+  close.textContent = "×";
+  close.addEventListener("click", () => hideConfigPanel());
+  head.appendChild(close);
+  panel.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "sti-config-body";
+  const cur = section("当前出图方案", "以下是柏宝绘此刻实际用于出图的配置，本面板实时同步。");
+  const curBox = document.createElement("div");
+  curBox.className = "sti-config-current";
+  curBox.innerHTML = `<div class="sti-config-cur-row"><span>方案</span><b>${esc(snap.activePlanName || "（未配置）")}</b></div><div class="sti-config-cur-row"><span>模型</span><b>${esc(activeModel(snap))}</b></div><div class="sti-config-cur-row"><span>接入点</span><b>${esc(activeEndpointName(snap))}</b></div>`;
+  cur.appendChild(curBox);
+  const hint = moneySavingHint(snap);
+  if (hint) {
+    const hintEl = document.createElement("div");
+    hintEl.className = "sti-config-money-hint";
+    hintEl.textContent = hint;
+    cur.appendChild(hintEl);
+  }
+  body.appendChild(cur);
+  const plans = section("切换方案", "点「切为当前」会在柏宝绘里切到该方案（走它自己的逻辑，落盘也同步）。若按钮无响应，请先打开一次柏宝绘设置面板。");
+  const planList = document.createElement("div");
+  planList.className = "sti-config-list";
+  if (snap.plans.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sti-config-empty";
+    empty.textContent = "柏宝绘里还没有出图方案，请先在柏宝绘设置 → 后端 → NovelAI 里建一套。";
+    planList.appendChild(empty);
+  }
+  for (const p of snap.plans) {
+    const row = document.createElement("div");
+    row.className = `sti-config-item ${p.id === snap.activePlanId ? "active" : ""}`;
+    const info = document.createElement("div");
+    info.className = "sti-config-item-info";
+    const name = document.createElement("div");
+    name.className = "sti-config-item-name";
+    name.textContent = p.name + (p.id === snap.activePlanId ? " · 当前" : "");
+    const meta = document.createElement("div");
+    meta.className = "sti-config-item-meta";
+    meta.textContent = `${p.model || "(未填模型)"} · ${p.endpointName}${p.portraitSize ? ` · ${p.portraitSize}` : ""}`;
+    info.appendChild(name);
+    info.appendChild(meta);
+    row.appendChild(info);
+    if (p.id !== snap.activePlanId) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sti-config-switch-btn";
+      btn.textContent = "切为当前";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        btn.textContent = "切换中…";
+        const result = await switchBaiBaiPlan(p.id);
+        if (result.ok) {
+          showConfigPanel();
+        } else {
+          btn.disabled = false;
+          btn.textContent = "重试";
+          alert(result.message);
+        }
+      });
+      row.appendChild(btn);
+    }
+    planList.appendChild(row);
+  }
+  plans.appendChild(planList);
+  body.appendChild(plans);
+  const eps = section("接入点（只读）", "来自柏宝绘。增删/改地址请在柏宝绘设置里操作；密钥不会显示。");
+  const epList = document.createElement("div");
+  epList.className = "sti-config-eplist";
+  for (const e of snap.endpoints) {
+    const row = document.createElement("div");
+    row.className = "sti-config-ep";
+    row.textContent = `${e.name} · ${maskUrl(e.url)}${e.hasKey ? " · 已设密钥" : " · 未设密钥"}`;
+    epList.appendChild(row);
+  }
+  if (snap.endpoints.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sti-config-empty";
+    empty.textContent = "柏宝绘里没有接入点。";
+    epList.appendChild(empty);
+  }
+  eps.appendChild(epList);
+  body.appendChild(eps);
+  const tag = section("Tag 生成副 API", "创作模式里的「跟随柏宝绘 tagGen」读的就是这里。你在柏宝绘改指派，弹窗自动跟随。");
+  const channels = listSharedChannelInfos();
+  const tagId = readTagGenChannelId();
+  const tagCh = channels.find((c) => c.id === tagId);
+  const tagBox = document.createElement("div");
+  tagBox.className = "sti-config-current";
+  tagBox.innerHTML = `<div class="sti-config-cur-row"><span>当前指派</span><b>${esc(tagCh ? `${tagCh.name} / ${tagCh.model}` : tagId || "跟随主 API（未指派）")}</b></div><div class="sti-config-cur-row"><span>共享渠道数</span><b>${channels.length} 条</b></div>`;
+  tag.appendChild(tagBox);
+  body.appendChild(tag);
+  panel.appendChild(body);
+  const foot = document.createElement("div");
+  foot.className = "sti-config-foot";
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.textContent = "刷新同步";
+  refresh.addEventListener("click", () => showConfigPanel());
+  foot.appendChild(refresh);
+  const note = document.createElement("span");
+  note.textContent = "本面板只读柏宝绘配置，出图仍由柏宝绘执行。";
+  foot.appendChild(note);
+  panel.appendChild(foot);
+}
+function activeModel(snap) {
+  var _a;
+  return ((_a = snap.plans.find((p) => p.id === snap.activePlanId)) == null ? void 0 : _a.model) || "(未配置)";
+}
+function activeEndpointName(snap) {
+  const p = snap.plans.find((x) => x.id === snap.activePlanId);
+  return (p == null ? void 0 : p.endpointName) || "(未配置)";
+}
+function maskUrl(url) {
+  if (!url) return "(未填地址)";
+  return url.length > 42 ? url.slice(0, 42) + "…" : url;
+}
+function esc(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
+}
+function injectConfigMenu() {
+  let done = false;
+  const tryInject = () => {
+    const menu = document.getElementById("extensionsMenu");
+    if (!menu || document.getElementById(MENU_ID)) return;
+    const item = document.createElement("div");
+    item.className = "extension_container interactable";
+    item.tabIndex = 0;
+    const link = document.createElement("a");
+    link.id = MENU_ID;
+    link.className = "list-group-item";
+    link.href = "#";
+    link.title = "ST 故事插画 · 出图配置";
+    link.innerHTML = '<i class="fa-solid fa-images"></i> <span>配图设置</span>';
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      showConfigPanel();
+      const m = document.getElementById("extensionsMenu");
+      if (m) m.style.display = "none";
+    });
+    item.appendChild(link);
+    menu.appendChild(item);
+    done = true;
+  };
+  tryInject();
+  const timer = window.setInterval(() => {
+    tryInject();
+    if (done || document.getElementById(MENU_ID)) window.clearInterval(timer);
+  }, 500);
+  return () => window.clearInterval(timer);
+}
+function destroyConfigPanel() {
+  var _a;
+  if (panelEl) {
+    panelEl.remove();
+    panelEl = null;
+  }
+  if (overlayEl) {
+    overlayEl.remove();
+    overlayEl = null;
+  }
+  (_a = document.getElementById(MENU_ID)) == null ? void 0 : _a.remove();
 }
 const ARTIFACTS_KEY = "sti_artifacts";
 const CHAT_META_KEY = "STStoryIllustrator";
@@ -3646,6 +4022,7 @@ async function onActivate() {
     applySettings();
     registerEvents();
     setupSelectionListener();
+    cleanupFunctions.push(injectConfigMenu());
     initQueue();
     remountAllSafe();
     void waitForApi(10).then((result) => {
@@ -3834,6 +4211,7 @@ function onDisable() {
   destroyToolbar();
   destroySelectionPanel();
   destroyLightbox();
+  destroyConfigPanel();
   for (const cleanup of cleanupFunctions) {
     try {
       cleanup();

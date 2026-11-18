@@ -18,6 +18,7 @@ import { showToolbar, hideToolbar, setOnGenerate, destroyToolbar } from './ui/se
 import { showSelectionPanel, hideSelectionPanel, destroySelectionPanel } from './ui/selectionPanel';
 import { setSegmentCleanOptions } from './selection/storySegment';
 import { destroyLightbox } from './ui/lightbox';
+import { injectConfigMenu, destroyConfigPanel } from './ui/configPanel';
 import { remountAll, mountFloor } from './ui/floorCards';
 import { mountTheater } from './theater/mount';
 import {
@@ -56,6 +57,7 @@ export async function onActivate(): Promise<void> {
     applySettings();
     registerEvents();
     setupSelectionListener();
+    cleanupFunctions.push(injectConfigMenu());
     initQueue();
     remountAllSafe();
 
@@ -275,6 +277,7 @@ export function onDisable(): void {
   destroyToolbar();
   destroySelectionPanel();
   destroyLightbox();
+  destroyConfigPanel();
   for (const cleanup of cleanupFunctions) {
     try { cleanup(); } catch { /* ignore */ }
   }
