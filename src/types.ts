@@ -579,6 +579,12 @@ export interface StoryIllustratorSettings {
   contextRange: number;
   includeChinese: boolean;
   includeNl: boolean;
+  /** 选段清洗：与柏宝绘共享的排除标签同步（默认 true） */
+  syncBaiBaiExcludes: boolean;
+  /** 选段清洗：正文含 <content> 时只提取其中内容（默认 true，兼容思维链插件） */
+  preferContentTag: boolean;
+  /** Tag 生成用的 LLM 来源：auto=优先柏宝绘副API，main=主API，secondary=强制副API */
+  llmSource: 'auto' | 'main' | 'secondary';
   // 各模式独立设置
   modes: Record<CreationMode, ModeSettings>;
   // Profile 列表（只保存 ID 引用和本插件参数）
@@ -633,6 +639,9 @@ export const DEFAULT_SETTINGS: StoryIllustratorSettings = {
   contextRange: 1,
   includeChinese: true,
   includeNl: false,
+  syncBaiBaiExcludes: true,
+  preferContentTag: true,
+  llmSource: 'auto',
   modes: {
     'illustration': defaultModeSettings('illustration'),
     'comic': defaultModeSettings('comic'),

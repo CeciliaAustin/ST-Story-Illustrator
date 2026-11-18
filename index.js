@@ -457,9 +457,51 @@ function destroyToolbar() {
   }
   onGenerateCallback = null;
 }
-const BBI_IMAGE_TAG_RE = /<bbi_image[\s\S]*?<\/bbi_image>/gi;
-const DIALOGUE_SUBTAG_RE = /<dialogue>[\s\S]*?<\/dialogue>/gi;
-const HTML_TAG_RE = /<[^>]+>/g;
+const SHARED_EXCLUDES_KEY = "baibai_exclude_settings";
+const DEFAULT_STRIP_TAGS = ["\\[mvu[\\s\\S]*?\\]"];
+function getBaiBaiCustomStripTags() {
+  var _a;
+  const ctx = getRuntimeContext();
+  if (!ctx) return [];
+  const ext = ctx.extensionSettings;
+  if (!ext) return [];
+  const raw = ext[SHARED_EXCLUDES_KEY];
+  if (!raw || typeof raw !== "object") return [];
+  const store = raw;
+  const direct = store.customStripTags;
+  const mirrored = (_a = store.excludes) == null ? void 0 : _a.customStripTags;
+  const source = Array.isArray(direct) ? direct : Array.isArray(mirrored) ? mirrored : null;
+  if (!source) return [];
+  const tags = source.filter((t) => typeof t === "string" && t.length > 0);
+  return tags.length ? tags : [];
+}
+function getSyncedStripTags() {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const tag of [...DEFAULT_STRIP_TAGS, ...getBaiBaiCustomStripTags()]) {
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      out.push(tag);
+    }
+  }
+  return out;
+}
+function getRuntimeContext() {
+  const g = globalThis;
+  const fn = g.getContext;
+  if (typeof fn !== "function") return null;
+  try {
+    const ctx = fn();
+    return ctx && typeof ctx === "object" ? ctx : null;
+  } catch {
+    return null;
+  }
+}
+const RE_THINK_BLOCK = /<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi;
+const RE_HTML_COMMENT = /<!--[\s\S]+?-->/g;
+const RE_HORAE = /<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi;
+const BBI_IMAGE_TAG_RE = /<bbi_image\b[^>]*>[\s\S]*?<\/bbi_image>/gi;
+const RE_CONTENT_BLOCK = /<content\b[^>]*>([\s\S]*?)<\/content>/gi;
 const HTML_ENTITIES = {
   "&amp;": "&",
   "&lt;": "<",
@@ -469,15 +511,73 @@ const HTML_ENTITIES = {
   "&nbsp;": " ",
   "&#x27;": "'"
 };
-function cleanMessageText(mes) {
+function blockStripRegexes(tag) {
+  return [
+    new RegExp(`<${tag}(?=[\\s/>])[^>]*>[\\s\\S]*?</${tag}>`, "gi"),
+    new RegExp(`<\\/?${tag}(?=[\\s/>])[^>]*\\/?>`, "gi")
+  ];
+}
+function stripTagsByNames(s, tags) {
+  let out = s;
+  for (const tag of tags) {
+    if (!tag) continue;
+    for (const re of blockStripRegexes(tag)) out = out.replace(re, "");
+  }
+  return out;
+}
+function stripManagedBlock(s, tag) {
+  const openRe = new RegExp(`^[ \\t]*<${tag}\\b[^>]*>[ \\t]*$`, "m");
+  const closeRe = new RegExp(`^[ \\t]*</${tag}>[ \\t]*$`, "m");
+  let out = s;
+  let open;
+  let guard = 0;
+  while ((open = out.match(openRe)) && guard++ < 100) {
+    const start = open.index ?? 0;
+    const rest = out.slice(start + open[0].length);
+    const close = rest.match(closeRe);
+    if (!close) {
+      out = out.slice(0, start) + out.slice(start + open[0].length);
+      continue;
+    }
+    const end = start + open[0].length + (close.index ?? 0) + close[0].length;
+    out = out.slice(0, start) + out.slice(end);
+  }
+  return out;
+}
+function cleanMessageText(mes, options = {}) {
   if (!mes || typeof mes !== "string") return "";
+  const { syncBaiBai = true, preferContent = false, extraStripTags = [] } = options;
   let text = mes;
-  text = text.replace(BBI_IMAGE_TAG_RE, " ");
-  text = text.replace(DIALOGUE_SUBTAG_RE, " ");
+  if (preferContent) {
+    const blocks = [];
+    text = text.replace(RE_CONTENT_BLOCK, (_m, inner) => {
+      blocks.push(inner);
+      return "\n";
+    });
+    if (blocks.length > 0) {
+      text = blocks.join("\n\n");
+    }
+  }
+  text = text.replace(BBI_IMAGE_TAG_RE, "");
+  text = text.replace(RE_THINK_BLOCK, "");
+  text = text.replace(RE_HTML_COMMENT, "");
+  text = text.replace(RE_HORAE, "");
+  const tags = [
+    ...syncBaiBai ? getSyncedStripTags() : [],
+    "bbs_items",
+    "bbs_vars",
+    "bbs_start",
+    "bbs_end",
+    ...extraStripTags
+  ];
+  text = stripTagsByNames(text, tags);
+  text = stripManagedBlock(text, "bbs_items");
+  text = stripManagedBlock(text, "bbs_vars");
   text = text.replace(/<br\s*\/?>/gi, "\n");
   text = text.replace(/<\/p\s*>/gi, "\n");
-  text = text.replace(HTML_TAG_RE, " ");
+  text = text.replace(/<[^>]+>/g, "");
   text = decodeHtmlEntities(text);
+  text = text.replace(/[ \t]+\n/g, "\n");
   text = text.replace(/[ \t]+/g, " ");
   text = text.replace(/\n{3,}/g, "\n\n");
   text = text.trim();
@@ -524,6 +624,13 @@ function isSystemMessage(msg) {
 }
 const MAX_MESSAGES_IN_SEGMENT = 50;
 const MAX_MESSAGE_TEXT = 4e3;
+let cleanOptions = { syncBaiBai: true, preferContent: true };
+function setSegmentCleanOptions(options) {
+  cleanOptions = { ...cleanOptions, ...options };
+}
+function cleanMes(mes) {
+  return cleanMessageText(mes, cleanOptions);
+}
 function extractMessage(floor, chatId) {
   const chat = getChat();
   if (floor < 0 || floor >= chat.length) return null;
@@ -532,7 +639,7 @@ function extractMessage(floor, chatId) {
   if (!stillCurrent(chatId, floor, getSwipeId(floor), getSendDate(floor) || void 0)) {
     return null;
   }
-  const text = cleanMessageText(msg.mes).slice(0, MAX_MESSAGE_TEXT);
+  const text = cleanMes(msg.mes).slice(0, MAX_MESSAGE_TEXT);
   if (!text) return null;
   return {
     floor,
@@ -695,14 +802,14 @@ function defaultFloor() {
     if (!msg) continue;
     if (isSystemMessage(msg)) continue;
     if (msg.is_user === true) continue;
-    const text = cleanMessageText(msg.mes);
+    const text = cleanMes(msg.mes);
     if (text.length > 0) return i;
   }
   for (let i = chat.length - 1; i >= 0; i--) {
     const msg = chat[i];
     if (!msg) continue;
     if (isSystemMessage(msg)) continue;
-    const text = cleanMessageText(msg.mes);
+    const text = cleanMes(msg.mes);
     if (text.length > 0) return i;
   }
   return -1;
@@ -715,7 +822,7 @@ function getAvailableFloors() {
     const msg = chat[i];
     if (!msg) continue;
     if (isSystemMessage(msg)) continue;
-    const text = cleanMessageText(msg.mes);
+    const text = cleanMes(msg.mes);
     if (!text) continue;
     result.push({
       floor: i,
@@ -728,6 +835,7 @@ function getAvailableFloors() {
 }
 const PANEL_ID = "sti-selection-panel";
 const PANEL_OVERLAY_ID = "sti-selection-panel-overlay";
+const METHOD_ORDER = ["local", "single", "range", "picked"];
 const MODE_LABELS$1 = {
   "illustration": "正文插画",
   "comic": "正文漫画分镜",
@@ -745,34 +853,35 @@ const MODE_DESCRIPTIONS = {
 let panelElement = null;
 let overlayElement = null;
 let currentSegment = null;
-let currentMode = "illustration";
+let selectedModes = /* @__PURE__ */ new Set(["illustration"]);
 let onConfirmCallback = null;
-let currentMethod = "single";
+let currentMethod = "local";
 let selectedSingleFloor = -1;
 let rangeStart = -1;
 let rangeEnd = -1;
 let excludedFloors = /* @__PURE__ */ new Set();
 let pickedFloors = [];
-let manualText = "";
-function showSelectionPanel(initialFloor, onConfirm) {
-  selectedSingleFloor = initialFloor ?? defaultFloor();
-  rangeStart = selectedSingleFloor;
-  rangeEnd = selectedSingleFloor;
-  currentMethod = "single";
+let selectedTextSeed = "";
+let selectedFloorSeed = -1;
+function showSelectionPanel(initialFloorOrOptions, onConfirm) {
+  const opts = typeof initialFloorOrOptions === "number" ? { initialFloor: initialFloorOrOptions } : initialFloorOrOptions ?? {};
+  const seedFloor = opts.initialFloor ?? defaultFloor();
+  selectedSingleFloor = seedFloor;
+  rangeStart = seedFloor;
+  rangeEnd = seedFloor;
+  currentMethod = opts.startAtLocal !== false ? "local" : "single";
   excludedFloors = /* @__PURE__ */ new Set();
-  pickedFloors = selectedSingleFloor >= 0 ? [selectedSingleFloor] : [];
-  manualText = "";
+  pickedFloors = seedFloor >= 0 ? [seedFloor] : [];
+  selectedTextSeed = (opts.selectedText ?? "").trim();
+  selectedFloorSeed = seedFloor;
+  localText = selectedTextSeed;
   onConfirmCallback = onConfirm ?? null;
   ensurePanel();
   renderPanel();
 }
 function hideSelectionPanel() {
-  if (overlayElement) {
-    overlayElement.style.display = "none";
-  }
-  if (panelElement) {
-    panelElement.style.display = "none";
-  }
+  if (overlayElement) overlayElement.style.display = "none";
+  if (panelElement) panelElement.style.display = "none";
 }
 function ensurePanel() {
   if (!overlayElement) {
@@ -780,9 +889,7 @@ function ensurePanel() {
     overlayElement.id = PANEL_OVERLAY_ID;
     overlayElement.className = "sti-panel-overlay";
     overlayElement.addEventListener("click", (e) => {
-      if (e.target === overlayElement) {
-        hideSelectionPanel();
-      }
+      if (e.target === overlayElement) hideSelectionPanel();
     });
     document.body.appendChild(overlayElement);
   }
@@ -805,7 +912,7 @@ function renderPanel() {
   panelElement.appendChild(title);
   const methodTabs = document.createElement("div");
   methodTabs.className = "sti-method-tabs";
-  for (const method of ["single", "range", "picked", "manual"]) {
+  for (const method of METHOD_ORDER) {
     const tab = document.createElement("button");
     tab.className = `sti-method-tab ${currentMethod === method ? "active" : ""}`;
     tab.textContent = methodLabel(method);
@@ -819,6 +926,10 @@ function renderPanel() {
   const content = document.createElement("div");
   content.className = "sti-panel-content";
   switch (currentMethod) {
+    case "local":
+    case "manual":
+      content.appendChild(renderLocalEditor());
+      break;
     case "single":
       content.appendChild(renderSingleSelector(floors));
       break;
@@ -828,9 +939,6 @@ function renderPanel() {
     case "picked":
       content.appendChild(renderPickedSelector(floors));
       break;
-    case "manual":
-      content.appendChild(renderManualEditor());
-      break;
   }
   panelElement.appendChild(content);
   panelElement.appendChild(renderModeSelector());
@@ -839,6 +947,8 @@ function renderPanel() {
 }
 function methodLabel(method) {
   switch (method) {
+    case "local":
+      return "局部";
     case "single":
       return "单楼";
     case "range":
@@ -846,7 +956,7 @@ function methodLabel(method) {
     case "picked":
       return "勾选";
     case "manual":
-      return "手动";
+      return "局部";
   }
 }
 function renderSingleSelector(floors) {
@@ -861,10 +971,11 @@ function renderSingleSelector(floors) {
   for (const f of floors) {
     const opt = document.createElement("option");
     opt.value = String(f.floor);
-    opt.textContent = `[${f.floor}] ${f.speaker}: ${f.preview}...`;
+    opt.textContent = `[${f.floor}] ${f.speaker}: ${f.preview.slice(0, 40)}...`;
     if (f.floor === selectedSingleFloor) opt.selected = true;
     select.appendChild(opt);
   }
+  if (selectedSingleFloor >= 0) select.value = String(selectedSingleFloor);
   select.addEventListener("change", () => {
     selectedSingleFloor = parseInt(select.value, 10);
     rebuildSegment();
@@ -915,11 +1026,8 @@ function renderRangeSelector(floors) {
         cb.type = "checkbox";
         cb.checked = excludedFloors.has(f.floor);
         cb.addEventListener("change", () => {
-          if (cb.checked) {
-            excludedFloors.add(f.floor);
-          } else {
-            excludedFloors.delete(f.floor);
-          }
+          if (cb.checked) excludedFloors.add(f.floor);
+          else excludedFloors.delete(f.floor);
           rebuildSegment();
           renderPreviewOnly();
         });
@@ -949,9 +1057,7 @@ function renderPickedSelector(floors) {
     cb.checked = pickedFloors.includes(f.floor);
     cb.addEventListener("change", () => {
       if (cb.checked) {
-        if (!pickedFloors.includes(f.floor)) {
-          pickedFloors.push(f.floor);
-        }
+        if (!pickedFloors.includes(f.floor)) pickedFloors.push(f.floor);
       } else {
         pickedFloors = pickedFloors.filter((id) => id !== f.floor);
       }
@@ -965,52 +1071,60 @@ function renderPickedSelector(floors) {
   container.appendChild(list);
   return container;
 }
-function renderManualEditor() {
+function renderLocalEditor() {
   const container = document.createElement("div");
   container.className = "sti-selector-container";
   const label = document.createElement("div");
   label.className = "sti-selector-label";
-  label.textContent = "粘贴或编辑剧情文本：";
+  label.textContent = "划线文本（可编辑，直接作为剧情内容）：";
   container.appendChild(label);
   const textarea = document.createElement("textarea");
   textarea.className = "sti-manual-textarea";
   textarea.rows = 10;
-  textarea.placeholder = "在此输入或粘贴剧情文本...";
-  textarea.value = manualText;
+  textarea.placeholder = "在此编辑剧情文本...";
+  textarea.value = localText;
   textarea.addEventListener("input", () => {
-    manualText = textarea.value;
+    localText = textarea.value;
     rebuildSegment();
     renderPreviewOnly();
   });
   container.appendChild(textarea);
   const note = document.createElement("div");
   note.className = "sti-manual-note";
-  note.textContent = "手动文本不可伪造楼层归属，结果将放入插件作品历史。";
+  const floorHint = selectedFloorSeed >= 0 ? `结果将挂载在第 ${selectedFloorSeed} 楼下方。` : "结果将放入插件作品历史。";
+  note.textContent = `已锚定你划线的楼层。${floorHint}`;
   container.appendChild(note);
   return container;
 }
+let localText = "";
 function renderModeSelector() {
   const container = document.createElement("div");
   container.className = "sti-mode-selector";
   const label = document.createElement("div");
   label.className = "sti-selector-label";
-  label.textContent = "创作模式：";
+  label.textContent = "创作模式（可多选，每个模式各生成一份）：";
   container.appendChild(label);
   const modeList = document.createElement("div");
   modeList.className = "sti-mode-list";
   for (const mode of Object.keys(MODE_LABELS$1)) {
     const item = document.createElement("label");
-    item.className = `sti-mode-item ${currentMode === mode ? "active" : ""}`;
-    const radio = document.createElement("input");
-    radio.type = "radio";
-    radio.name = "sti-mode";
-    radio.value = mode;
-    radio.checked = currentMode === mode;
-    radio.addEventListener("change", () => {
-      currentMode = mode;
-      renderPanel();
+    item.className = `sti-mode-item ${selectedModes.has(mode) ? "active" : ""}`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.name = "sti-mode";
+    cb.value = mode;
+    cb.checked = selectedModes.has(mode);
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedModes.add(mode);
+      else selectedModes.delete(mode);
+      if (selectedModes.size === 0) {
+        selectedModes.add("illustration");
+        cb.checked = false;
+      }
+      item.classList.toggle("active", selectedModes.has(mode));
+      updateConfirmButton();
     });
-    item.appendChild(radio);
+    item.appendChild(cb);
     const text = document.createElement("div");
     text.className = "sti-mode-text";
     const name = document.createElement("div");
@@ -1071,9 +1185,7 @@ function renderPreview() {
   textarea.rows = 6;
   textarea.value = currentSegment.text;
   textarea.addEventListener("input", () => {
-    if (currentSegment) {
-      currentSegment = { ...currentSegment, text: textarea.value };
-    }
+    if (currentSegment) currentSegment = { ...currentSegment, text: textarea.value };
   });
   container.appendChild(textarea);
   return container;
@@ -1090,13 +1202,12 @@ function renderActions() {
   const cancelBtn = document.createElement("button");
   cancelBtn.className = "sti-btn sti-btn-cancel";
   cancelBtn.textContent = "取消";
-  cancelBtn.addEventListener("click", () => {
-    hideSelectionPanel();
-  });
+  cancelBtn.addEventListener("click", () => hideSelectionPanel());
   container.appendChild(cancelBtn);
   const confirmBtn = document.createElement("button");
   confirmBtn.className = "sti-btn sti-btn-confirm";
-  confirmBtn.textContent = "确认选段";
+  confirmBtn.id = "sti-confirm-btn";
+  confirmBtn.textContent = `确认选段 · 生成 ${selectedModes.size} 份`;
   confirmBtn.disabled = !currentSegment;
   confirmBtn.addEventListener("click", () => {
     if (currentSegment && onConfirmCallback) {
@@ -1107,12 +1218,16 @@ function renderActions() {
         panelElement == null ? void 0 : panelElement.appendChild(warning);
         return;
       }
-      onConfirmCallback(currentSegment, currentMode);
+      onConfirmCallback(currentSegment, Array.from(selectedModes));
       hideSelectionPanel();
     }
   });
   container.appendChild(confirmBtn);
   return container;
+}
+function updateConfirmButton() {
+  const btn = document.getElementById("sti-confirm-btn");
+  if (btn) btn.textContent = `确认选段 · 生成 ${selectedModes.size} 份`;
 }
 function createFloorSelect(floors, currentValue, onChange) {
   const select = document.createElement("select");
@@ -1124,13 +1239,16 @@ function createFloorSelect(floors, currentValue, onChange) {
     if (f.floor === currentValue) opt.selected = true;
     select.appendChild(opt);
   }
-  select.addEventListener("change", () => {
-    onChange(parseInt(select.value, 10));
-  });
+  if (currentValue >= 0) select.value = String(currentValue);
+  select.addEventListener("change", () => onChange(parseInt(select.value, 10)));
   return select;
 }
 function rebuildSegment() {
   switch (currentMethod) {
+    case "local":
+    case "manual":
+      currentSegment = localText.trim() ? buildManualSegment(localText, selectedFloorSeed >= 0 ? [selectedFloorSeed] : []) : null;
+      break;
     case "single":
       currentSegment = selectedSingleFloor >= 0 ? buildSingleSegment(selectedSingleFloor) : null;
       break;
@@ -1139,9 +1257,6 @@ function rebuildSegment() {
       break;
     case "picked":
       currentSegment = pickedFloors.length > 0 ? buildPickedSegment(pickedFloors) : null;
-      break;
-    case "manual":
-      currentSegment = manualText.trim() ? buildManualSegment(manualText) : null;
       break;
   }
 }
@@ -1269,8 +1384,12 @@ function mountFloor(floor) {
   if (!mes) return;
   unmountFloor(floor);
   const artifacts = getArtifacts(floor);
-  const inline = artifacts.filter((a) => a.mountMode === "inline");
-  const trailing = artifacts.filter((a) => a.mountMode !== "inline");
+  const visible = artifacts.filter((a) => {
+    var _a;
+    return ((_a = a.metadata) == null ? void 0 : _a.embeddedInBody) !== true;
+  });
+  const inline = visible.filter((a) => a.mountMode === "inline");
+  const trailing = visible.filter((a) => a.mountMode !== "inline");
   for (const artifact of inline) mountInline(mes, floor, artifact);
   if (trailing.length > 0) mountTrailing(mes, floor, trailing);
 }
@@ -1344,12 +1463,8 @@ function buildCard(artifact, floor, inline) {
   card.appendChild(img);
   const caption = document.createElement("div");
   caption.className = "sti-card-caption";
-  const tag = document.createElement("span");
-  tag.className = "sti-card-mode-tag";
-  tag.textContent = MODE_LABELS[artifact.mode] || artifact.mode;
-  caption.appendChild(tag);
   caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ""));
-  card.appendChild(caption);
+  if (caption.textContent) card.appendChild(caption);
   return card;
 }
 const THEATER_KEY = "sti_theater";
@@ -1544,6 +1659,9 @@ const DEFAULT_SETTINGS = {
   contextRange: 1,
   includeChinese: true,
   includeNl: false,
+  syncBaiBaiExcludes: true,
+  preferContentTag: true,
+  llmSource: "auto",
   modes: {
     "illustration": defaultModeSettings("illustration"),
     "comic": defaultModeSettings("comic"),
@@ -1708,6 +1826,91 @@ const baiBaiAdapter = {
     };
   }
 };
+const CHANNELS_KEY = "baibai_api_channels";
+const IMAGE_SETTINGS_KEY = "baibai_image";
+function readChannels() {
+  const ctx = getContext();
+  const ext = ctx.extensionSettings ?? {};
+  const raw = ext[CHANNELS_KEY];
+  if (!raw || typeof raw !== "object") return [];
+  const store = raw;
+  const arr = Array.isArray(store.channels) ? store.channels : Array.isArray(raw) ? raw : [];
+  return arr.filter(
+    (c) => !!c && typeof c === "object" && typeof c.url === "string" && typeof c.model === "string"
+  );
+}
+function readTagGenChannelId() {
+  const ctx = getContext();
+  const ext = ctx.extensionSettings ?? {};
+  const raw = ext[IMAGE_SETTINGS_KEY];
+  if (!raw || typeof raw !== "object") return "";
+  const settings2 = raw;
+  const assignments = settings2.assignments;
+  const id = assignments == null ? void 0 : assignments.tagGen;
+  return typeof id === "string" ? id.trim() : "";
+}
+function getActiveSecondaryChannel() {
+  const id = readTagGenChannelId();
+  if (!id) return null;
+  const channel = readChannels().find((c) => c.id === id);
+  if (!channel) return null;
+  return {
+    id: channel.id,
+    name: channel.name || channel.id,
+    model: channel.model,
+    url: channel.url
+  };
+}
+async function generateViaSecondary(system, user, signal) {
+  var _a, _b, _c;
+  const info = getActiveSecondaryChannel();
+  if (!info) return null;
+  const channel = readChannels().find((c) => c.id === info.id);
+  if (!channel) return null;
+  const url = channel.url.replace(/\/+$/, "");
+  const endpoint = /\/chat\/completions$/i.test(url) ? url : `${url}/chat/completions`;
+  const body = {
+    model: channel.model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user }
+    ]
+  };
+  if (typeof channel.temperature === "number") body.temperature = channel.temperature;
+  if (typeof channel.maxTokens === "number" && channel.maxTokens > 0) body.max_tokens = channel.maxTokens;
+  for (const key of channel.excludeParams ?? []) delete body[key];
+  const headers = { "Content-Type": "application/json" };
+  if (channel.key) headers.Authorization = `Bearer ${channel.key}`;
+  const timeoutMs = Math.max(5, channel.timeoutSec ?? 180) * 1e3;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    if (!resp.ok) {
+      console.warn(`[ST-Story-Illustrator] 副 API 请求失败 (${resp.status})，回退主 API。`);
+      return null;
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.warn("[ST-Story-Illustrator] 副 API 返回错误，回退主 API：", data.error.message);
+      return null;
+    }
+    const content = (_c = (_b = (_a = data.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
+    return typeof content === "string" && content.trim() ? content : null;
+  } catch (err) {
+    {
+      console.warn("[ST-Story-Illustrator] 副 API 不可用，回退主 API：", err instanceof Error ? err.message : String(err));
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const PANEL_BUBBLE_AREAS = [
   "tl",
   "tc",
@@ -2209,7 +2412,7 @@ function buildComicUserPrompt(scene, characters) {
   parts.push("请只输出一个 JSON 对象（pages 数组）。");
   return parts.join("\n\n");
 }
-const defaultLlmCaller = async (system, user) => {
+const mainApiLlmCaller = async (system, user) => {
   const prompt = `${system}
 
 ---
@@ -2217,6 +2420,22 @@ const defaultLlmCaller = async (system, user) => {
 ${user}`;
   return await generateQuietPrompt(prompt);
 };
+const defaultLlmCaller = async (system, user) => {
+  const viaSecondary = await generateViaSecondary(system, user);
+  if (viaSecondary !== null) return viaSecondary;
+  return await mainApiLlmCaller(system, user);
+};
+function makeLlmCaller(source) {
+  if (source === "main") return mainApiLlmCaller;
+  if (source === "secondary") {
+    return async (system, user) => {
+      const viaSecondary = await generateViaSecondary(system, user);
+      if (viaSecondary !== null) return viaSecondary;
+      throw new Error("未配置柏宝绘副 API 渠道（或请求失败）。请在柏宝绘设置里指派 tagGen 渠道，或切换到主 API。");
+    };
+  }
+  return defaultLlmCaller;
+}
 async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildIllustrationSystemPrompt(input.options);
@@ -2447,6 +2666,81 @@ function enforceForGeneration(input) {
     removed: enforced.removed,
     added: enforced.added
   };
+}
+function buildImageSnippet(imagePath, alt = "配图") {
+  const safeAlt = alt.replace(/[\]\n\r]/g, " ").trim() || "配图";
+  return `
+
+![](${imagePath})`.replace("[]", `[${safeAlt}]`) + "\n";
+}
+async function insertImageIntoBody(input) {
+  const { floor, chatId, swipeId, sendDate, imagePath, anchorText } = input;
+  if (!imagePath) return { ok: false, reason: "no-image" };
+  const ctx = getContext();
+  if (!ctx || !Array.isArray(ctx.chat) || typeof ctx.saveChat !== "function") {
+    return { ok: false, reason: "no-context" };
+  }
+  if (getCurrentChatId() !== chatId) return { ok: false, reason: "chat-changed" };
+  const msg = ctx.chat[floor];
+  if (!msg || typeof msg.mes !== "string") return { ok: false, reason: "floor-changed" };
+  if (sendDate) {
+    const actual = typeof msg.send_date === "string" ? msg.send_date.trim() : "";
+    if (actual && actual !== sendDate) return { ok: false, reason: "floor-changed" };
+  }
+  const curSwipe = typeof msg.swipe_id === "number" ? msg.swipe_id : 0;
+  if (curSwipe !== swipeId) return { ok: false, reason: "swipe-changed" };
+  const snippet = buildImageSnippet(imagePath, input.alt);
+  const currentText = msg.mes;
+  let nextText;
+  let position;
+  if (anchorText && anchorText.length >= 2 && currentText.includes(anchorText)) {
+    const at = currentText.indexOf(anchorText) + anchorText.length;
+    nextText = currentText.slice(0, at) + snippet + currentText.slice(at);
+    position = "after-anchor";
+  } else {
+    nextText = `${currentText.trimEnd()}${snippet}`;
+    position = "appended";
+  }
+  if (currentText.includes(imagePath)) {
+    return { ok: true, position };
+  }
+  msg.mes = nextText;
+  if (Array.isArray(msg.swipes) && swipeId >= 0 && swipeId < msg.swipes.length) {
+    msg.swipes[swipeId] = nextText;
+  }
+  try {
+    await ctx.saveChat();
+  } catch {
+    msg.mes = currentText;
+    if (Array.isArray(msg.swipes) && swipeId >= 0 && swipeId < msg.swipes.length) {
+      msg.swipes[swipeId] = currentText;
+    }
+    return { ok: false, reason: "save-failed" };
+  }
+  await refreshMessage(ctx, floor, msg);
+  return { ok: true, position };
+}
+async function refreshMessage(ctx, floor, msg, _unused) {
+  var _a;
+  try {
+    const api = ctx;
+    if (typeof api.updateMessageBlock === "function") {
+      await api.updateMessageBlock(floor, msg);
+      return;
+    }
+  } catch {
+  }
+  try {
+    const types = getEventTypes();
+    const evt = types.MESSAGE_EDITED ?? "message_edited";
+    (_a = ctx.eventSource) == null ? void 0 : _a.emit(evt, floor);
+  } catch {
+    try {
+      const api = ctx;
+      if (typeof api.reloadCurrentChat === "function") await api.reloadCurrentChat();
+    } catch {
+    }
+  }
 }
 const STATUS_MAX_CHARACTERS = 2;
 const STATUS_MAX_PANELS = 4;
@@ -2940,6 +3234,7 @@ function toNormalizedInput(prompt, nl, negative, profile) {
   };
 }
 async function runIllustration(task, ctx, deps) {
+  var _a, _b;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
@@ -2952,7 +3247,8 @@ async function runIllustration(task, ctx, deps) {
       includeChinese: deps.fullSettings.includeChinese,
       includeNl: deps.fullSettings.includeNl,
       includeNegative: true
-    }
+    },
+    caller: makeLlmCaller(deps.fullSettings.llmSource ?? "auto")
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? "Tag 计划生成失败。");
   ctx.report({ stage: "review" });
@@ -2970,6 +3266,17 @@ async function runIllustration(task, ctx, deps) {
   );
   const imagePath = result.path ?? result.dataUrl;
   if (!imagePath) throw new Error("出图未返回图片地址。");
+  const anchorText = segment.text.slice(0, 120);
+  const inserted = await insertImageIntoBody({
+    floor,
+    chatId: task.chatId,
+    swipeId: ((_a = segment.messages[0]) == null ? void 0 : _a.swipeId) ?? 0,
+    sendDate: (_b = segment.messages[0]) == null ? void 0 : _b.sendDate,
+    imagePath,
+    anchorText,
+    alt: plan.data.nl ? plan.data.nl.slice(0, 60) : "配图"
+  });
+  console.log("[ST-Story-Illustrator] 正文插图写入:", inserted);
   const mesTextEl = document.querySelector(`.mes[mesid="${floor}"] .mes_text`);
   const anchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : void 0;
   const artifact = {
@@ -2979,14 +3286,15 @@ async function runIllustration(task, ctx, deps) {
     chatId: task.chatId,
     sourceFloors: segment.floorIds,
     anchorFloor: floor,
-    mountMode: defaultMountMode("illustration"),
+    // 正文已嵌入图片时不再注入 DOM 卡片（避免重复显示）；写入失败才降级为 DOM 卡片
+    mountMode: inserted.ok ? "trailing" : defaultMountMode("illustration"),
     ...anchor ? { textAnchor: anchor } : {},
     imagePath,
     prompt,
     ...plan.data.nl ? { nl: plan.data.nl } : {},
     ...plan.data.negative ? { negative: plan.data.negative } : {},
     ...result.seed !== void 0 ? { seed: result.seed } : {},
-    metadata: {},
+    metadata: { embeddedInBody: inserted.ok },
     createdAt: Date.now()
   };
   appendArtifact(floor, artifact);
@@ -3026,7 +3334,8 @@ async function runComic(task, ctx, deps) {
       charPrompts: false,
       includeChinese: deps.fullSettings.includeChinese,
       maxPages: modeSettings.comicMaxPages ?? 1
-    }
+    },
+    caller: makeLlmCaller(deps.fullSettings.llmSource ?? "auto")
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
   const profile = pickProfile(deps.settings, "comic");
@@ -3096,7 +3405,13 @@ async function runTheaterMode(task, ctx, deps) {
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     backend: "nai",
     profile: pickProfile(deps.settings, mode),
-    llm: async (prompt) => await generateQuietPrompt(prompt),
+    llm: async (prompt) => {
+      try {
+        return await makeLlmCaller(deps.fullSettings.llmSource ?? "auto")("", prompt);
+      } catch {
+        return await generateQuietPrompt(prompt);
+      }
+    },
     generate: async (input, profile) => {
       const r = await baiBaiAdapter.generate({
         prompt: input.prompt,
@@ -3163,6 +3478,7 @@ async function onActivate() {
       console.warn("[ST-Story-Illustrator] SillyTavern 环境未就绪，扩展将以降级模式运行。");
     }
     settings = getSettings(DEFAULT_SETTINGS);
+    applySettings();
     registerEvents();
     setupSelectionListener();
     initQueue();
@@ -3205,10 +3521,17 @@ function remountAllSafe() {
     console.warn("[ST-Story-Illustrator] 挂载历史作品失败:", e);
   }
 }
+function applySettings() {
+  setSegmentCleanOptions({
+    syncBaiBai: settings.syncBaiBaiExcludes ?? true,
+    preferContent: settings.preferContentTag ?? true
+  });
+}
 function registerEvents() {
   const events = getEventTypes();
   const offSettings = on(events.EXTENSION_SETTINGS_LOADED, () => {
     settings = getSettings(DEFAULT_SETTINGS);
+    applySettings();
     queue = null;
     initQueue();
   });
@@ -3293,12 +3616,15 @@ function handleGenerateFromSelection() {
     const msg = availability.status === "not_installed" ? "柏宝绘未安装。选段已捕获，但配图功能不可用。" : `柏宝绘 API 不可用（${availability.status}）。选段已捕获，但配图不可用。`;
     showToast(msg, "warn");
   }
-  showSelectionPanel(floor.mesId, handleSegmentConfirmed);
+  showSelectionPanel(
+    { initialFloor: floor.mesId, selectedText, startAtLocal: true },
+    handleSegmentConfirmed
+  );
   hideToolbar();
 }
-function handleSegmentConfirmed(segment, mode) {
+function handleSegmentConfirmed(segment, modes) {
   console.log("[ST-Story-Illustrator] 选段已确认:", {
-    mode,
+    modes,
     sourceKind: segment.sourceKind,
     floorIds: segment.floorIds,
     textLength: segment.text.length,
@@ -3309,9 +3635,11 @@ function handleSegmentConfirmed(segment, mode) {
     return;
   }
   if (!queue) initQueue();
-  const task = createVisualTask(segment, mode);
-  queue == null ? void 0 : queue.enqueue(task);
-  showToast("任务已加入队列，开始生成。", "info");
+  for (const mode of modes) {
+    const task = createVisualTask(segment, mode);
+    queue == null ? void 0 : queue.enqueue(task);
+  }
+  showToast(`已加入 ${modes.length} 个生成任务，开始处理。`, "info");
 }
 function showToast(message, level = "info") {
   var _a, _b, _c;

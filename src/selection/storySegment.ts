@@ -9,7 +9,7 @@
 import type { StorySegment, StorySegmentMessage, StorySourceKind } from '../types';
 import type { STChatMessage } from '../host/sillytavern';
 import { getChat, getCurrentChatId, getSendDate, getSwipeId, stillCurrent } from '../host/sillytavern';
-import { cleanMessageText, isSystemMessage } from './textCleaner';
+import { cleanMessageText, isSystemMessage, type CleanOptions } from './textCleaner';
 
 // ============================================================
 // 常量
@@ -20,6 +20,22 @@ const MAX_MESSAGES_IN_SEGMENT = 50;
 
 /** 单条消息最大文本长度 */
 const MAX_MESSAGE_TEXT = 4000;
+
+// ============================================================
+// 清洗配置（由入口按设置注入）
+// ============================================================
+
+let cleanOptions: CleanOptions = { syncBaiBai: true, preferContent: true };
+
+/** 设置选段清洗策略（与设置面板同步；preferContent 默认开启以兼容思维链插件）。 */
+export function setSegmentCleanOptions(options: CleanOptions): void {
+  cleanOptions = { ...cleanOptions, ...options };
+}
+
+/** 用当前配置清洗一条消息正文。 */
+function cleanMes(mes: string | undefined): string {
+  return cleanMessageText(mes, cleanOptions);
+}
 
 // ============================================================
 // 消息提取
@@ -40,7 +56,7 @@ export function extractMessage(floor: number, chatId: string): StorySegmentMessa
     return null;
   }
 
-  const text = cleanMessageText(msg.mes).slice(0, MAX_MESSAGE_TEXT);
+  const text = cleanMes(msg.mes).slice(0, MAX_MESSAGE_TEXT);
   if (!text) return null;
 
   return {
@@ -311,7 +327,7 @@ export function defaultFloor(): number {
     if (!msg) continue;
     if (isSystemMessage(msg)) continue;
     if (msg.is_user === true) continue;
-    const text = cleanMessageText(msg.mes);
+    const text = cleanMes(msg.mes);
     if (text.length > 0) return i;
   }
   // 如果没有 AI 消息，返回最后一条非系统消息
@@ -319,7 +335,7 @@ export function defaultFloor(): number {
     const msg = chat[i];
     if (!msg) continue;
     if (isSystemMessage(msg)) continue;
-    const text = cleanMessageText(msg.mes);
+    const text = cleanMes(msg.mes);
     if (text.length > 0) return i;
   }
   return -1;
@@ -337,7 +353,7 @@ export function getAvailableFloors(): Array<{ floor: number; speaker: string; is
     const msg = chat[i];
     if (!msg) continue;
     if (isSystemMessage(msg)) continue;
-    const text = cleanMessageText(msg.mes);
+    const text = cleanMes(msg.mes);
     if (!text) continue;
 
     result.push({

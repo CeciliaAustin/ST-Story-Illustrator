@@ -1,19 +1,18 @@
 /**
  * 选段面板 UI
  *
- * 用户流程：选择剧情 → 选择创作模式 → 配置 → 预览 → 生成
+ * 用户流程：选择剧情 → 选择创作模式（可多选） → 配置 → 预览 → 生成
  *
- * 支持：
- * - 当前楼层（默认最近一条 AI 回复）
- * - 指定单楼层
- * - 连续楼层范围
- * - 范围内勾选/排除楼层
- * - 手动粘贴或编辑剧情文本
- * - 预览显示楼层范围、说话人与文本
- * - 提交前可编辑最终剧情
+ * 选段方式（标签页顺序）：
+ * - local（局部）：直接采用划线文本并预填充，可编辑；免选楼层，锚定划线所在楼
+ * - single（单楼）：指定单个楼层
+ * - range（范围）：连续楼层范围 + 排除楼层
+ * - picked（勾选）：按勾选顺序选多个楼层
+ *
+ * 创作模式可多选：确认后为每个选中的模式各排一个任务。
  */
 
-import type { StorySegment, CreationMode, ModeSettings } from '../types';
+import type { StorySegment, CreationMode } from '../types';
 import {
   buildSingleSegment,
   buildRangeSegment,
@@ -22,7 +21,6 @@ import {
   defaultFloor,
   getAvailableFloors,
   validateSegment,
-  getAnchorFloor,
 } from '../selection/storySegment';
 
 // ============================================================
@@ -31,6 +29,9 @@ import {
 
 const PANEL_ID = 'sti-selection-panel';
 const PANEL_OVERLAY_ID = 'sti-selection-panel-overlay';
+
+/** 标签页顺序：局部在最前 */
+const METHOD_ORDER: SelectionMethod[] = ['local', 'single', 'range', 'picked'];
 
 const MODE_LABELS: Record<CreationMode, string> = {
   'illustration': '正文插画',
@@ -55,73 +56,82 @@ const MODE_DESCRIPTIONS: Record<CreationMode, string> = {
 let panelElement: HTMLElement | null = null;
 let overlayElement: HTMLElement | null = null;
 let currentSegment: StorySegment | null = null;
-let currentMode: CreationMode = 'illustration';
-let onConfirmCallback: ((segment: StorySegment, mode: CreationMode) => void) | null = null;
+/** 多选模式：至少一个选中，默认插画 */
+let selectedModes: Set<CreationMode> = new Set<CreationMode>(['illustration']);
+let onConfirmCallback: ((segment: StorySegment, modes: CreationMode[]) => void) | null = null;
 
 // 选段模式
-type SelectionMethod = 'single' | 'range' | 'picked' | 'manual';
-let currentMethod: SelectionMethod = 'single';
+type SelectionMethod = 'local' | 'single' | 'range' | 'picked' | 'manual';
+let currentMethod: SelectionMethod = 'local';
 let selectedSingleFloor: number = -1;
 let rangeStart: number = -1;
 let rangeEnd: number = -1;
 let excludedFloors: Set<number> = new Set();
 let pickedFloors: number[] = [];
-let manualText: string = '';
+/** 划线文本（打开面板时预填充到「局部」） */
+let selectedTextSeed: string = '';
+/** 划线所在楼（锚定楼层，供「局部」使用） */
+let selectedFloorSeed: number = -1;
 
 // ============================================================
 // 面板创建
 // ============================================================
 
+export interface ShowPanelOptions {
+  initialFloor?: number;
+  /** 划线文本，预填充到「局部」标签页 */
+  selectedText?: string;
+  /** 是否默认打开「局部」标签页（划线触发时为 true） */
+  startAtLocal?: boolean;
+}
+
 export function showSelectionPanel(
-  initialFloor?: number,
-  onConfirm?: (segment: StorySegment, mode: CreationMode) => void,
+  initialFloorOrOptions?: number | ShowPanelOptions,
+  onConfirm?: (segment: StorySegment, modes: CreationMode[]) => void,
 ): void {
-  // 初始化默认值
-  selectedSingleFloor = initialFloor ?? defaultFloor();
-  rangeStart = selectedSingleFloor;
-  rangeEnd = selectedSingleFloor;
-  currentMethod = 'single';
+  // 兼容旧调用：第一个参数是数字 = initialFloor
+  const opts: ShowPanelOptions = typeof initialFloorOrOptions === 'number'
+    ? { initialFloor: initialFloorOrOptions }
+    : (initialFloorOrOptions ?? {});
+
+  const seedFloor = opts.initialFloor ?? defaultFloor();
+  selectedSingleFloor = seedFloor;
+  rangeStart = seedFloor;
+  rangeEnd = seedFloor;
+  currentMethod = opts.startAtLocal !== false ? 'local' : 'single';
   excludedFloors = new Set();
-  pickedFloors = selectedSingleFloor >= 0 ? [selectedSingleFloor] : [];
-  manualText = '';
+  pickedFloors = seedFloor >= 0 ? [seedFloor] : [];
+  selectedTextSeed = (opts.selectedText ?? '').trim();
+  selectedFloorSeed = seedFloor;
+  // 每次打开面板：局部文本 = 本次划线文本（有则用，无则清空）
+  localText = selectedTextSeed;
   onConfirmCallback = onConfirm ?? null;
 
-  // 构建并显示面板
   ensurePanel();
   renderPanel();
 }
 
 export function hideSelectionPanel(): void {
-  if (overlayElement) {
-    overlayElement.style.display = 'none';
-  }
-  if (panelElement) {
-    panelElement.style.display = 'none';
-  }
+  if (overlayElement) overlayElement.style.display = 'none';
+  if (panelElement) panelElement.style.display = 'none';
 }
 
 function ensurePanel(): void {
-  // Overlay
   if (!overlayElement) {
     overlayElement = document.createElement('div');
     overlayElement.id = PANEL_OVERLAY_ID;
     overlayElement.className = 'sti-panel-overlay';
     overlayElement.addEventListener('click', (e: MouseEvent) => {
-      if (e.target === overlayElement) {
-        hideSelectionPanel();
-      }
+      if (e.target === overlayElement) hideSelectionPanel();
     });
     document.body.appendChild(overlayElement);
   }
-
-  // Panel
   if (!panelElement) {
     panelElement = document.createElement('div');
     panelElement.id = PANEL_ID;
     panelElement.className = 'sti-selection-panel';
     document.body.appendChild(panelElement);
   }
-
   overlayElement.style.display = 'block';
   panelElement.style.display = 'block';
 }
@@ -132,12 +142,10 @@ function ensurePanel(): void {
 
 function renderPanel(): void {
   if (!panelElement) return;
-
   const floors = getAvailableFloors();
 
   panelElement.innerHTML = '';
 
-  // 标题
   const title = document.createElement('div');
   title.className = 'sti-panel-title';
   title.textContent = '剧情选段';
@@ -146,7 +154,7 @@ function renderPanel(): void {
   // 选段方式标签
   const methodTabs = document.createElement('div');
   methodTabs.className = 'sti-method-tabs';
-  for (const method of ['single', 'range', 'picked', 'manual'] as SelectionMethod[]) {
+  for (const method of METHOD_ORDER) {
     const tab = document.createElement('button');
     tab.className = `sti-method-tab ${currentMethod === method ? 'active' : ''}`;
     tab.textContent = methodLabel(method);
@@ -158,11 +166,13 @@ function renderPanel(): void {
   }
   panelElement.appendChild(methodTabs);
 
-  // 选段内容区
   const content = document.createElement('div');
   content.className = 'sti-panel-content';
-
   switch (currentMethod) {
+    case 'local':
+    case 'manual':
+      content.appendChild(renderLocalEditor());
+      break;
     case 'single':
       content.appendChild(renderSingleSelector(floors));
       break;
@@ -172,29 +182,21 @@ function renderPanel(): void {
     case 'picked':
       content.appendChild(renderPickedSelector(floors));
       break;
-    case 'manual':
-      content.appendChild(renderManualEditor());
-      break;
   }
-
   panelElement.appendChild(content);
 
-  // 模式选择
   panelElement.appendChild(renderModeSelector());
-
-  // 预览
   panelElement.appendChild(renderPreview());
-
-  // 操作按钮
   panelElement.appendChild(renderActions());
 }
 
 function methodLabel(method: SelectionMethod): string {
   switch (method) {
+    case 'local': return '局部';
     case 'single': return '单楼';
     case 'range': return '范围';
     case 'picked': return '勾选';
-    case 'manual': return '手动';
+    case 'manual': return '局部';
   }
 }
 
@@ -216,10 +218,12 @@ function renderSingleSelector(floors: Array<{ floor: number; speaker: string; is
   for (const f of floors) {
     const opt = document.createElement('option');
     opt.value = String(f.floor);
-    opt.textContent = `[${f.floor}] ${f.speaker}: ${f.preview}...`;
+    opt.textContent = `[${f.floor}] ${f.speaker}: ${f.preview.slice(0, 40)}...`;
     if (f.floor === selectedSingleFloor) opt.selected = true;
     select.appendChild(opt);
   }
+  // 同步 select.value，避免 option.selected 与实际显示不一致（楼层错位 bug）
+  if (selectedSingleFloor >= 0) select.value = String(selectedSingleFloor);
   select.addEventListener('change', () => {
     selectedSingleFloor = parseInt(select.value, 10);
     rebuildSegment();
@@ -244,39 +248,29 @@ function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isU
   const startLabel = document.createElement('span');
   startLabel.textContent = '从';
   rangeRow.appendChild(startLabel);
-
   const startSelect = createFloorSelect(floors, rangeStart, (val) => {
-    rangeStart = val;
-    rebuildSegment();
-    renderPreviewOnly();
+    rangeStart = val; rebuildSegment(); renderPreviewOnly();
   });
   rangeRow.appendChild(startSelect);
 
   const dash = document.createElement('span');
   dash.textContent = '到';
   rangeRow.appendChild(dash);
-
   const endSelect = createFloorSelect(floors, rangeEnd, (val) => {
-    rangeEnd = val;
-    rebuildSegment();
-    renderPreviewOnly();
+    rangeEnd = val; rebuildSegment(); renderPreviewOnly();
   });
   rangeRow.appendChild(endSelect);
-
   container.appendChild(rangeRow);
 
-  // 排除楼层
   if (rangeStart >= 0 && rangeEnd >= 0) {
     const lo = Math.min(rangeStart, rangeEnd);
     const hi = Math.max(rangeStart, rangeEnd);
     const rangeFloors = floors.filter(f => f.floor >= lo && f.floor <= hi);
-
     if (rangeFloors.length > 0) {
       const excludeLabel = document.createElement('div');
       excludeLabel.className = 'sti-selector-label';
       excludeLabel.textContent = '排除楼层（勾选不想要的）：';
       container.appendChild(excludeLabel);
-
       const excludeList = document.createElement('div');
       excludeList.className = 'sti-exclude-list';
       for (const f of rangeFloors) {
@@ -286,13 +280,9 @@ function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isU
         cb.type = 'checkbox';
         cb.checked = excludedFloors.has(f.floor);
         cb.addEventListener('change', () => {
-          if (cb.checked) {
-            excludedFloors.add(f.floor);
-          } else {
-            excludedFloors.delete(f.floor);
-          }
-          rebuildSegment();
-          renderPreviewOnly();
+          if (cb.checked) excludedFloors.add(f.floor);
+          else excludedFloors.delete(f.floor);
+          rebuildSegment(); renderPreviewOnly();
         });
         item.appendChild(cb);
         item.appendChild(document.createTextNode(` [${f.floor}] ${f.speaker}: ${f.preview.slice(0, 50)}...`));
@@ -301,7 +291,6 @@ function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isU
       container.appendChild(excludeList);
     }
   }
-
   return container;
 }
 
@@ -312,7 +301,6 @@ function renderRangeSelector(floors: Array<{ floor: number; speaker: string; isU
 function renderPickedSelector(floors: Array<{ floor: number; speaker: string; isUser: boolean; preview: string }>): HTMLElement {
   const container = document.createElement('div');
   container.className = 'sti-selector-container';
-
   const label = document.createElement('div');
   label.className = 'sti-selector-label';
   label.textContent = '勾选要纳入的楼层（按勾选顺序）：';
@@ -328,44 +316,41 @@ function renderPickedSelector(floors: Array<{ floor: number; speaker: string; is
     cb.checked = pickedFloors.includes(f.floor);
     cb.addEventListener('change', () => {
       if (cb.checked) {
-        if (!pickedFloors.includes(f.floor)) {
-          pickedFloors.push(f.floor);
-        }
+        if (!pickedFloors.includes(f.floor)) pickedFloors.push(f.floor);
       } else {
         pickedFloors = pickedFloors.filter(id => id !== f.floor);
       }
-      rebuildSegment();
-      renderPreviewOnly();
+      rebuildSegment(); renderPreviewOnly();
     });
     item.appendChild(cb);
     item.appendChild(document.createTextNode(` [${f.floor}] ${f.speaker}: ${f.preview.slice(0, 50)}...`));
     list.appendChild(item);
   }
   container.appendChild(list);
-
   return container;
 }
 
 // ============================================================
-// 手动编辑器
+// 局部编辑器（原「手动」，预填充划线文本）
 // ============================================================
 
-function renderManualEditor(): HTMLElement {
+function renderLocalEditor(): HTMLElement {
   const container = document.createElement('div');
   container.className = 'sti-selector-container';
 
   const label = document.createElement('div');
   label.className = 'sti-selector-label';
-  label.textContent = '粘贴或编辑剧情文本：';
+  label.textContent = '划线文本（可编辑，直接作为剧情内容）：';
   container.appendChild(label);
 
   const textarea = document.createElement('textarea');
   textarea.className = 'sti-manual-textarea';
   textarea.rows = 10;
-  textarea.placeholder = '在此输入或粘贴剧情文本...';
-  textarea.value = manualText;
+  textarea.placeholder = '在此编辑剧情文本...';
+  // 首次进入时用划线文本预填充；之后保留用户编辑
+  textarea.value = localText;
   textarea.addEventListener('input', () => {
-    manualText = textarea.value;
+    localText = textarea.value;
     rebuildSegment();
     renderPreviewOnly();
   });
@@ -373,14 +358,18 @@ function renderManualEditor(): HTMLElement {
 
   const note = document.createElement('div');
   note.className = 'sti-manual-note';
-  note.textContent = '手动文本不可伪造楼层归属，结果将放入插件作品历史。';
+  const floorHint = selectedFloorSeed >= 0 ? `结果将挂载在第 ${selectedFloorSeed} 楼下方。` : '结果将放入插件作品历史。';
+  note.textContent = `已锚定你划线的楼层。${floorHint}`;
   container.appendChild(note);
 
   return container;
 }
 
+/** 局部文本：打开面板时由划线文本初始化 */
+let localText: string = '';
+
 // ============================================================
-// 模式选择器
+// 模式选择器（多选 checkbox）
 // ============================================================
 
 function renderModeSelector(): HTMLElement {
@@ -389,7 +378,7 @@ function renderModeSelector(): HTMLElement {
 
   const label = document.createElement('div');
   label.className = 'sti-selector-label';
-  label.textContent = '创作模式：';
+  label.textContent = '创作模式（可多选，每个模式各生成一份）：';
   container.appendChild(label);
 
   const modeList = document.createElement('div');
@@ -397,17 +386,25 @@ function renderModeSelector(): HTMLElement {
 
   for (const mode of Object.keys(MODE_LABELS) as CreationMode[]) {
     const item = document.createElement('label');
-    item.className = `sti-mode-item ${currentMode === mode ? 'active' : ''}`;
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = 'sti-mode';
-    radio.value = mode;
-    radio.checked = currentMode === mode;
-    radio.addEventListener('change', () => {
-      currentMode = mode;
-      renderPanel();
+    item.className = `sti-mode-item ${selectedModes.has(mode) ? 'active' : ''}`;
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.name = 'sti-mode';
+    cb.value = mode;
+    cb.checked = selectedModes.has(mode);
+    cb.addEventListener('change', () => {
+      if (cb.checked) selectedModes.add(mode);
+      else selectedModes.delete(mode);
+      // 至少保留一个
+      if (selectedModes.size === 0) {
+        selectedModes.add('illustration');
+        cb.checked = false;
+      }
+      item.classList.toggle('active', selectedModes.has(mode));
+      // 只需更新按钮状态，不重绘整个面板（避免丢失编辑中的文本）
+      updateConfirmButton();
     });
-    item.appendChild(radio);
+    item.appendChild(cb);
 
     const text = document.createElement('div');
     text.className = 'sti-mode-text';
@@ -420,10 +417,8 @@ function renderModeSelector(): HTMLElement {
     text.appendChild(name);
     text.appendChild(desc);
     item.appendChild(text);
-
     modeList.appendChild(item);
   }
-
   container.appendChild(modeList);
   return container;
 }
@@ -447,7 +442,6 @@ function renderPreview(): HTMLElement {
     return container;
   }
 
-  // 楼层信息
   const info = document.createElement('div');
   info.className = 'sti-preview-info';
   const floorInfo = currentSegment.floorIds.length > 0
@@ -456,7 +450,6 @@ function renderPreview(): HTMLElement {
   info.textContent = `${floorInfo} | ${currentSegment.messages.length} 条消息 | ${currentSegment.text.length} 字`;
   container.appendChild(info);
 
-  // 消息预览
   if (currentSegment.messages.length > 0) {
     const msgList = document.createElement('div');
     msgList.className = 'sti-preview-messages';
@@ -476,7 +469,6 @@ function renderPreview(): HTMLElement {
     container.appendChild(msgList);
   }
 
-  // 完整文本预览（可编辑）
   const textLabel = document.createElement('div');
   textLabel.className = 'sti-selector-label';
   textLabel.textContent = '最终剧情文本（可编辑）：';
@@ -487,9 +479,7 @@ function renderPreview(): HTMLElement {
   textarea.rows = 6;
   textarea.value = currentSegment.text;
   textarea.addEventListener('input', () => {
-    if (currentSegment) {
-      currentSegment = { ...currentSegment, text: textarea.value };
-    }
+    if (currentSegment) currentSegment = { ...currentSegment, text: textarea.value };
   });
   container.appendChild(textarea);
 
@@ -499,7 +489,6 @@ function renderPreview(): HTMLElement {
 function renderPreviewOnly(): void {
   const container = document.getElementById('sti-preview-container');
   if (!container || !panelElement) return;
-
   const preview = renderPreview();
   container.replaceWith(preview);
 }
@@ -515,33 +504,34 @@ function renderActions(): HTMLElement {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'sti-btn sti-btn-cancel';
   cancelBtn.textContent = '取消';
-  cancelBtn.addEventListener('click', () => {
-    hideSelectionPanel();
-  });
+  cancelBtn.addEventListener('click', () => hideSelectionPanel());
   container.appendChild(cancelBtn);
 
   const confirmBtn = document.createElement('button');
   confirmBtn.className = 'sti-btn sti-btn-confirm';
-  confirmBtn.textContent = '确认选段';
+  confirmBtn.id = 'sti-confirm-btn';
+  confirmBtn.textContent = `确认选段 · 生成 ${selectedModes.size} 份`;
   confirmBtn.disabled = !currentSegment;
   confirmBtn.addEventListener('click', () => {
     if (currentSegment && onConfirmCallback) {
-      // 验证选段有效性
       if (!validateSegment(currentSegment)) {
-        // 选段已失效，提示用户
         const warning = document.createElement('div');
         warning.className = 'sti-preview-warning';
         warning.textContent = '选段已失效（聊天切换或消息删除），请重新选择。';
         panelElement?.appendChild(warning);
         return;
       }
-      onConfirmCallback(currentSegment, currentMode);
+      onConfirmCallback(currentSegment, Array.from(selectedModes));
       hideSelectionPanel();
     }
   });
   container.appendChild(confirmBtn);
-
   return container;
+}
+
+function updateConfirmButton(): void {
+  const btn = document.getElementById('sti-confirm-btn');
+  if (btn) btn.textContent = `确认选段 · 生成 ${selectedModes.size} 份`;
 }
 
 // ============================================================
@@ -562,14 +552,20 @@ function createFloorSelect(
     if (f.floor === currentValue) opt.selected = true;
     select.appendChild(opt);
   }
-  select.addEventListener('change', () => {
-    onChange(parseInt(select.value, 10));
-  });
+  if (currentValue >= 0) select.value = String(currentValue);
+  select.addEventListener('change', () => onChange(parseInt(select.value, 10)));
   return select;
 }
 
 function rebuildSegment(): void {
   switch (currentMethod) {
+    case 'local':
+    case 'manual':
+      // 局部文本锚定划线楼层；若用户清空文本则用划线原文兜底
+      currentSegment = localText.trim()
+        ? buildManualSegment(localText, selectedFloorSeed >= 0 ? [selectedFloorSeed] : [])
+        : null;
+      break;
     case 'single':
       currentSegment = selectedSingleFloor >= 0
         ? buildSingleSegment(selectedSingleFloor)
@@ -585,23 +581,12 @@ function rebuildSegment(): void {
         ? buildPickedSegment(pickedFloors)
         : null;
       break;
-    case 'manual':
-      currentSegment = manualText.trim()
-        ? buildManualSegment(manualText)
-        : null;
-      break;
   }
 }
 
 export function destroySelectionPanel(): void {
-  if (panelElement) {
-    panelElement.remove();
-    panelElement = null;
-  }
-  if (overlayElement) {
-    overlayElement.remove();
-    overlayElement = null;
-  }
+  if (panelElement) { panelElement.remove(); panelElement = null; }
+  if (overlayElement) { overlayElement.remove(); overlayElement = null; }
   onConfirmCallback = null;
   currentSegment = null;
 }

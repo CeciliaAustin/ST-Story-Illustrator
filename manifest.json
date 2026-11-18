@@ -8,5 +8,10 @@
     "author": "ST-Story-Illustrator",
     "version": "0.1.0",
     "homePage": "",
-    "auto_update": true
+    "auto_update": true,
+    "minimum_client_version": "1.12.0",
+    "hooks": {
+        "activate": "onActivate",
+        "disable": "onDisable"
+    }
 }

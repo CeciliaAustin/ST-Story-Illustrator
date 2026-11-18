@@ -12,6 +12,7 @@
 
 import type { GeneratePromptResponse, ComicPagePlan, BaiBaiCharacter } from '../types';
 import { generateQuietPrompt as stGenerateQuietPrompt } from '../host/sillytavern';
+import { generateViaSecondary } from '../baibai/secondaryLlm';
 import {
   buildIllustrationSystemPrompt,
   buildIllustrationUserPrompt,
@@ -30,11 +31,35 @@ import { parseComicPagePlan } from './panelPlan';
 
 export type LlmCaller = (system: string, user: string) => Promise<string>;
 
-/** 默认调用器：把 system + user 合成一条 quiet prompt 发给 ST 当前 API。 */
-export const defaultLlmCaller: LlmCaller = async (system, user) => {
+/** 主 API 调用器：把 system + user 合成一条 quiet prompt 发给 ST 当前 API。 */
+export const mainApiLlmCaller: LlmCaller = async (system, user) => {
   const prompt = `${system}\n\n---\n\n${user}`;
   return await stGenerateQuietPrompt(prompt);
 };
+
+/**
+ * 默认调用器：优先走柏宝绘副 API（tagGen 指派渠道），失败/未配置回退 ST 主 API。
+ * 这样用户设好的副 API 渠道真正被用于写 tag，而不是每次都惊动主 API。
+ */
+export const defaultLlmCaller: LlmCaller = async (system, user) => {
+  const viaSecondary = await generateViaSecondary(system, user);
+  if (viaSecondary !== null) return viaSecondary;
+  return await mainApiLlmCaller(system, user);
+};
+
+/** 按用户选择的来源构造调用器。 */
+export function makeLlmCaller(source: 'auto' | 'secondary' | 'main'): LlmCaller {
+  if (source === 'main') return mainApiLlmCaller;
+  if (source === 'secondary') {
+    return async (system, user) => {
+      const viaSecondary = await generateViaSecondary(system, user);
+      if (viaSecondary !== null) return viaSecondary;
+      // 强制副 API 但没配好时，明确报错，不偷偷用主 API
+      throw new Error('未配置柏宝绘副 API 渠道（或请求失败）。请在柏宝绘设置里指派 tagGen 渠道，或切换到主 API。');
+    };
+  }
+  return defaultLlmCaller; // auto
+}
 
 // ============================================================
 // 结果类型

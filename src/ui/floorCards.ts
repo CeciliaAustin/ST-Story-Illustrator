@@ -38,8 +38,10 @@ export function mountFloor(floor: number): void {
   unmountFloor(floor);
 
   const artifacts = getArtifacts(floor);
-  const inline = artifacts.filter(a => a.mountMode === 'inline');
-  const trailing = artifacts.filter(a => a.mountMode !== 'inline');
+  // 正文已嵌入的图片不再用 DOM 卡片呈现（图片已成为正文内容）
+  const visible = artifacts.filter(a => a.metadata?.embeddedInBody !== true);
+  const inline = visible.filter(a => a.mountMode === 'inline');
+  const trailing = visible.filter(a => a.mountMode !== 'inline');
 
   for (const artifact of inline) mountInline(mes, floor, artifact);
   if (trailing.length > 0) mountTrailing(mes, floor, trailing);
@@ -139,12 +141,9 @@ function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HT
 
   const caption = document.createElement('div');
   caption.className = 'sti-card-caption';
-  const tag = document.createElement('span');
-  tag.className = 'sti-card-mode-tag';
-  tag.textContent = MODE_LABELS[artifact.mode] || artifact.mode;
-  caption.appendChild(tag);
+  // 只显示简短自然语言描述，不再显示插画 tag / 模式标签（用户不想要那些 tag）
   caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ''));
-  card.appendChild(caption);
+  if (caption.textContent) card.appendChild(caption);
 
   return card;
 }

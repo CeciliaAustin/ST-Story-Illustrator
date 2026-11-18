@@ -16,6 +16,7 @@ import { resolveFloorFromSelection } from './selection/floorResolver';
 import { buildAnchor, extractPlainText } from './selection/anchor';
 import { showToolbar, hideToolbar, setOnGenerate, destroyToolbar } from './ui/selectionToolbar';
 import { showSelectionPanel, hideSelectionPanel, destroySelectionPanel } from './ui/selectionPanel';
+import { setSegmentCleanOptions } from './selection/storySegment';
 import { destroyLightbox } from './ui/lightbox';
 import { remountAll, mountFloor } from './ui/floorCards';
 import { mountTheater } from './theater/mount';
@@ -52,6 +53,7 @@ export async function onActivate(): Promise<void> {
     }
 
     settings = getSettings(DEFAULT_SETTINGS);
+    applySettings();
     registerEvents();
     setupSelectionListener();
     initQueue();
@@ -95,6 +97,14 @@ function remountAllSafe(): void {
   try { remountAll(); } catch (e) { console.warn('[ST-Story-Illustrator] 挂载历史作品失败:', e); }
 }
 
+/** 把设置应用到各子模块（清洗策略等）。 */
+function applySettings(): void {
+  setSegmentCleanOptions({
+    syncBaiBai: settings.syncBaiBaiExcludes ?? true,
+    preferContent: settings.preferContentTag ?? true,
+  });
+}
+
 // ============================================================
 // 事件注册
 // ============================================================
@@ -104,6 +114,7 @@ function registerEvents(): void {
 
   const offSettings = on(events.EXTENSION_SETTINGS_LOADED, () => {
     settings = getSettings(DEFAULT_SETTINGS);
+    applySettings();
     queue = null;
     initQueue(); // 设置变化后用最新 profile/settings 重建队列
   });
@@ -203,13 +214,16 @@ function handleGenerateFromSelection(): void {
     showToast(msg, 'warn');
   }
 
-  showSelectionPanel(floor.mesId, handleSegmentConfirmed);
+  showSelectionPanel(
+    { initialFloor: floor.mesId, selectedText: selectedText, startAtLocal: true },
+    handleSegmentConfirmed,
+  );
   hideToolbar();
 }
 
-function handleSegmentConfirmed(segment: StorySegment, mode: CreationMode): void {
+function handleSegmentConfirmed(segment: StorySegment, modes: CreationMode[]): void {
   console.log('[ST-Story-Illustrator] 选段已确认:', {
-    mode, sourceKind: segment.sourceKind, floorIds: segment.floorIds,
+    modes, sourceKind: segment.sourceKind, floorIds: segment.floorIds,
     textLength: segment.text.length, messageCount: segment.messages.length,
   });
 
@@ -219,9 +233,12 @@ function handleSegmentConfirmed(segment: StorySegment, mode: CreationMode): void
   }
 
   if (!queue) initQueue();
-  const task = createVisualTask(segment, mode);
-  queue?.enqueue(task);
-  showToast('任务已加入队列，开始生成。', 'info');
+  // 每个选中的模式各排一个任务（复用同一段剧情）
+  for (const mode of modes) {
+    const task = createVisualTask(segment, mode);
+    queue?.enqueue(task);
+  }
+  showToast(`已加入 ${modes.length} 个生成任务，开始处理。`, 'info');
 }
 
 // ============================================================

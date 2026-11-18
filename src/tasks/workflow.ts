@@ -23,11 +23,12 @@ import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
 import { generateQuietPrompt } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
-import { generateIllustrationPlan, generateComicPlan } from '../manga/planGenerator';
+import { generateIllustrationPlan, generateComicPlan, makeLlmCaller } from '../manga/planGenerator';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { createArtifactId, appendArtifact } from '../storage/repository';
 import { mountFloor } from '../ui/floorCards';
+import { insertImageIntoBody } from '../ui/bodyInserter';
 import { mountTheater } from '../theater/mount';
 import { defaultMountMode } from '../types';
 import { runTheaterOne } from '../theater/runtime';
@@ -88,6 +89,7 @@ async function runIllustration(
       includeNl: deps.fullSettings.includeNl,
       includeNegative: true,
     },
+    caller: makeLlmCaller(deps.fullSettings.llmSource ?? 'auto'),
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? 'Tag 计划生成失败。');
 
@@ -109,6 +111,20 @@ async function runIllustration(
   const imagePath = result.path ?? result.dataUrl;
   if (!imagePath) throw new Error('出图未返回图片地址。');
 
+  // 先把图片写进正文（选段之后），使其成为正文内容：编辑不丢、刷新仍在、导出带着。
+  // 锚点用划线/选段文本；写入采用 CAS，排队期间消息变了就安全放弃。
+  const anchorText = segment.text.slice(0, 120);
+  const inserted = await insertImageIntoBody({
+    floor,
+    chatId: task.chatId,
+    swipeId: segment.messages[0]?.swipeId ?? 0,
+    sendDate: segment.messages[0]?.sendDate,
+    imagePath,
+    anchorText,
+    alt: plan.data.nl ? plan.data.nl.slice(0, 60) : '配图',
+  });
+  console.log('[ST-Story-Illustrator] 正文插图写入:', inserted);
+
   const mesTextEl = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
   const anchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : undefined;
   const artifact: VisualArtifact = {
@@ -118,17 +134,19 @@ async function runIllustration(
     chatId: task.chatId,
     sourceFloors: segment.floorIds,
     anchorFloor: floor,
-    mountMode: defaultMountMode('illustration'),
+    // 正文已嵌入图片时不再注入 DOM 卡片（避免重复显示）；写入失败才降级为 DOM 卡片
+    mountMode: inserted.ok ? 'trailing' : defaultMountMode('illustration'),
     ...(anchor ? { textAnchor: anchor } : {}),
     imagePath,
     prompt,
     ...(plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
     ...(result.seed !== undefined ? { seed: result.seed } : {}),
-    metadata: {},
+    metadata: { embeddedInBody: inserted.ok },
     createdAt: Date.now(),
   };
   appendArtifact(floor, artifact);
+
   mountFloor(floor);
   ctx.report({ stage: 'completed' });
 }
@@ -173,6 +191,7 @@ async function runComic(
       includeChinese: deps.fullSettings.includeChinese,
       maxPages: modeSettings.comicMaxPages ?? 1,
     },
+    caller: makeLlmCaller(deps.fullSettings.llmSource ?? 'auto'),
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
 
@@ -257,7 +276,14 @@ async function runTheaterMode(
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     backend: 'nai',
     profile: pickProfile(deps.settings, mode),
-    llm: async (prompt) => await generateQuietPrompt(prompt),
+    llm: async (prompt) => {
+      // 小剧场文本同样优先走副 API，失败回退主 API（makeLlmCaller('auto') 已实现回退）
+      try {
+        return await makeLlmCaller(deps.fullSettings.llmSource ?? 'auto')('', prompt);
+      } catch {
+        return await generateQuietPrompt(prompt);
+      }
+    },
     generate: async (input, profile) => {
       const r = await baiBaiAdapter.generate({
         prompt: input.prompt,
