@@ -1,0 +1,17 @@
+# 依赖
+node_modules/
+
+# 构建中间产物（根目录 index.js / style.css 是 ST 扩展运行必需，保留提交）
+dist/
+*.map
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+*.local
+.vscode/
+.idea/
+
+# 日志
+*.log
+npm-debug.log*

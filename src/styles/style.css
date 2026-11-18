@@ -1,0 +1,999 @@
+/* ============================================================
+ * ST-Story-Illustrator — 样式
+ * ============================================================
+ * 继承 SillyTavern 当前主题，不硬编码亮色背景。
+ * 使用 CSS 变量与 inherit 让文字颜色跟随主题。
+ * ============================================================ */
+
+/* ── 选区工具条 ── */
+.sti-selection-toolbar {
+  position: absolute;
+  z-index: 10000;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: var(--SmartThemeBlurTintColor, rgba(50, 50, 50, 0.9));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transform: translateX(-50%);
+  pointer-events: auto;
+  transition: opacity 0.15s ease;
+}
+
+.sti-selection-toolbar:hover {
+  opacity: 1;
+}
+
+.sti-toolbar-btn {
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
+  background: var(--SmartThemeQuoteColor, rgba(80, 80, 80, 0.6));
+  color: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+  line-height: 1.6;
+}
+
+.sti-toolbar-btn:hover {
+  background: var(--SmartThemeEmColor, rgba(100, 100, 100, 0.8));
+}
+
+.sti-toolbar-btn:active {
+  transform: scale(0.96);
+}
+
+/* ── 楼层图片卡片（通用：inline 和 trailing 共用基础样式） ── */
+.sti-floor-card {
+  margin: 8px 0;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.28));
+  border-radius: 12px;
+  background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.055));
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.5;
+  color: inherit;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* inline 挂载：插入正文流中 */
+.sti-inline-card {
+  margin: 6px 0;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.22));
+  border-radius: 10px;
+  background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.04));
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.5;
+  color: inherit;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  max-width: 100%;
+}
+
+.sti-inline-card .sti-card-image {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 8px;
+  cursor: zoom-in;
+  display: block;
+}
+
+.sti-inline-card .sti-card-caption {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.sti-inline-card .sti-card-mode-tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.15);
+  margin-right: 6px;
+  white-space: nowrap;
+}
+
+/* trailing 挂载：楼层底部独立区域 */
+.sti-trailing-area {
+  margin: 10px 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sti-trailing-area .sti-trailing-header {
+  font-size: 10.5px;
+  opacity: 0.6;
+  color: inherit;
+  padding: 2px 0;
+  letter-spacing: 0.02em;
+}
+
+.sti-floor-card .sti-card-image {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 8px;
+  cursor: zoom-in;
+  display: block;
+}
+
+.sti-floor-card .sti-card-caption {
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: inherit;
+}
+
+.sti-floor-card .sti-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 12px 8px;
+  font-size: 10.5px;
+  opacity: 0.8;
+  color: inherit;
+}
+
+.sti-floor-card .sti-card-status {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sti-floor-card .sti-card-status.generating {
+  background: rgba(100, 150, 255, 0.2);
+}
+
+.sti-floor-card .sti-card-status.completed {
+  background: rgba(100, 200, 100, 0.2);
+}
+
+.sti-floor-card .sti-card-status.failed {
+  background: rgba(255, 100, 100, 0.2);
+}
+
+/* ── Tag 编辑器（后续阶段使用） ── */
+.sti-prompt-editor {
+  max-width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.sti-prompt-editor .sti-segment {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border-left: 3px solid;
+}
+
+.sti-prompt-editor .sti-segment.character {
+  border-color: #888;
+}
+
+.sti-prompt-editor .sti-segment.scene {
+  border-color: #4caf50;
+}
+
+.sti-prompt-editor .sti-segment.global {
+  border-color: #8888ff;
+}
+
+.sti-prompt-editor .sti-tag-en.character {
+  color: inherit;
+}
+
+.sti-prompt-editor .sti-tag-en.scene {
+  color: #4caf50;
+  font-weight: 500;
+}
+
+.sti-prompt-editor .sti-tag-zh {
+  color: inherit;
+  opacity: 0.75;
+  font-size: 11px;
+}
+
+.sti-prompt-editor .sti-segment-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.sti-prompt-editor .sti-segment-actions button {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.sti-prompt-editor .sti-segment-actions button:hover {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+/* ── 小剧场卡片（后续阶段使用） ── */
+.sti-cs-bar {
+  display: flex;
+  margin: 8px 0 2px;
+  padding: 0;
+}
+
+.sti-cs-card {
+  width: 100%;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.28));
+  border-radius: 12px;
+  background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.055));
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.5;
+  color: inherit;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.sti-cs-card > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.sti-cs-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sti-cs-card > summary::marker {
+  content: '';
+}
+
+.sti-cs-card > summary:hover {
+  background: rgba(128, 128, 128, 0.09);
+}
+
+.sti-cs-card[open] > summary {
+  border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.16));
+}
+
+.sti-cs-thumb {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  object-position: top center;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.24));
+  display: block;
+  background: rgba(128, 128, 128, 0.1);
+}
+
+.sti-cs-kicker {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.16);
+  color: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sti-cs-headline {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.sti-cs-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 12px 12px;
+}
+
+.sti-cs-figure {
+  display: block;
+  flex: 0 0 132px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgba(128, 128, 128, 0.1);
+  cursor: zoom-in;
+  border-radius: 10px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.sti-cs-photo {
+  width: 132px;
+  height: 176px;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+  transition: opacity 0.15s ease;
+}
+
+.sti-cs-meta {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.sti-cs-caption {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-word;
+  color: inherit;
+}
+
+.sti-cs-actions {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sti-cs-regen {
+  flex: 0 0 auto;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.38));
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  border-radius: 7px;
+  padding: 2px 9px;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.6;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.sti-cs-regen:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.16);
+}
+
+.sti-cs-regen:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── 多格分镜横向条 ── */
+.sti-cs-body.is-story {
+  flex-direction: column;
+  gap: 9px;
+}
+
+.sti-cs-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 3px;
+  scrollbar-width: thin;
+}
+
+.sti-cs-panel {
+  flex: 0 0 132px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.sti-cs-cell {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: zoom-in;
+  line-height: 0;
+}
+
+.sti-cs-cell-img {
+  width: 132px;
+  height: 176px;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+  transition: opacity 0.15s ease;
+}
+
+.sti-cs-num {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 9.5px;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* ── 彩蛋对话/旁白 ── */
+.sti-cs-lines {
+  margin-top: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: inherit;
+  opacity: 0.85;
+  max-height: 9.8em;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  min-width: 0;
+}
+
+.sti-cs-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sti-cs-line b {
+  font-weight: 600;
+  opacity: 0.72;
+  margin-right: 2px;
+}
+
+.sti-cs-line.is-narr {
+  opacity: 0.72;
+}
+
+/* ── 楼层操作按钮 ── */
+.sti-floor-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.15s ease;
+}
+
+.sti-floor-btn:hover {
+  background: rgba(128, 128, 128, 0.2);
+}
+
+/* ── 占位条（还没生成） ── */
+.sti-cs-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px dashed rgba(128, 128, 128, 0.4);
+  border-radius: 10px;
+  background: transparent;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: inherit;
+  opacity: 0.8;
+}
+
+.sti-cs-empty-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sti-cs-empty-btn {
+  flex: 0 0 auto;
+  border: 1px solid rgba(128, 128, 128, 0.42);
+  background: rgba(128, 128, 128, 0.09);
+  color: inherit;
+  border-radius: 7px;
+  padding: 2px 11px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.sti-cs-empty-btn:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.18);
+}
+
+.sti-cs-empty-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── 设置面板 ── */
+.sti-settings-section {
+  padding: 12px;
+}
+
+.sti-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sti-settings-row label {
+  font-size: 13px;
+  color: inherit;
+}
+
+.sti-settings-row select,
+.sti-settings-row input[type="number"] {
+  background: var(--SmartThemeBlurTintColor, rgba(50, 50, 50, 0.5));
+  color: inherit;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 13px;
+}
+
+/* ============================================================
+ * 选段面板
+ * ============================================================ */
+
+.sti-panel-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10001;
+  display: none;
+}
+
+.sti-selection-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 680px;
+  max-width: 92vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  z-index: 10002;
+  display: none;
+  background: var(--SmartThemeBlurTintColor, rgba(40, 40, 40, 0.95));
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  scrollbar-width: thin;
+}
+
+.sti-selection-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sti-selection-panel::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.3);
+  border-radius: 4px;
+}
+
+/* ── 面板标题 ── */
+.sti-panel-title {
+  padding: 14px 16px 10px;
+  font-size: 15px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.16));
+  color: inherit;
+}
+
+/* ── 选段方式标签 ── */
+.sti-method-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 16px 0;
+  border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.16));
+}
+
+.sti-method-tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 12.5px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.sti-method-tab:hover {
+  opacity: 1;
+}
+
+.sti-method-tab.active {
+  opacity: 1;
+  border-bottom-color: var(--SmartThemeEmColor, rgba(100, 150, 255, 0.7));
+  font-weight: 600;
+}
+
+/* ── 面板内容区 ── */
+.sti-panel-content {
+  padding: 12px 16px;
+  min-height: 60px;
+}
+
+.sti-selector-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sti-selector-label {
+  font-size: 12px;
+  opacity: 0.8;
+  color: inherit;
+}
+
+.sti-floor-select {
+  background: var(--SmartThemeBlurTintColor, rgba(50, 50, 50, 0.5));
+  color: inherit;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  max-width: 100%;
+}
+
+/* ── 范围选择器 ── */
+.sti-range-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sti-range-row span {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.sti-range-row .sti-floor-select {
+  flex: 1 1 120px;
+  min-width: 120px;
+}
+
+/* ── 排除楼层列表 ── */
+.sti-exclude-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.sti-exclude-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.sti-exclude-item input[type="checkbox"] {
+  cursor: pointer;
+}
+
+/* ── 勾选楼层列表 ── */
+.sti-picked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.sti-picked-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.sti-picked-item input[type="checkbox"] {
+  cursor: pointer;
+}
+
+/* ── 手动编辑器 ── */
+.sti-manual-textarea {
+  width: 100%;
+  background: var(--SmartThemeBlurTintColor, rgba(50, 50, 50, 0.5));
+  color: inherit;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 120px;
+}
+
+.sti-manual-textarea:focus {
+  outline: none;
+  border-color: var(--SmartThemeEmColor, rgba(100, 150, 255, 0.6));
+}
+
+.sti-manual-note {
+  font-size: 11px;
+  opacity: 0.6;
+  color: inherit;
+  padding: 4px 0;
+}
+
+/* ── 模式选择器 ── */
+.sti-mode-selector {
+  padding: 10px 16px;
+  border-top: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.16));
+}
+
+.sti-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.sti-mode-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  color: inherit;
+}
+
+.sti-mode-item:hover {
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.sti-mode-item.active {
+  border-color: var(--SmartThemeEmColor, rgba(100, 150, 255, 0.5));
+  background: rgba(100, 150, 255, 0.08);
+}
+
+.sti-mode-item input[type="radio"] {
+  margin-top: 3px;
+  cursor: pointer;
+}
+
+.sti-mode-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sti-mode-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: inherit;
+}
+
+.sti-mode-desc {
+  font-size: 11px;
+  opacity: 0.65;
+  color: inherit;
+  margin-top: 1px;
+}
+
+/* ── 预览区 ── */
+.sti-preview-container {
+  padding: 10px 16px;
+  border-top: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.16));
+}
+
+.sti-preview-info {
+  font-size: 11.5px;
+  opacity: 0.75;
+  color: inherit;
+  margin-bottom: 6px;
+}
+
+.sti-preview-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 4px 0;
+  margin-bottom: 8px;
+}
+
+.sti-preview-message {
+  font-size: 12px;
+  line-height: 1.5;
+  color: inherit;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.sti-preview-message.is-user {
+  background: rgba(100, 150, 255, 0.06);
+}
+
+.sti-preview-speaker {
+  font-weight: 600;
+  opacity: 0.85;
+  margin-right: 4px;
+}
+
+.sti-preview-text {
+  opacity: 0.8;
+}
+
+.sti-preview-empty {
+  font-size: 12px;
+  opacity: 0.5;
+  color: inherit;
+  padding: 16px 0;
+  text-align: center;
+}
+
+.sti-preview-warning {
+  font-size: 12px;
+  color: #ff9966;
+  padding: 8px 12px;
+  margin-top: 8px;
+  border-radius: 6px;
+  background: rgba(255, 100, 50, 0.1);
+}
+
+.sti-preview-textarea {
+  width: 100%;
+  background: var(--SmartThemeBlurTintColor, rgba(50, 50, 50, 0.5));
+  color: inherit;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 80px;
+}
+
+.sti-preview-textarea:focus {
+  outline: none;
+  border-color: var(--SmartThemeEmColor, rgba(100, 150, 255, 0.6));
+}
+
+/* ── 操作按钮 ── */
+.sti-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.16));
+}
+
+.sti-btn {
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+  color: inherit;
+  background: transparent;
+}
+
+.sti-btn:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.sti-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sti-btn-cancel {
+  opacity: 0.8;
+}
+
+.sti-btn-confirm {
+  background: var(--SmartThemeEmColor, rgba(100, 150, 255, 0.2));
+  border-color: var(--SmartThemeEmColor, rgba(100, 150, 255, 0.5));
+  font-weight: 600;
+}
+
+.sti-btn-confirm:hover:not(:disabled) {
+  background: var(--SmartThemeEmColor, rgba(100, 150, 255, 0.35));
+}
+
+/* ── Lightbox 大图查看 ── */
+.sti-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+}
+
+.sti-lightbox-img {
+  max-width: 94vw;
+  max-height: 88vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+
+.sti-lightbox-caption {
+  color: #e8e4dc;
+  font-size: 13px;
+  text-align: center;
+  max-width: 90vw;
+  overflow-wrap: anywhere;
+}
+
+.sti-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sti-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.28);
+}

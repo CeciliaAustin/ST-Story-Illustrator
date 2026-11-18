@@ -1,0 +1,16 @@
+{
+  "name": "st-story-illustrator",
+  "version": "0.1.0",
+  "description": "SillyTavern companion extension for story illustration, manga storyboards, dialogue bubbles, and chibi theater",
+  "type": "module",
+  "scripts": {
+    "build": "vite build && node scripts/copy-build.mjs",
+    "dev": "vite build --watch",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vitest": "^1.6.0"
+  }
+}
