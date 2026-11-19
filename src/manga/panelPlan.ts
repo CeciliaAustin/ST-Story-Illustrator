@@ -24,6 +24,8 @@ import type {
   ComicPagePlan,
 } from '../types';
 import { stripThinkingBlocks } from '../prompt/think';
+import { resolveOutfits } from '../baibai/outfit';
+import type { StatusOutfit } from '../types';
 
 // ============================================================
 // 常量（唯一来源）
@@ -690,6 +692,15 @@ export function parseComicPagePlan(
     }
   }
 
+  // 本批定妆：模型在顶层 cast / outfits 里每人定一次着装，所有页共用同一串。
+  // 不在这里解析，后面角色块就一件衣服都没有——正是「跟柏宝绘穿得不一样」的根因。
+  let batchOutfits: StatusOutfit[] = [];
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const root = data as Record<string, unknown>;
+    const parsed = resolveOutfits(root.outfits ?? root.cast);
+    if (parsed.size) batchOutfits = [...parsed.values()].slice(0, 4);
+  }
+
   let rawPages: unknown[] = [];
   if (Array.isArray(data)) {
     rawPages = data;
@@ -710,7 +721,15 @@ export function parseComicPagePlan(
   const pages: ComicPagePlan[] = [];
   for (let i = 0; i < Math.min(rawPages.length, 8); i += 1) {
     const page = normalizePage(rawPages[i], i, warnings, options.fallbackLayout);
-    if (page) pages.push(page);
+    if (!page) continue;
+    // 页自己写了 outfits 就用自己的；否则整批共用顶层那一份
+    const raw = rawPages[i];
+    const rawRecord = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? raw as Record<string, unknown> : {};
+    const own = resolveOutfits(rawRecord.outfits ?? rawRecord.cast);
+    if (own.size) page.outfits = [...own.values()].slice(0, 4);
+    else if (batchOutfits.length) page.outfits = batchOutfits.map(item => ({ ...item }));
+    pages.push(page);
   }
   return { pages, warnings };
 }

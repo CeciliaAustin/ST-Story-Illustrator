@@ -119,9 +119,56 @@ export function formatBookRoles(
   return lines.join('\n');
 }
 
+/**
+ * 从柏宝书快照抽出「每个人此刻穿什么」，与柏宝绘的角色参考同一批人：
+ * 主角 + important/follow + 正文点名的人。原文保留（多为中文），
+ * 交给写 tag 的模型翻成英文 tag——代码不做翻译，避免把中文塞进 NAI。
+ */
+export function bookOutfits(
+  snapshot: BookSnapshot,
+  bodyText: string,
+  protagonistName = '',
+): Array<{ name: string; outfit: string }> {
+  const out: Array<{ name: string; outfit: string }> = [];
+  const seen = new Set<string>();
+  const push = (rawName: string, rawOutfit: unknown): void => {
+    const name = String(rawName ?? '').trim();
+    const outfit = oneLine(rawOutfit);
+    if (!name || !outfit || seen.has(name)) return;
+    seen.add(name);
+    out.push({ name, outfit });
+  };
+
+  const protagonist = (snapshot.protagonist ?? {}) as Record<string, unknown>;
+  // 主角档在柏宝书里没有名字字段，用 name1 补——与 formatBookRoles 同一口径。
+  if (oneLine(protagonist.outfit)) push(protagonistName || '主角', protagonist.outfit);
+
+  const npcs = Array.isArray(snapshot.npcs) ? snapshot.npcs : [];
+  for (const raw of npcs) {
+    const n = (raw ?? {}) as Record<string, unknown>;
+    const name = oneLine(n.name);
+    if (!name) continue;
+    if (n.important === true || n.follow === true || String(bodyText ?? '').includes(name)) {
+      // NPC 有时把衣着写在 desc 里而不是 outfit（柏宝书两种版本都存在）。
+      push(name, oneLine(n.outfit) || oneLine(n.desc));
+    }
+  }
+  return out.slice(0, 8);
+}
+
 export interface BookContext {
   text: string;
   timing: 'before_latest' | 'after_latest';
+  /**
+   * 柏宝书里每个人的**当前着装**（原文，可能是中文）。
+   *
+   * 为什么要把结构化着装单独带出来：以前只把它塞进 `text` 给写 tag 的模型看，
+   * 而插画/漫画的模板又明令「服装由角色库提供」——模型照办，结果角色块里
+   * 一件衣服都没有。真正的做法和柏宝绘一样：把「此刻穿什么」当**冻结的定妆**
+   * 交给模型翻成英文 tag，代码再逐字拼进每个角色块。这里只负责把原文取出，
+   * 不翻译（翻译是写 tag 那一步的事，且必须英文）。
+   */
+  outfits?: Array<{ name: string; outfit: string }>;
 }
 
 /**
@@ -163,9 +210,11 @@ export function readBookRoles(
 
     const roles = formatBookRoles(snapshot, bodyText, protagonistName);
     if (!roles) return null;
+    const outfits = bookOutfits(snapshot, bodyText, protagonistName);
     return {
       timing,
       text: `【角色参考（柏宝书同步的最新状态，只读）】\n${roles}`,
+      ...(outfits.length ? { outfits } : {}),
     };
   } catch (error) {
     console.warn('[ST-Story-Illustrator] 读取柏宝书角色状态失败，本次只用角色库与正文。', error);

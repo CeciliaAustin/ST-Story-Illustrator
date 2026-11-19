@@ -85,10 +85,11 @@ const SPEECH_ROOM_RULE =
 const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你的任务是根据给定剧情，输出结构化的英文生图标签。
 严格遵守：
 1. 先按前面的规范在心里过一遍检查清单（要写出来就写在 <thinking>…</thinking> 里，并且必须闭合）；然后只输出一个 JSON 对象，JSON 之外不要任何解释文字、不要 Markdown 代码围栏。
-2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}]{{#nl}},"nl":"可选英文自然语言描述"{{/nl}},"negative":"可选英文负面词","size":"portrait|landscape"}。
+2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}]{{#nl}},"nl":"可选英文自然语言描述"{{/nl}},"negative":"可选英文负面词","size":"portrait|landscape","cast":[{"name":"角色名","outfit":"英文danbooru短语：这一批的当前着装"}]}。
 3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
 4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
 4a. **Base 与角色块是硬边界**：scene / global 段里绝对不要出现任何单个角色的外貌、服装、发色、瞳色、体型——这些只属于该角色的 character 段。两边都写，等于把两套头发两套衣服摊给同框所有人，模型只能随机分配。
+4c. **服装必须写进 cast[].outfit**：若给了【本批定妆】，把里面每个人那套原样翻成英文 danbooru 短语（版型+主色+关键部件），每人一条写进 cast；没有定妆块就按正文/角色设定定一套具体的。这一批只有这一张图，一件不漏；代码会把它逐字拼进对应角色的 character 段，所以 character 段里不要重复写衣服。outfit 必须是纯英文，出现中文会被整条丢弃。
 4b. scene 段至少 5 个 tag，必须包含：一个景别（close-up / upper body / medium shot / full body / wide shot）、地点、光线或时间、以及人与人之间的共享互动。
 5. 一次只策划一个明确的瞬间，不要描述整段剧情的时间跨度。
 6. 场景与动作必须以给定剧情和上下文为依据，不得凭空添加关键剧情事实。
@@ -105,10 +106,11 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 
 const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"整页 nl（可省略：各格 nl 优先）"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","shot":"wide shot|medium shot|close-up|extreme close-up","subject":"这一格的信息点(一句中文：读者要看到什么)","characters":[{"name":"角色","act":"English danbooru phrases: 这一格在做什么","look":"English 外貌短语，仅角色库里没有的人填"}],"mood":"氛围"{{#nl}},"nl":"English，一句 20~35 词：镜头距离 + 谁在画面哪一侧 + 在做什么 + 空白留在哪"{{/nl}}}]}]}
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"整页 nl（可省略：各格 nl 优先）"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","shot":"wide shot|medium shot|close-up|extreme close-up","subject":"这一格的信息点(一句中文：读者要看到什么)","characters":[{"name":"角色","act":"English danbooru phrases: 这一格在做什么","look":"English 外貌短语，仅角色库里没有的人填"}],"mood":"氛围"{{#nl}},"nl":"English，一句 20~35 词：镜头距离 + 谁在画面哪一侧 + 在做什么 + 空白留在哪"{{/nl}}}]}],"cast":[{"name":"角色名","outfit":"English danbooru phrases: 这一批的当前着装，版型+主色+关键配件"}]}
 硬要求：
 1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
 2. page.tags 必须写出：在场的人**在做什么**（共享动作与互动）、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。**单个角色的外貌、发色、瞳色、服装一律不写进 page.tags**——它们由 panels[].characters[].name 对应的角色库条目提供，代码会拼成每个角色自己的提示词；两边都写会把两套衣服糊给同框所有人。tag 写足 15~25 个没关系（构图、地点、道具、共享动作、光线都算），但每一个都必须是画面里真的有的东西。
+2b. **服装只写一次，写在顶层 cast[].outfit**：给了【本批定妆】就照着把每人那套翻成英文 danbooru 短语（版型+主色+关键部件），一个角色一条；所有页所有格穿的都是这同一串，绝不换。代码把它逐字拼进该角色的每个角色块，所以 tags / nl / act 里都不要再写衣服。outfit 必须是纯英文，带中文会被整条丢弃。
 3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
 4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），{{#nl}}各格远近只写在 nl 里{{/nl}}{{^nl}}各格远近只能用构图 tag 区分{{/nl}}。
 5. {{#nl}}**每一格都必须写 nl**（page.nl 可以省略）：一句英文，20~35 词，写清「镜头距离 + 谁在画面哪一侧 + 正在做什么 + 画面的空白留在哪」。只写「两人在桌边」这种没有镜头信息的句子，两格就会长得一模一样。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}

@@ -29,6 +29,7 @@ import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
 import { readBackendState, baiBaiAdapter } from '../baibai/imageAdapter';
 import { readBookRoles } from '../baibai/bookMemory';
+import { appendOutfit, buildOutfitBlock, outfitOf, resolveOutfits } from '../baibai/outfit';
 import { saveChatSafe, readPersonaName } from '../host/sillytavern';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { buildLibraryBlock, buildCastBlock, readCastContext } from '../theater/library';
@@ -84,6 +85,20 @@ function sceneFromSegment(segment: StorySegment) {
 // 插画模式
 // ============================================================
 
+/**
+ * 定妆块里要覆盖谁：先在选段正文里逐字点名的人（最多 4 个），
+ * 一个都没点到时用角色库前几位。宁可少定，也不要把无关路人的衣服塞进去。
+ */
+function planIllustrationCast(text: string, library: readonly BaiBaiCharacter[]): string[] {
+  const body = String(text ?? '');
+  const named = library
+    .map(c => String(c.name ?? '').trim())
+    .filter(name => name && body.includes(name));
+  const picked = named.slice(0, 4);
+  if (picked.length) return picked;
+  return library.slice(0, 4).map(c => String(c.name ?? '').trim()).filter(Boolean);
+}
+
 async function runIllustration(
   task: VisualTask,
   ctx: QueueRunContext,
@@ -104,6 +119,14 @@ async function runIllustration(
   // 柏宝书给的是「此刻穿什么、什么状态」，与角色库的「固定外貌」互补；
   // 正文里换过衣服、淋过雨、衣服破了，只有它知道。读不到就不发（不猜）。
   const book = readBookRoles(floor, segment.text, readPersonaName());
+  // 本批定妆：柏宝书此刻穿什么 + 角色库固定着装，交给写 tag 的模型翻成英文。
+  // 以前只把角色参考当文本发过去、模板又禁止写服装 → 角色块里一件衣服都没有。
+  const illustrationOutfitBlock = buildOutfitBlock({
+    ...(book?.outfits ? { bookOutfits: book.outfits } : {}),
+    library: characters.characters,
+    cast: planIllustrationCast(segment.text, characters.characters),
+    personaName: readPersonaName(),
+  });
   if (!libraryBlock) {
     recordNotice({
       mode: 'illustration',
@@ -124,6 +147,7 @@ async function runIllustration(
       includeNegative: true,
     },
     ...(book ? { bookBlock: book.text } : {}),
+    ...(illustrationOutfitBlock ? { outfitBlock: illustrationOutfitBlock } : {}),
     ...(libraryBlock ? { libraryBlock } : {}),
     ...(castBlock ? { castBlock } : {}),
     caller: makeModeLlmCaller(deps.fullSettings, 'illustration'),
@@ -144,7 +168,23 @@ async function runIllustration(
   // 旧版把所有段拼成一串塞进 Base，两个人的头发衣服全糊在一起——那正是「人物不像」的来源。
   const nativeCharacters = (await readBackendState()).supportsCharacters !== false;
   const split = splitSegments(tagSegments, nativeCharacters);
-  const prompt = split.base;
+  // 与柏宝绘同一条定妆链路：把模型翻出的英文着装逐字拼进每个角色块，
+  // 一个人一批只穿一套。没有它，插图穿的衣服每次都由 NAI 随机决定。
+  const illustrationPersona = readPersonaName();
+  const illustrationOutfits = resolveOutfits(plan.data.outfits, illustrationPersona);
+  const dressedCharacters = split.characters.map(block => {
+    const outfit = outfitOf(block.name, illustrationOutfits, characters.characters, illustrationPersona);
+    if (!outfit) return block;
+    const tag = appendOutfit(block.tag, outfit);
+    return tag === block.tag ? block : { ...block, tag };
+  });
+  const outfitBaseTags = dressedCharacters.length
+    ? []
+    : [...illustrationOutfits.values()].map(item => item.outfit);
+  const baseWithOutfit = outfitBaseTags.length
+    ? `${split.base.replace(/,\s*$/, '')}, ${outfitBaseTags.join(', ')}`
+    : split.base;
+  const prompt = baseWithOutfit;
   if (!prompt.trim()) throw new Error('组装后的英文 prompt 为空。');
 
   ctx.report({ stage: 'generating' });
@@ -164,7 +204,7 @@ async function runIllustration(
     // 却会留在正文里被后续「改词」看到，误导以为这张图带自然语言。
     ...(wantNl && plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
-    ...(split.characters.length ? { characters: split.characters } : {}),
+    ...(dressedCharacters.length ? { characters: dressedCharacters } : {}),
     size: plan.data.size === 'landscape' ? 'landscape' : 'portrait',
   });
   const hash = promptHash(tag);
@@ -302,8 +342,15 @@ async function runComic(
   const comicBook = readBookRoles(floor, segment.text, personaName);
   const comicLibrary = buildLibraryBlock(characters.characters);
   const comicCast = buildCastBlock(readCastContext(segment.messages.find(m => !m.isUser)?.speaker ?? ''));
+  const comicOutfitBlock = buildOutfitBlock({
+    ...(comicBook?.outfits ? { bookOutfits: comicBook.outfits } : {}),
+    library: characters.characters,
+    cast: planIllustrationCast(segment.text, characters.characters),
+    personaName,
+  });
   const comicBlocks = {
     ...(comicBook ? { bookBlock: comicBook.text } : {}),
+    ...(comicOutfitBlock ? { outfitBlock: comicOutfitBlock } : {}),
     ...(comicLibrary ? { libraryBlock: comicLibrary } : {}),
     ...(comicCast ? { castBlock: comicCast } : {}),
   };

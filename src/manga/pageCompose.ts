@@ -10,6 +10,7 @@ import type { BaiBaiCharacter, ComicDialogue, ComicPagePlan, ComicPanelPlan, Pan
 import { mergeCharacterTags } from './panelRelevance';
 import { characterPromptsFromLibrary, ensurePageCast, resolveCastNames } from './tagSplit';
 import { declaredPeople } from './peopleCount';
+import { appendOutfit, outfitOf, resolveOutfits } from '../baibai/outfit';
 import type { BbiTagCharacter } from '../baibai/bbiTag';
 
 /** 四档版面的总述句（与 enforcePanelPrompt 的档位同义，供 nl 兜底用）。 */
@@ -281,8 +282,31 @@ export function composePagePrompt(
   const characterPrompts = native
     ? characterPromptsFromLibrary(cast, characters, multiPanel ? undefined : resolved.acts, resolved.looks)
     : [];
-  // 拆得出来就拆；拆不出来（角色库空 / 名字对不上）退回老口径，至少别丢外貌词
-  const prompt = characterPrompts.length ? base : mergeCharacterTags(base, cast, characters);
+
+  // ★ 服装一致性（与柏宝绘同一条链路）：把本批定妆逐字拼进每个角色块。
+  // 以前这里完全没碰服装：角色库 outfit 字段全空、模板又禁止模型写服装，
+  // 于是角色块里只有发色/眼睛/痣——NAI 只能自己编衣服，才跟柏宝绘的图对不上。
+  // 定妆来源：模型据柏宝书翻出的英文 cast[].outfit → 回落角色库 fields.outfit。
+  // 同一批（多页 / 多格）用同一串，按名字冻结，谁都不会在某一格换衣服。
+  const outfitMap = resolveOutfits(page.outfits, options.personaName);
+  const dressCharacter = (block: BbiTagCharacter): BbiTagCharacter => {
+    const outfit = outfitOf(block.name, outfitMap, characters, options.personaName);
+    if (!outfit) return block;
+    const tag = appendOutfit(block.tag, outfit);
+    return tag === block.tag ? block : { ...block, tag };
+  };
+  const dressed = characterPrompts.map(dressCharacter);
+
+  // 拆得出来就拆；拆不出来（角色库空 / 名字对不上）退回老口径。
+  // 退回时服装只能并进 Base——但每个角色的串都带名字前缀，仍是确定的同一套。
+  const merged = dressed.length ? base : mergeCharacterTags(base, cast, characters);
+  // 没有原生角色块时，定妆也要落到 Base，否则 NAI 依旧自己编衣服
+  const fallbackOutfits = dressed.length
+    ? []
+    : [...outfitMap.values()].map(item => item.outfit);
+  const bareBase = merged.toLowerCase().replace(/\s+/g, ' ');
+  const extraTags = fallbackOutfits.filter(o => !bareBase.includes(o.toLowerCase()));
+  const prompt = extraTags.length ? `${merged}, ${extraTags.join(', ')}` : merged;
   // 各格 nl 是分镜的全部信息量（哪一格是什么镜头、谁在哪里、留白在哪）：
   // 只要有一格真的写了 nl / shot / subject，就用「按格拼出来的」，
   // 而不是模型那句笼统的 page.nl（它经常只是版面首句的复述）。
@@ -302,6 +326,6 @@ export function composePagePrompt(
     nl,
     dialogue: collectPageDialogue(page),
     panelTitles: (page.panels ?? []).map(p => p.title).filter(Boolean),
-    characters: characterPrompts,
+    characters: dressed,
   };
 }

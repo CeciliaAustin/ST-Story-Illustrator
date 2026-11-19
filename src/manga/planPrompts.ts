@@ -24,6 +24,7 @@ import type {
 import { stripThinkingBlocks } from '../prompt/think';
 import { renderPromptDoc, type PromptOverrideMap } from '../prompt/presets';
 import { characterTagOf } from './tagSplit';
+import { resolveOutfits } from '../baibai/outfit';
 import {
   buildPanelRule,
   normalizeLayoutChoice,
@@ -166,6 +167,11 @@ export interface SceneInput {
 export interface IllustrationContextBlocks {
   /** 柏宝书角色参考：主角/NPC 的**当前**外貌、着装、状态（服装一致性的另一半） */
   bookBlock?: string;
+  /**
+   * 本批定妆：把柏宝书当前着装 + 角色库固定着装翻成英文 tag 的硬指令。
+   * 没有它，角色块里一件衣服都没有（模板禁止写服装），出图就会跟柏宝绘穿得不一样。
+   */
+  outfitBlock?: string;
   /** 柏宝绘角色库全文（按字段渲染，含发色/瞳色/体型/固定着装） */
   libraryBlock?: string;
   /** 「谁是谁」：用户扮演谁、角色卡是谁 */
@@ -232,6 +238,8 @@ export function buildIllustrationUserPrompt(
   const parts: string[] = [];
   // 柏宝绘把柏宝书参考放在 user 消息最前面：它是「此刻穿什么、什么状态」的唯一来源。
   // 放在正文之前，模型读到正文时已经知道每个人现在长什么样、穿着什么。
+  // 定妆块紧随其后、更靠前——这是把服装真正写进角色块的唯一硬指令。
+  if (blocks.outfitBlock) parts.push(blocks.outfitBlock);
   if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push('【本次画面主体（选段，必须以此为准）】\n' + scene.selectedText);
   if (scene.floorText) parts.push('【所在楼层全文（情境参考）】\n' + scene.floorText);
@@ -295,6 +303,9 @@ export function parseIllustrationResponse(text: string): GeneratePromptResponse 
   if (segments.length === 0) return null;
 
   const result: GeneratePromptResponse = { segments };
+  // 本批定妆：模型据柏宝书翻出的英文着装。没有它，角色块里一件衣服都没有。
+  const outfits = resolveOutfits(data.outfits ?? data.cast);
+  if (outfits.size) result.outfits = [...outfits.values()].slice(0, 4);
   if (typeof data.nl === 'string' && data.nl.trim()) result.nl = data.nl.trim().slice(0, 2000);
   if (typeof data.negative === 'string' && data.negative.trim()) result.negative = data.negative.trim().slice(0, 2000);
   if (typeof data.size === 'string' && data.size.trim()) result.size = data.size.trim().slice(0, 40);
@@ -366,6 +377,7 @@ export function buildComicUserPrompt(
   blocks: IllustrationContextBlocks = {},
 ): string {
   const parts: string[] = [];
+  if (blocks.outfitBlock) parts.push(blocks.outfitBlock);
   if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push('【剧情（据此排分镜）】\n' + scene.selectedText);
   if (scene.floorText) parts.push('【所在楼层全文】\n' + scene.floorText);

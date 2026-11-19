@@ -150,6 +150,11 @@ export interface GeneratePromptResponse {
   nl?: string;
   negative?: string;
   size?: string;
+  /**
+   * 本批定妆：每个出场角色一条英文着装 tag，由模型据柏宝书/角色库定一次。
+   * 代码逐字拼进每个角色块（及 Base 兜底），保证与柏宝绘穿同一套。
+   */
+  outfits?: StatusOutfit[];
   meta?: {
     modelLabel?: string;
     generatedAt?: number;
@@ -521,6 +526,11 @@ export interface ComicPagePlan {
   nl?: string;
   /** 整页台词（气泡锚点按整页算）。 */
   dialogue?: ComicDialogue[];
+  /**
+   * 本批定妆：每个出场角色的英文着装 tag。一页一张图，但多页是同一次出图，
+   * 所有页必须穿同一套——代码逐字拼进每个角色块，这是服装一致性的硬约束。
+   */
+  outfits?: StatusOutfit[];
   /** 各格只作为「这一格画了什么」的内容索引，不再一格一张图。 */
   panels: ComicPanelPlan[];
 }

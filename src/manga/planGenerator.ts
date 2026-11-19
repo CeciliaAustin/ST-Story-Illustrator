@@ -122,6 +122,8 @@ export interface GenerateIllustrationInput {
   promptOverrides?: PromptOverrideMap;
   /** 柏宝书角色参考（当前外貌/着装/状态） */
   bookBlock?: string;
+  /** 本批定妆硬指令（柏宝书当前着装 + 角色库固定着装） */
+  outfitBlock?: string;
   /** 柏宝绘角色库全文（含发色/瞳色/固定着装） */
   libraryBlock?: string;
   /** 「谁是谁」：用户扮演谁、角色卡是谁 */
@@ -135,6 +137,7 @@ export async function generateIllustrationPlan(
   const system = buildIllustrationSystemPrompt(input.options, input.promptOverrides);
   const user = buildIllustrationUserPrompt(input.scene, input.characters ?? [], {
     ...(input.bookBlock ? { bookBlock: input.bookBlock } : {}),
+    ...(input.outfitBlock ? { outfitBlock: input.outfitBlock } : {}),
     ...(input.libraryBlock ? { libraryBlock: input.libraryBlock } : {}),
     ...(input.castBlock ? { castBlock: input.castBlock } : {}),
   });
@@ -170,6 +173,8 @@ export interface GenerateComicPlanInput {
   promptOverrides?: PromptOverrideMap;
   /** 柏宝书角色参考（当前外貌/着装/状态） */
   bookBlock?: string;
+  /** 本批定妆硬指令（柏宝书当前着装 + 角色库固定着装） */
+  outfitBlock?: string;
 }
 
 export async function generateComicPlan(
@@ -181,7 +186,10 @@ export async function generateComicPlan(
     input.scene,
     input.characters ?? [],
     input.options.extraInstruction,
-    { ...(input.bookBlock ? { bookBlock: input.bookBlock } : {}) },
+    {
+      ...(input.bookBlock ? { bookBlock: input.bookBlock } : {}),
+      ...(input.outfitBlock ? { outfitBlock: input.outfitBlock } : {}),
+    },
   );
   try {
     const raw = await caller(system, user);
