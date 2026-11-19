@@ -251,7 +251,7 @@ async function waitForApi(maxAttempts = MAX_WAIT_ATTEMPTS) {
     if (result.status === "version_mismatch" || result.status === "error") {
       return result;
     }
-    await sleep$2(WAIT_INTERVAL_MS);
+    await sleep$3(WAIT_INTERVAL_MS);
   }
   return { status: "not_installed" };
 }
@@ -323,7 +323,7 @@ class BaiBaiApiError extends Error {
     this.availability = availability;
   }
 }
-function sleep$2(ms) {
+function sleep$3(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 const MES_SELECTOR = ".mes";
@@ -2126,7 +2126,7 @@ function panelWindow() {
   var _a;
   return ((_a = shadowRoot()) == null ? void 0 : _a.querySelector(".bbi-window")) ?? null;
 }
-function sleep$1(ms) {
+function sleep$2(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 async function waitFor(fn, timeoutMs) {
@@ -2135,34 +2135,44 @@ async function waitFor(fn, timeoutMs) {
     const value = fn();
     if (value) return value;
     if (Date.now() >= deadline) return null;
-    await sleep$1(120);
+    await sleep$2(120);
   }
 }
-function clickOpenEntry() {
-  var _a;
-  const menu = document.getElementById("bbi-menu-item");
-  if (menu) {
-    menu.click();
-    return true;
-  }
-  const topbar = document.querySelector("#bbi-topbar-button .drawer-toggle");
-  if (topbar) {
-    topbar.click();
-    return true;
-  }
-  const orb = (_a = shadowRoot()) == null ? void 0 : _a.querySelector(".bbi-orb");
-  if (orb) {
-    orb.click();
-    return true;
-  }
-  return false;
+function openEntries() {
+  return [
+    () => {
+      const menu = document.getElementById("bbi-menu-item");
+      if (!menu) return false;
+      menu.click();
+      return true;
+    },
+    () => {
+      const topbar = document.querySelector("#bbi-topbar-button .drawer-toggle");
+      if (!topbar) return false;
+      topbar.click();
+      return true;
+    },
+    () => {
+      var _a;
+      const orb = (_a = shadowRoot()) == null ? void 0 : _a.querySelector(".bbi-orb");
+      if (!orb) return false;
+      orb.click();
+      return true;
+    }
+  ];
 }
 async function ensurePanelOpen(timeoutMs) {
   if (panelWindow()) return shadowRoot();
   const root = shadowRoot();
   if (!root) return null;
-  if (!clickOpenEntry()) return null;
-  return await waitFor(() => panelWindow() ? shadowRoot() : null, timeoutMs);
+  const perEntry = Math.max(1200, Math.round(timeoutMs / 3));
+  for (const click of openEntries()) {
+    if (panelWindow()) return shadowRoot();
+    if (!click()) continue;
+    const opened = await waitFor(() => panelWindow() ? shadowRoot() : null, perEntry);
+    if (opened) return opened;
+  }
+  return null;
 }
 function navLabelOf(btn) {
   var _a;
@@ -2233,7 +2243,7 @@ async function gotoNai(root) {
   const tabs = tabButtons(root);
   if (nav && !nav.classList.contains("is-active")) {
     nav.click();
-    await sleep$1(240);
+    await sleep$2(240);
     return "pending";
   }
   if (!nav && tabs.length === 0) return "pending";
@@ -2241,7 +2251,7 @@ async function gotoNai(root) {
   if (!tab) return "stuck";
   if (!tab.classList.contains("is-on")) {
     tab.click();
-    await sleep$1(240);
+    await sleep$2(240);
     return "pending";
   }
   return "ready";
@@ -2255,7 +2265,10 @@ function closePanelIfWeOpened(weOpened) {
   );
   close == null ? void 0 : close.click();
 }
-async function switchBaiBaiPlan(planId, timeoutMs = 15e3) {
+async function switchBaiBaiPlan(planId, options = {}) {
+  const opts = typeof options === "number" ? { timeoutMs: options } : options;
+  const timeoutMs = opts.timeoutMs ?? 15e3;
+  const force = opts.force === true;
   const snap = readOutConfig();
   const target = snap.plans.find((p) => p.id === planId);
   if (!target) {
@@ -2268,7 +2281,7 @@ async function switchBaiBaiPlan(planId, timeoutMs = 15e3) {
       message: `柏宝绘当前出图渠道是「${snap.backend}」，不是 NAI；按模式分配方案只对 NAI 生效。请先在柏宝绘里把出图后端改成 NAI。`
     };
   }
-  if (snap.activePlanId === planId) {
+  if (!force && snap.activePlanId === planId) {
     return { ok: true, reason: "already", message: `「${target.name}」已经是当前方案。` };
   }
   const weOpened = !panelWindow();
@@ -2288,7 +2301,7 @@ async function switchBaiBaiPlan(planId, timeoutMs = 15e3) {
     if (!root) break;
     const navState = await gotoNai(root);
     if (navState !== "ready") {
-      if (navState === "stuck") await sleep$1(200);
+      if (navState === "stuck") await sleep$2(200);
       continue;
     }
     const picked = pickPlanRadio(planRadios(root), target.name);
@@ -2300,7 +2313,7 @@ async function switchBaiBaiPlan(planId, timeoutMs = 15e3) {
       ambiguous = true;
       break;
     }
-    await sleep$1(200);
+    await sleep$2(200);
   }
   if (ambiguous) {
     closePanelIfWeOpened(weOpened);
@@ -2323,7 +2336,8 @@ async function switchBaiBaiPlan(planId, timeoutMs = 15e3) {
     closePanelIfWeOpened(weOpened);
     return { ok: false, reason: "no-ui", message: `方案「${target.name}」被禁用，无法选中。` };
   }
-  if (!isRadioChecked(radio)) {
+  const wasChecked = isRadioChecked(radio);
+  if (!wasChecked) {
     radio.click();
     let confirmed = await waitFor(() => {
       const now = pickPlanRadio(planRadios(shadowRoot() ?? root), target.name).radio;
@@ -2355,8 +2369,11 @@ async function switchBaiBaiPlan(planId, timeoutMs = 15e3) {
   if (!agreed) {
     const after = readOutConfig();
     console.warn(
-      `[配图] 方案已在面板上切到「${target.name}」，但设置副本仍显示「${after.activePlanName || "未知"}」，以其自身落盘延迟处理，不影响本次出图。`
+      `[配图] 方案已在面板上切到「${target.name}」，但设置副本仍显示「${after.activePlanName || "未知"}」，以其自身落盘延迟处理，不影响本次出图。（因此判断"现在用的是哪套"不能只看这份副本——收尾还原方案时一律走 force。）`
     );
+  }
+  if (wasChecked) {
+    return force ? { ok: true, reason: "already", message: `面板上已经是「${target.name}」，无需再切。` } : { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
   }
   return { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
 }
@@ -3215,7 +3232,8 @@ function buildLogRow(entry) {
   summary.textContent = [
     formatTime(entry.at),
     kindText,
-    MODE_LABEL[entry.mode] ?? entry.mode,
+    // 'restore' 不是创作模式，是收尾的「还原方案」——直接显示中文，别让日志里冒英文键名
+    entry.mode === "restore" ? "还原方案" : MODE_LABEL[entry.mode] ?? entry.mode,
     entry.kind === "plan" ? "" : `#${entry.floor}`,
     entry.kind === "notice" ? "" : entry.status === "error" ? "失败" : "成功",
     entry.durationMs !== void 0 ? `${(entry.durationMs / 1e3).toFixed(1)}s` : "",
@@ -3620,8 +3638,13 @@ const baiBaiAdapter = {
 async function readBackendState() {
   return await getBackendStatus();
 }
+let switchPlan = (planId, options) => switchBaiBaiPlan(planId, options);
 let savedPlanId = null;
 let savedPlanName = "";
+let holders = 0;
+function acquirePlanGuard() {
+  holders += 1;
+}
 async function ensureModeOutPlan(mode, settings2) {
   var _a;
   const planId = (_a = settings2.modeOutPlans) == null ? void 0 : _a[mode];
@@ -3640,7 +3663,7 @@ async function ensureModeOutPlan(mode, settings2) {
   }
   let result;
   try {
-    result = await switchBaiBaiPlan(planId);
+    result = await switchPlan(planId);
   } catch (e) {
     const detail = `${MODE_LABEL$1[mode]} 切换出图方案「${target.name}」时出错：${e instanceof Error ? e.message : String(e)}`;
     recordPlanSwitch({ mode, plan: target.name, status: "error", detail });
@@ -3653,6 +3676,19 @@ async function ensureModeOutPlan(mode, settings2) {
   }
   recordPlanSwitch({ mode, plan: target.name, status: "ok", detail: result.message });
 }
+const RESTORE_ATTEMPTS = 2;
+const RESTORE_RETRY_MS = 700;
+function sleep$1(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function warnUser(text) {
+  var _a;
+  const toastr = globalThis.toastr;
+  try {
+    (_a = toastr == null ? void 0 : toastr.warning) == null ? void 0 : _a.call(toastr, text);
+  } catch {
+  }
+}
 async function restoreOutPlan(settings2) {
   const target = savedPlanId;
   const targetName = savedPlanName;
@@ -3663,20 +3699,31 @@ async function restoreOutPlan(settings2) {
     recordPlanSwitch({ mode: "restore", plan: targetName, status: "ok", detail: "已关闭「出图后还原方案」，保留当前方案。" });
     return { ok: true };
   }
-  try {
-    const result = await switchBaiBaiPlan(target);
-    if (!result.ok) {
-      const message = `出图已完成，但没能把柏宝绘的方案切回「${targetName || target}」：${result.message}`;
-      recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "error", detail: message });
-      return { ok: false, message };
+  let lastMessage = "";
+  for (let attempt = 1; attempt <= RESTORE_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await switchPlan(target, { force: true, timeoutMs: 8e3 });
+      if (result.ok) {
+        const detail = attempt === 1 ? result.message : `${result.message}（第 ${attempt} 次尝试）`;
+        recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "ok", detail });
+        return { ok: true };
+      }
+      lastMessage = result.message;
+    } catch (e) {
+      lastMessage = e instanceof Error ? e.message : String(e);
     }
-    recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "ok", detail: result.message });
-    return { ok: true };
-  } catch (e) {
-    const message = `出图已完成，但还原方案时出错：${e instanceof Error ? e.message : String(e)}`;
-    recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "error", detail: message });
-    return { ok: false, message };
+    if (attempt < RESTORE_ATTEMPTS) await sleep$1(RESTORE_RETRY_MS);
   }
+  const message = `出图已完成，但没能把柏宝绘的方案切回「${targetName || target}」：${lastMessage}。现在它停在这次出图用的那套上——请到柏宝绘「渠道 → NAI」手动切回，否则接下来的正文插图也会用这套模型与画师串。`;
+  recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "error", detail: message });
+  recordNotice({ mode: "restore", floor: 0, text: message });
+  warnUser("配图：方案没能切回原样，请到柏宝绘里手动切回。");
+  return { ok: false, message };
+}
+async function releasePlanGuard(settings2) {
+  holders = Math.max(0, holders - 1);
+  if (holders > 0) return { ok: true, deferred: true };
+  return restoreOutPlan(settings2);
 }
 const PANEL_BUBBLE_AREAS = [
   "tl",
@@ -5702,11 +5749,12 @@ async function rerollPanel(floor, kind, setId, index2, edit) {
     return { ok: false, message: "这一格没存下当时的出图词，请用「整条重出」。" };
   }
   const mode = modeOfKind(kind);
-  await ensureModeOutPlan(mode, settings2);
+  acquirePlanGuard();
   const rawNl = edit ? edit.nl : panel.story ?? "";
   const seed = randomSeed();
   const startedAt = Date.now();
   try {
+    await ensureModeOutPlan(mode, settings2);
     const nl = kind === "manga" ? buildMangaNl(rawNl) : rawNl;
     const result = await baiBaiAdapter.generate(
       {
@@ -5771,7 +5819,7 @@ async function rerollPanel(floor, kind, setId, index2, edit) {
     });
     return { ok: false, message };
   } finally {
-    await restoreOutPlan(settings2);
+    await releasePlanGuard(settings2);
   }
 }
 async function rerollSet(floor, kind, setId) {
@@ -5784,9 +5832,10 @@ async function rerollSet(floor, kind, setId) {
     return { ok: false, message: "这张卡片没存下当时的选段，请重新选段生成。" };
   }
   const mode = modeOfKind(kind);
-  await ensureModeOutPlan(mode, settings2);
-  let result;
+  acquirePlanGuard();
+  let result = null;
   try {
+    await ensureModeOutPlan(mode, settings2);
     result = await runTheaterTask({
       mode,
       settings: settings2,
@@ -5797,8 +5846,9 @@ async function rerollSet(floor, kind, setId) {
       characterName: set.characterName
     });
   } finally {
-    await restoreOutPlan(settings2);
+    await releasePlanGuard(settings2);
   }
+  if (!result) return { ok: false, message: "整条重出失败。" };
   if (!result.ok) return { ok: false, message: result.error ?? "整条重出失败。" };
   const total = result.stories.length;
   const stories = [];
@@ -7362,6 +7412,7 @@ async function runTheaterMode(task, ctx, deps) {
 }
 function createTaskRunner(deps) {
   return async (task, ctx) => {
+    acquirePlanGuard();
     try {
       switch (task.mode) {
         case "illustration":
@@ -7376,7 +7427,7 @@ function createTaskRunner(deps) {
           throw new Error(`未知创作模式: ${task.mode}`);
       }
     } finally {
-      const restored = await restoreOutPlan(deps.fullSettings);
+      const restored = await releasePlanGuard(deps.fullSettings);
       if (!restored.ok && restored.message) {
         console.warn("[ST-Story-Illustrator]", restored.message);
       }

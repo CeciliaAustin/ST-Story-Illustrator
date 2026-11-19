@@ -19,7 +19,7 @@ import type {
   BbiStatusInfo,
   StoryIllustratorSettings,
 } from '../types';
-import { ensureModeOutPlan, restoreOutPlan } from './modePlan';
+import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from './modePlan';
 import { runTheaterTask, bakeTheaterLines } from './theaterRun';
 import { readOutConfig, activePlanModel } from '../baibai/planConfig';
 import { resolveModeSettings, MODE_LABEL } from '../types';
@@ -494,6 +494,11 @@ async function runTheaterMode(
 
 export function createTaskRunner(deps: WorkflowDeps) {
   return async (task: VisualTask, ctx: QueueRunContext): Promise<void> => {
+    // 方案是柏宝绘的**全局**状态：本任务切走过，就必须切回用户原来那套，
+    // 否则接下来正文插图会用 QQ 人/黑白漫的模型与画师串出图。
+    // 用引用计数而不是「谁先结束谁还原」：重画可能插在任务中间跑，
+    // 先退出的那个不能把还在出图的任务手里的方案抢走。
+    acquirePlanGuard();
     try {
       switch (task.mode) {
         case 'illustration': return await runIllustration(task, ctx, deps);
@@ -504,9 +509,8 @@ export function createTaskRunner(deps: WorkflowDeps) {
         default: throw new Error(`未知创作模式: ${task.mode}`);
       }
     } finally {
-      // 方案是柏宝绘的**全局**状态：本任务切走过，就必须切回用户原来那套，
-      // 否则接下来正文插图会用 QQ 人/黑白漫的模型与画师串出图。
-      const restored = await restoreOutPlan(deps.fullSettings);
+      // 最后一个交还的负责还原；失败会写进出图日志并弹提示（不吞掉任务结果）
+      const restored = await releasePlanGuard(deps.fullSettings);
       if (!restored.ok && restored.message) {
         console.warn('[ST-Story-Illustrator]', restored.message);
       }

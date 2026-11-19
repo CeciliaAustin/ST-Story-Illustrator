@@ -11,7 +11,7 @@ import type { BbiStatusInfo, StoryKind } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import { getCurrentChatId, getSettings, getSwipeId, saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
-import { ensureModeOutPlan, restoreOutPlan } from '../tasks/modePlan';
+import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from '../tasks/modePlan';
 import { bakeTheaterLines, fallbackProfile, modeOfKind, pickProfile, runTheaterTask } from '../tasks/theaterRun';
 import { getSets, replaceSet, updatePanel } from './store';
 import { recordImageLog } from '../log/imageLog';
@@ -51,12 +51,14 @@ export async function rerollPanel(
   }
 
   const mode = modeOfKind(kind);
-  await ensureModeOutPlan(mode, settings);
+  // 重画也可能插在队列任务中间跑：先占位，最后一个交还的负责把方案还原
+  acquirePlanGuard();
 
   const rawNl = edit ? edit.nl : (panel.story ?? '');
   const seed = randomSeed();
   const startedAt = Date.now();
   try {
+    await ensureModeOutPlan(mode, settings);
     // 这张图当时是靠 nl 把剧情落下去的，重画也必须带同一段 nl，
     // 否则重画出来的图会忽然和第一版不是同一件事。
     const nl = kind === 'manga' ? buildMangaNl(rawNl) : rawNl;
@@ -123,7 +125,7 @@ export async function rerollPanel(
     });
     return { ok: false, message };
   } finally {
-    await restoreOutPlan(settings);
+    await releasePlanGuard(settings);
   }
 }
 
@@ -143,10 +145,11 @@ export async function rerollSet(
   }
 
   const mode = modeOfKind(kind);
-  await ensureModeOutPlan(mode, settings);
+  acquirePlanGuard();
 
-  let result: Awaited<ReturnType<typeof runTheaterTask>>;
+  let result: Awaited<ReturnType<typeof runTheaterTask>> | null = null;
   try {
+    await ensureModeOutPlan(mode, settings);
     result = await runTheaterTask({
       mode,
       settings,
@@ -157,8 +160,9 @@ export async function rerollSet(
       characterName: set.characterName,
     });
   } finally {
-    await restoreOutPlan(settings);
+    await releasePlanGuard(settings);
   }
+  if (!result) return { ok: false, message: '整条重出失败。' };
   if (!result.ok) return { ok: false, message: result.error ?? '整条重出失败。' };
 
   const total = result.stories.length;

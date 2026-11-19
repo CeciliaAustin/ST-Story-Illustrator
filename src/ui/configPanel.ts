@@ -758,7 +758,8 @@ function buildLogRow(entry: ImageLogEntry): HTMLElement {
   summary.textContent = [
     formatTime(entry.at),
     kindText,
-    MODE_LABEL[entry.mode] ?? entry.mode,
+    // 'restore' 不是创作模式，是收尾的「还原方案」——直接显示中文，别让日志里冒英文键名
+    entry.mode === 'restore' ? '还原方案' : MODE_LABEL[entry.mode] ?? entry.mode,
     entry.kind === 'plan' ? '' : `#${entry.floor}`,
     entry.kind === 'notice' ? '' : entry.status === 'error' ? '失败' : '成功',
     entry.durationMs !== undefined ? `${(entry.durationMs / 1000).toFixed(1)}s` : '',

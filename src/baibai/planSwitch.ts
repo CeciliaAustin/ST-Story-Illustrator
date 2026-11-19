@@ -31,6 +31,22 @@ export interface SwitchResult {
   message: string;
 }
 
+export interface SwitchOptions {
+  /** 导航 + 找按钮的总等待上限 */
+  timeoutMs?: number;
+  /**
+   * 强制切：**不信** `extension_settings` 里那份设置副本说的「已经是当前方案」，
+   * 一律打开面板按 DOM 的 `aria-checked` 认。
+   *
+   * 为什么要这个开关：副本是柏宝绘用 deep watch 异步回写的，落盘慢一拍；
+   * 更糟的是它有时干脆没跟上（例如切换那一刻它自己的 `ready` 还没置位），
+   * 于是副本长期停在旧值。这时走「副本说已经是了 → 直接收工」的快速路径，
+   * 实际方案根本没切——用户看到的就是「出完图方案没还原」。
+   * 还原是收尾动作，多开一次面板换一次确定性，值得。
+   */
+  force?: boolean;
+}
+
 const HOST_ID = 'bbi-app-host';
 const NAV_LABEL = '渠道';
 const TAB_LABEL = 'NAI';
@@ -70,26 +86,33 @@ async function waitFor<T>(fn: () => T | null | undefined, timeoutMs: number): Pr
 }
 
 /**
- * 打开柏宝绘面板：魔杖菜单入口 → 顶栏按钮 → 悬浮球，依次尝试。
- * 返回是否点到了某个入口（点到了不代表已开，还要等 `.bbi-window`）。
+ * 打开柏宝绘面板的可用入口，按可行性排序：魔杖菜单入口 → 顶栏按钮 → 悬浮球。
+ *
+ * 为什么要排成一列逐个试：只在第一个入口上死等，一旦那个入口这会儿点不动
+ * （菜单没注入/被别的东西挡住/顶栏按钮被主题隐藏），整次切换就直接判失败。
+ * 收尾还原方案时尤其容易踩——那时用户往往刚关掉柏宝绘的面板。
  */
-function clickOpenEntry(): boolean {
-  const menu = document.getElementById('bbi-menu-item');
-  if (menu) {
-    menu.click();
-    return true;
-  }
-  const topbar = document.querySelector<HTMLElement>('#bbi-topbar-button .drawer-toggle');
-  if (topbar) {
-    topbar.click();
-    return true;
-  }
-  const orb = shadowRoot()?.querySelector<HTMLElement>('.bbi-orb');
-  if (orb) {
-    orb.click();
-    return true;
-  }
-  return false;
+function openEntries(): Array<() => boolean> {
+  return [
+    () => {
+      const menu = document.getElementById('bbi-menu-item');
+      if (!menu) return false;
+      menu.click();
+      return true;
+    },
+    () => {
+      const topbar = document.querySelector<HTMLElement>('#bbi-topbar-button .drawer-toggle');
+      if (!topbar) return false;
+      topbar.click();
+      return true;
+    },
+    () => {
+      const orb = shadowRoot()?.querySelector<HTMLElement>('.bbi-orb');
+      if (!orb) return false;
+      orb.click();
+      return true;
+    },
+  ];
 }
 
 /** 确保面板打开；返回 shadow root（面板元素在里面）。 */
@@ -97,8 +120,15 @@ async function ensurePanelOpen(timeoutMs: number): Promise<ShadowRoot | null> {
   if (panelWindow()) return shadowRoot();
   const root = shadowRoot();
   if (!root) return null; // 柏宝绘没加载
-  if (!clickOpenEntry()) return null;
-  return await waitFor(() => (panelWindow() ? shadowRoot() : null), timeoutMs);
+
+  const perEntry = Math.max(1200, Math.round(timeoutMs / 3));
+  for (const click of openEntries()) {
+    if (panelWindow()) return shadowRoot();
+    if (!click()) continue;
+    const opened = await waitFor(() => (panelWindow() ? shadowRoot() : null), perEntry);
+    if (opened) return opened;
+  }
+  return null;
 }
 
 // ============================================================
@@ -247,9 +277,17 @@ function closePanelIfWeOpened(weOpened: boolean): void {
  * 切换柏宝绘当前出图方案，并在返回前确认目标方案真的成了选中态。
  *
  * @param planId 目标方案 id（柏宝绘 nai.plans 里的 id）
- * @param timeoutMs 导航 + 找按钮的总等待上限
+ * @param options 见 SwitchOptions（`force` = 不看设置副本，只认面板上的选中态）
  */
-export async function switchBaiBaiPlan(planId: string, timeoutMs = 15_000): Promise<SwitchResult> {
+export async function switchBaiBaiPlan(
+  planId: string,
+  options: SwitchOptions | number = {},
+): Promise<SwitchResult> {
+  // 老签名是 (planId, timeoutMs)，保留兼容
+  const opts: SwitchOptions = typeof options === 'number' ? { timeoutMs: options } : options;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const force = opts.force === true;
+
   const snap = readOutConfig();
   const target = snap.plans.find(p => p.id === planId);
   if (!target) {
@@ -264,7 +302,7 @@ export async function switchBaiBaiPlan(planId: string, timeoutMs = 15_000): Prom
       message: `柏宝绘当前出图渠道是「${snap.backend}」，不是 NAI；按模式分配方案只对 NAI 生效。请先在柏宝绘里把出图后端改成 NAI。`,
     };
   }
-  if (snap.activePlanId === planId) {
+  if (!force && snap.activePlanId === planId) {
     return { ok: true, reason: 'already', message: `「${target.name}」已经是当前方案。` };
   }
 
@@ -330,7 +368,8 @@ export async function switchBaiBaiPlan(planId: string, timeoutMs = 15_000): Prom
   }
 
   // 已选中就没什么可点的（readOutConfig 可能滞后，以 DOM 为准）
-  if (!isRadioChecked(radio)) {
+  const wasChecked = isRadioChecked(radio);
+  if (!wasChecked) {
     radio.click();
     // 兜底：个别主题把点击挂在整行上，按钮没接到事件时补一次（幂等，重复点无副作用）
     let confirmed = await waitFor(() => {
@@ -370,8 +409,15 @@ export async function switchBaiBaiPlan(planId: string, timeoutMs = 15_000): Prom
     const after = readOutConfig();
     console.warn(
       `[配图] 方案已在面板上切到「${target.name}」，但设置副本仍显示「${after.activePlanName || '未知'}」，` +
-        '以其自身落盘延迟处理，不影响本次出图。',
+        '以其自身落盘延迟处理，不影响本次出图。' +
+        `（因此判断"现在用的是哪套"不能只看这份副本——收尾还原方案时一律走 force。）`,
     );
+  }
+  if (wasChecked) {
+    // 副本说"还没切"，面板上其实一直是它 → 这种反向滞后同样会有。
+    return force
+      ? { ok: true, reason: 'already', message: `面板上已经是「${target.name}」，无需再切。` }
+      : { ok: true, reason: 'switched', message: `已切到「${target.name}」。` };
   }
   return { ok: true, reason: 'switched', message: `已切到「${target.name}」。` };
 }
