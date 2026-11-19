@@ -48,8 +48,116 @@ function ensureOverlay(): void {
   document.body.appendChild(overlay);
 }
 
+// ============================================================
+// 逐格看大图（多图翻页）
+// ============================================================
+
+export interface GalleryItem {
+  src: string;
+  caption?: string;
+}
+
+let gallery: HTMLElement | null = null;
+let galleryItems: GalleryItem[] = [];
+let galleryIndex = 0;
+
+/** 打开多图查看器，「逐格看大图」用。 */
+export function openGallery(items: GalleryItem[], startIndex = 0): void {
+  if (items.length === 0) return;
+  galleryItems = items;
+  galleryIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
+  ensureGallery();
+  renderGallery();
+  if (gallery) gallery.style.display = 'flex';
+}
+
+function ensureGallery(): void {
+  if (gallery) return;
+  const el = document.createElement('div');
+  el.id = 'sti-gallery';
+  el.className = 'sti-lightbox sti-gallery';
+  el.style.display = 'none';
+  el.addEventListener('click', (e) => {
+    if (e.target === el) closeGallery();
+  });
+
+  const prev = document.createElement('button');
+  prev.type = 'button';
+  prev.className = 'sti-gallery-nav prev';
+  prev.textContent = '‹';
+  prev.addEventListener('click', (e) => { e.stopPropagation(); stepGallery(-1); });
+  el.appendChild(prev);
+
+  const stage = document.createElement('div');
+  stage.className = 'sti-gallery-stage';
+  el.appendChild(stage);
+
+  const next = document.createElement('button');
+  next.type = 'button';
+  next.className = 'sti-gallery-nav next';
+  next.textContent = '›';
+  next.addEventListener('click', (e) => { e.stopPropagation(); stepGallery(1); });
+  el.appendChild(next);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'sti-lightbox-close';
+  close.textContent = '×';
+  close.setAttribute('aria-label', '关闭');
+  close.addEventListener('click', closeGallery);
+  el.appendChild(close);
+
+  document.body.appendChild(el);
+  gallery = el;
+
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') stepGallery(-1);
+    if (e.key === 'ArrowRight') stepGallery(1);
+    if (e.key === 'Escape') closeGallery();
+  });
+  el.tabIndex = 0;
+}
+
+function renderGallery(): void {
+  if (!gallery) return;
+  const stage = gallery.querySelector<HTMLElement>('.sti-gallery-stage');
+  if (!stage) return;
+  stage.innerHTML = '';
+
+  const item = galleryItems[galleryIndex];
+  if (!item) return;
+
+  const img = document.createElement('img');
+  img.className = 'sti-lightbox-img';
+  img.src = item.src;
+  img.alt = item.caption ?? '图片';
+  stage.appendChild(img);
+
+  const cap = document.createElement('div');
+  cap.className = 'sti-lightbox-caption';
+  cap.textContent = `${galleryIndex + 1}/${galleryItems.length}${item.caption ? ' · ' + item.caption : ''}`;
+  stage.appendChild(cap);
+
+  const single = galleryItems.length <= 1;
+  gallery.querySelectorAll<HTMLElement>('.sti-gallery-nav').forEach(n => {
+    n.style.display = single ? 'none' : '';
+  });
+}
+
+function stepGallery(delta: number): void {
+  if (galleryItems.length === 0) return;
+  galleryIndex = (galleryIndex + delta + galleryItems.length) % galleryItems.length;
+  renderGallery();
+}
+
+export function closeGallery(): void {
+  if (gallery) gallery.style.display = 'none';
+}
+
 export function destroyLightbox(): void {
   if (overlay) { overlay.remove(); overlay = null; }
+  if (gallery) { gallery.remove(); gallery = null; }
+  galleryItems = [];
 }
 
 // 供 card 使用：为带字合成图管理 revoke 生命周期

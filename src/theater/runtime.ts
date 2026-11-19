@@ -145,6 +145,12 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
         imagePath: path,
         bonus: input.kind === 'bonus',
         manga: input.kind === 'manga',
+        kind: input.kind,
+        // 重画这张要用的原始参数：不存就只能「整条重出」，单格没法还原
+        prompt,
+        ...(negative ? { negative } : {}),
+        seed: result.seed ?? seed,
+        ...(input.profile?.id ? { profileId: input.profile.id } : {}),
       });
     }
 

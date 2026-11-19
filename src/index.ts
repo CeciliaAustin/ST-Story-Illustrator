@@ -9,7 +9,7 @@
 
 import './styles/style.css';
 
-import { initSTEnvironment, getEventTypes, on, getSettings } from './host/sillytavern';
+import { initSTEnvironment, getEventTypes, on, getSettings, lastAssistantFloor } from './host/sillytavern';
 import { checkAvailability, waitForApi, isAvailable } from './baibai/bridge';
 import { startSelectionListener, stopSelectionListener, isSelectionInMesText, getSelectionText } from './selection/selector';
 import { resolveFloorFromSelection } from './selection/floorResolver';
@@ -18,9 +18,14 @@ import { showToolbar, hideToolbar, setOnGenerate, destroyToolbar } from './ui/se
 import { showSelectionPanel, hideSelectionPanel, destroySelectionPanel } from './ui/selectionPanel';
 import { setSegmentCleanOptions } from './selection/storySegment';
 import { destroyLightbox } from './ui/lightbox';
-import { injectConfigMenu, destroyConfigPanel } from './ui/configPanel';
+import { destroyConfigPanel, hideConfigPanel, showConfigPanel } from './ui/configPanel';
 import { remountAll, mountFloor } from './ui/floorCards';
-import { mountTheater } from './theater/mount';
+import { mountTheater, remountAllTheater } from './theater/mount';
+import { registerStudio } from './ui/studio';
+import { injectWandMenu, destroyWandMenu } from './ui/wandMenu';
+import { mountFloatingBall, syncFloatingBall, unmountFloatingBall } from './ui/floatingBall';
+import { hasStory } from './theater/store';
+import { buildSingleSegment } from './selection/storySegment';
 import {
   DEFAULT_SETTINGS,
   type StoryIllustratorSettings,
@@ -55,9 +60,14 @@ export async function onActivate(): Promise<void> {
 
     settings = getSettings(DEFAULT_SETTINGS);
     applySettings();
+    registerStudio({
+      generate: (options) => { hideConfigPanel(); openGeneratePanel(options); },
+      settings: () => { hideSelectionPanel(); showConfigPanel(); },
+    });
     registerEvents();
     setupSelectionListener();
-    cleanupFunctions.push(injectConfigMenu());
+    cleanupFunctions.push(injectWandMenu());
+    mountFloatingBall();
     initQueue();
     remountAllSafe();
 
@@ -97,6 +107,7 @@ function initQueue(): void {
 
 function remountAllSafe(): void {
   try { remountAll(); } catch (e) { console.warn('[ST-Story-Illustrator] 挂载历史作品失败:', e); }
+  try { remountAllTheater(); } catch (e) { console.warn('[ST-Story-Illustrator] 挂载小剧场失败:', e); }
 }
 
 /** 把设置应用到各子模块（清洗策略等）。 */
@@ -119,6 +130,7 @@ function registerEvents(): void {
     applySettings();
     queue = null;
     initQueue(); // 设置变化后用最新 profile/settings 重建队列
+    syncFloatingBall();
   });
   cleanupFunctions.push(offSettings);
 
@@ -128,6 +140,7 @@ function registerEvents(): void {
     applySettings();
     queue = null;
     initQueue();
+    syncFloatingBall();
   };
   window.addEventListener('sti-settings-changed', onModeSettingsChanged);
   cleanupFunctions.push(() => window.removeEventListener('sti-settings-changed', onModeSettingsChanged));
@@ -160,7 +173,11 @@ function registerEvents(): void {
       try { mountFloor(floor); mountTheater(floor); } catch { /* ignore */ }
     }
   };
-  cleanupFunctions.push(on(events.CHARACTER_MESSAGE_RENDERED, reMount));
+  cleanupFunctions.push(on(events.CHARACTER_MESSAGE_RENDERED, (...args: unknown[]) => {
+    reMount(...args);
+    const floor = extractFloorFromEventArg(args[0]);
+    if (floor >= 0) maybeAutoTrigger(floor);
+  }));
   cleanupFunctions.push(on(events.MESSAGE_SWIPED, reMount));
 }
 
@@ -189,7 +206,7 @@ function setupSelectionListener(): void {
       hideToolbar();
       return;
     }
-    if (valid && selection) showToolbar(selection);
+    if (valid && selection && settings.showSelectionToolbar !== false) showToolbar(selection);
     else hideToolbar();
   });
 }
@@ -231,6 +248,77 @@ function handleGenerateFromSelection(): void {
     handleSegmentConfirmed,
   );
   hideToolbar();
+}
+
+/**
+ * 面板入口（悬浮球 / 魔杖菜单）。
+ * 没有划线时：默认定位到最后一层 AI 回复，从「单楼」开始。
+ */
+function openGeneratePanel(options?: { floor?: number; text?: string }): void {
+  hideToolbar();
+  const text = (options?.text ?? '').trim();
+  const floor = typeof options?.floor === 'number' ? options.floor : lastAssistantFloor();
+
+  if (text) {
+    showSelectionPanel(
+      {
+        ...(floor >= 0 ? { initialFloor: floor } : {}),
+        selectedText: text,
+        startAtLocal: true,
+      },
+      handleSegmentConfirmed,
+    );
+  } else {
+    showSelectionPanel(
+      { ...(floor >= 0 ? { initialFloor: floor } : {}), startAtLocal: false },
+      handleSegmentConfirmed,
+    );
+  }
+}
+
+// ============================================================
+// 自动出图（新楼层）
+// ============================================================
+
+const autoRunning = new Set<string>();
+
+/** 按设置决定这一层要不要自动出小剧场；只出一次，失败不重试。 */
+function maybeAutoTrigger(floor: number): void {
+  if (!isAvailable()) return;
+  const modes = settings.modes ?? ({} as StoryIllustratorSettings['modes']);
+
+  const orders: Array<{ mode: CreationMode; kind: 'status' | 'bonus' | 'manga' }> = [
+    { mode: 'chibi-status', kind: 'status' },
+    { mode: 'chibi-bonus', kind: 'bonus' },
+    { mode: 'bw-manga', kind: 'manga' },
+  ];
+
+  const picks: CreationMode[] = [];
+  for (const { mode, kind } of orders) {
+    const conf = modes[mode];
+    if (!conf?.autoTrigger) continue;
+    if (hasStory(floor, kind)) continue;
+    if (kind === 'bonus') {
+      const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);
+      if (chance <= 0) continue;
+      if (chance < 100 && Math.random() * 100 >= chance) continue;
+    }
+    const key = `${floor}:${mode}`;
+    if (autoRunning.has(key)) continue;
+    picks.push(mode);
+  }
+  if (picks.length === 0) return;
+
+  const segment = buildSingleSegment(floor);
+  if (!segment) return;
+
+  for (const mode of picks) {
+    autoRunning.add(`${floor}:${mode}`);
+    const task = createVisualTask(segment, mode);
+    task.status = 'queued';
+    queue?.enqueue(task);
+  }
+  showToast(`本楼自动生成 ${picks.length} 份小剧场，排队中。`, 'info');
 }
 
 function handleSegmentConfirmed(segment: StorySegment, modes: CreationMode[]): void {
@@ -278,6 +366,8 @@ export function onDisable(): void {
   destroySelectionPanel();
   destroyLightbox();
   destroyConfigPanel();
+  destroyWandMenu();
+  unmountFloatingBall();
   for (const cleanup of cleanupFunctions) {
     try { cleanup(); } catch { /* ignore */ }
   }

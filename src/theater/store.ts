@@ -88,6 +88,140 @@ export function newStoryId(): string {
   return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
 }
 
+/** 生成一次生成（N 格）共用的 setId。 */
+export function newSetId(): string {
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// ============================================================
+// 卡片分组（一次生成的 N 格 → 一张卡片）
+// ============================================================
+
+export interface TheaterSet {
+  setId: string;
+  kind: Bucket;
+  title: string;
+  cast: string[];
+  mood: string;
+  /** 按 index 升序 */
+  panels: BbiStatusInfo[];
+  /** 整条重出用 */
+  sourceText: string;
+  characterName: string;
+  createdAt: number;
+}
+
+/** 把某桶里的格按 setId 归组成卡片，保持落盘顺序（新的在前不倒序，与落盘一致）。 */
+export function getSets(floor: number, bucket: Bucket): TheaterSet[] {
+  const list = getStories(floor, bucket);
+  const order: string[] = [];
+  const map = new Map<string, BbiStatusInfo[]>();
+
+  for (const story of list) {
+    const key = story.setId && story.setId.trim() ? story.setId : `single-${story.storyId}`;
+    if (!map.has(key)) { map.set(key, []); order.push(key); }
+    map.get(key)!.push(story);
+  }
+
+  const sets: TheaterSet[] = [];
+  for (const key of order) {
+    const panels = (map.get(key) ?? []).slice().sort((a, b) => a.index - b.index);
+    const first = panels[0];
+    if (!first) continue;
+    const cast = dedupe(panels.flatMap(p => p.cast ?? []));
+    const mood = panels.map(p => p.mood).find(m => !!m) ?? '';
+    sets.push({
+      setId: key,
+      kind: bucket,
+      title: first.setTitle ?? first.title ?? '',
+      cast,
+      mood,
+      panels,
+      sourceText: first.sourceText ?? '',
+      characterName: first.characterName ?? '',
+      createdAt: first.storyAt ?? 0,
+    });
+  }
+  return sets;
+}
+
+/** 一次生成的整组格一起落盘（共用 setId 与标题信息）。 */
+export function saveSet(floor: number, bucket: Bucket, stories: BbiStatusInfo[]): boolean {
+  if (stories.length === 0) return false;
+  const msg = getMessage(floor);
+  if (!msg) return false;
+  if (!msg.extra) msg.extra = {};
+  const extra = msg.extra as Record<string, unknown>;
+  const store = readStore(extra[THEATER_KEY]);
+  for (const story of stories) {
+    store.buckets[bucket].push({
+      ...story,
+      ...(story.lines && story.lines.length ? { lines: story.lines } : { lines: undefined }),
+    });
+  }
+  return writeStore(floor, store);
+}
+
+/** 改某一格（重画这张用）。 */
+export function updatePanel(
+  floor: number,
+  bucket: Bucket,
+  setId: string,
+  index: number,
+  patch: Partial<BbiStatusInfo>,
+): boolean {
+  const msg = getMessage(floor);
+  if (!msg?.extra) return false;
+  const extra = msg.extra as Record<string, unknown>;
+  const store = readStore(extra[THEATER_KEY]);
+  const list = store.buckets[bucket];
+  const at = list.findIndex(s => s.setId === setId && s.index === index);
+  if (at < 0) return false;
+  list[at] = { ...list[at], ...patch };
+  return writeStore(floor, store);
+}
+
+/** 整条重出：用同一 setId 替换整组格（顺序与格数可变）。 */
+export function replaceSet(floor: number, bucket: Bucket, setId: string, stories: BbiStatusInfo[]): boolean {
+  const msg = getMessage(floor);
+  if (!msg?.extra) return false;
+  const extra = msg.extra as Record<string, unknown>;
+  const store = readStore(extra[THEATER_KEY]);
+  const kept = store.buckets[bucket].filter(s => s.setId !== setId);
+  // 替换后插回原位置：找原第一条的索引
+  const firstAt = store.buckets[bucket].findIndex(s => s.setId === setId);
+  const merged = kept.slice();
+  const insertAt = firstAt < 0 ? merged.length : Math.min(firstAt, merged.length);
+  merged.splice(insertAt, 0, ...stories.map(s => ({
+    ...s,
+    ...(s.lines && s.lines.length ? { lines: s.lines } : { lines: undefined }),
+  })));
+  store.buckets[bucket] = merged;
+  return writeStore(floor, store);
+}
+
+/** 删除整条卡片。 */
+export function removeSet(floor: number, bucket: Bucket, setId: string): boolean {
+  const msg = getMessage(floor);
+  if (!msg?.extra) return false;
+  const extra = msg.extra as Record<string, unknown>;
+  const store = readStore(extra[THEATER_KEY]);
+  const before = store.buckets[bucket].length;
+  store.buckets[bucket] = store.buckets[bucket].filter(s => s.setId !== setId);
+  if (store.buckets[bucket].length === before) return false;
+  return writeStore(floor, store);
+}
+
+function dedupe(list: string[]): string[] {
+  const out: string[] = [];
+  for (const item of list) {
+    const v = String(item ?? '').trim();
+    if (!v || out.includes(v)) continue;
+    out.push(v);
+  }
+  return out;
+}
+
 /** 从 lines 里提取说话人名字（用于角色快照匹配）。 */
 export function speakersOf(lines?: StatusLine[]): string[] {
   if (!lines) return [];

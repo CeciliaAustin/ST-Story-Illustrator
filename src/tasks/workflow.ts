@@ -43,7 +43,7 @@ import {
 } from '../baibai/bbiTag';
 import { mountTheater } from '../theater/mount';
 import { runTheaterOne } from '../theater/runtime';
-import { saveStory } from '../theater/store';
+import { saveSet, newSetId } from '../theater/store';
 import type { QueueRunContext } from './taskQueue';
 
 // ============================================================
@@ -468,9 +468,22 @@ async function runTheaterMode(
 
   if (!result.ok) throw new Error(result.error ?? '小剧场生成失败。');
 
-  for (const story of result.stories) {
-    saveStory(floor, kind, story);
-  }
+  // 一次生成的 N 格合成一张卡片：共用 setId，卡片头显示「黑白漫 · 4 格」+ 标题，
+  // 格内可单独重画，整条可重出（都要靠这些字段还原当时的输入）。
+  const setId = newSetId();
+  const characterName = segment.messages.find(m => !m.isUser)?.speaker ?? '';
+  const setTitle = result.stories[0]?.title ?? '';
+  const total = result.stories.length;
+  const stories = result.stories.map(story => ({
+    ...story,
+    setId,
+    setTitle,
+    setSize: total,
+    sourceText: segment.text,
+    characterName,
+  }));
+  if (!saveSet(floor, kind, stories)) throw new Error('小剧场已生成，但写不进本楼（聊天上下文不可用）。');
+  await saveChatSafe();
 
   mountTheater(floor);
   ctx.report({ stage: 'completed' });

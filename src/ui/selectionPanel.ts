@@ -28,6 +28,7 @@ import {
 import type { FloorOption } from '../selection/storySegment';
 import { listSharedChannelInfos, readTagGenChannelId } from '../baibai/secondaryLlm';
 import { readOutConfig } from '../baibai/planConfig';
+import { buildStudioTabs } from './studio';
 
 // ============================================================
 // 常量
@@ -156,8 +157,9 @@ function renderPanel(): void {
 
   const title = document.createElement('div');
   title.className = 'sti-panel-title';
-  title.textContent = '剧情选段';
+  title.textContent = '生成配图';
   panelElement.appendChild(title);
+  panelElement.appendChild(buildStudioTabs('generate'));
 
   // 选段方式标签
   const methodTabs = document.createElement('div');

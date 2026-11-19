@@ -329,6 +329,26 @@ export interface BbiStatusInfo {
   manga?: boolean;
   /** 出图结果地址（path 或 dataUrl），供楼层卡片显示 */
   imagePath?: string;
+
+  // ── 卡片分组（一次生成的 N 格共用一个 setId，卡片按它合并成一张）──
+  /** 同一次生成的格共用一个 setId；旧数据没有这个字段，视为单格卡片 */
+  setId?: string;
+  /** 卡片标题（整条） */
+  setTitle?: string;
+  /** 这条卡片一共有几格（渲染「2/4」角标用） */
+  setSize?: number;
+  /** 整条重出用：当时的选段原文 */
+  sourceText?: string;
+  /** 整条重出用：主角名（小剧场读剧情需要） */
+  characterName?: string;
+  /** 这一格属于哪套小剧场 */
+  kind?: StoryKind;
+  /** 重画这张用：当时实际发出去的出图词与种子 */
+  prompt?: string;
+  negative?: string;
+  seed?: number;
+  /** 当时用的出图 profile id（重画沿用同一套参数） */
+  profileId?: string;
 }
 
 // ============================================================
@@ -599,6 +619,12 @@ export interface StoryIllustratorSettings {
    * 因此出图前会临时切到该模式的方案（串行队列内安全，出图后不自动切回）。
    */
   modeOutPlans: Partial<Record<CreationMode, string>>;
+  /** 是否显示右下角悬浮球（🎨）。关掉后仍可从魔杖菜单打开面板。 */
+  showFloatingBall: boolean;
+  /** 悬浮球位置（left/top，px）。缺省时用右下角默认位置。 */
+  floatingBallPos?: { left: number; top: number };
+  /** 划词时是否显示快捷「生成配图」按钮 */
+  showSelectionToolbar: boolean;
   // 各模式独立设置
   modes: Record<CreationMode, ModeSettings>;
   // Profile 列表（只保存 ID 引用和本插件参数）
@@ -660,6 +686,8 @@ export const DEFAULT_SETTINGS: StoryIllustratorSettings = {
   modeChannels: {},
   // 默认不指定，跟随柏宝绘当前出图方案；用户在弹窗里可为每个模式分别指派
   modeOutPlans: {},
+  showFloatingBall: true,
+  showSelectionToolbar: true,
   modes: {
     'illustration': defaultModeSettings('illustration'),
     'comic': defaultModeSettings('comic'),

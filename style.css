@@ -1072,7 +1072,7 @@
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: min(560px, 92vw);
+  width: min(680px, 92vw);
   max-height: 86vh;
   display: none;
   flex-direction: column;
@@ -1229,4 +1229,373 @@
 .sti-exclude-item.is-hidden-floor {
   opacity: 0.62;
   font-style: italic;
+}
+
+/* ============================================================
+ * 悬浮球 / 面板标签页 / 设置行
+ * ============================================================ */
+
+/* ── 悬浮球 ── */
+.sti-fab {
+  position: fixed;
+  z-index: 9999;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  line-height: 1;
+  border-radius: 50%;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.34));
+  background: var(--SmartThemeBlurTintColor, rgba(40, 40, 48, 0.9));
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  opacity: 0.92;
+}
+
+.sti-fab:hover {
+  transform: scale(1.06);
+  opacity: 1;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.36);
+}
+
+.sti-fab.dragging {
+  cursor: grabbing;
+  transform: scale(1.04);
+}
+
+.sti-fab-hide {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
+  background: var(--SmartThemeBlurTintColor, rgba(30, 30, 36, 0.95));
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.sti-fab:hover .sti-fab-hide,
+.sti-fab:focus-within .sti-fab-hide {
+  opacity: 1;
+}
+
+.sti-fab-hide:hover {
+  background: rgba(200, 80, 80, 0.65);
+  color: #fff;
+}
+
+/* ── 面板顶部标签页（生成配图 / 配图设置） ── */
+.sti-studio-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px 0;
+}
+
+.sti-studio-tab {
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 4px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.sti-studio-tab:hover {
+  opacity: 1;
+  background: rgba(128, 128, 128, 0.12);
+}
+
+.sti-studio-tab.active {
+  opacity: 1;
+  font-weight: 600;
+  background: rgba(128, 128, 128, 0.18);
+  border-color: var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.45));
+}
+
+/* ── 设置分组与行 ── */
+.sti-config-group {
+  margin: 6px 0 2px;
+}
+
+.sti-config-group-h {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 10px 0 2px;
+  opacity: 0.92;
+}
+
+.sti-set-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.sti-set-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.sti-set-label small {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  opacity: 0.6;
+  font-weight: 400;
+}
+
+.sti-set-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-top: 1px;
+}
+
+.sti-set-control input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--SmartThemeEmColor, #6b8cff);
+}
+
+.sti-set-control select {
+  max-width: 210px;
+  font-size: 11.5px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+  background: var(--SmartThemeBlurTintColor, rgba(128, 128, 128, 0.1));
+  color: inherit;
+  cursor: pointer;
+}
+
+/* ============================================================
+ * 小剧场卡片（多格 / 重画 / 底部操作）
+ * ============================================================ */
+
+.sti-cs-summary {
+  gap: 9px;
+}
+
+.sti-cs-chevron {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.5;
+  transition: transform 0.18s ease;
+}
+
+.sti-cs-card[open] > summary .sti-cs-chevron {
+  transform: rotate(180deg);
+}
+
+/* 图 + 覆盖按钮的定位容器 */
+.sti-cs-shot {
+  position: relative;
+  line-height: 0;
+}
+
+.sti-cs-shot.is-figure {
+  flex: 0 0 132px;
+  width: 132px;
+}
+
+/* 单格卡片：左图右文 */
+.sti-cs-single {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+
+.sti-cs-body.is-story {
+  flex-direction: column;
+}
+
+/* 每格图下的短标题 */
+.sti-cs-panel-cap {
+  font-size: 10.5px;
+  line-height: 1.45;
+  opacity: 0.82;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+/* 右下角圆形重画按钮 */
+.sti-cs-reroll {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.sti-cs-panel:hover .sti-cs-reroll,
+.sti-cs-shot:hover .sti-cs-reroll,
+.sti-cs-reroll:focus-visible,
+.sti-cs-reroll.is-busy {
+  opacity: 1;
+}
+
+.sti-cs-reroll:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.75);
+  transform: rotate(-40deg);
+}
+
+.sti-cs-reroll:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+/* 未出图占位 */
+.sti-cs-placeholder {
+  width: 132px;
+  height: 176px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  opacity: 0.55;
+  line-height: 1.4;
+}
+
+/* 底部操作条 */
+.sti-cs-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.22));
+}
+
+.sti-cs-cast {
+  font-size: 10.5px;
+  line-height: 1.5;
+  opacity: 0.72;
+  overflow-wrap: anywhere;
+}
+
+.sti-cs-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.16);
+  font-size: 9.5px;
+  line-height: 1.6;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+.sti-cs-spacer {
+  flex: 1 1 auto;
+}
+
+.sti-cs-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.6;
+  opacity: 0.68;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.sti-cs-link:hover {
+  opacity: 1;
+}
+
+.sti-cs-link.danger {
+  color: #d98080;
+  opacity: 0.8;
+}
+
+/* ── 逐格看大图 ── */
+.sti-gallery {
+  flex-direction: row;
+  gap: 14px;
+}
+
+.sti-gallery-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 82vw;
+  max-height: 88vh;
+}
+
+.sti-gallery-stage .sti-lightbox-img {
+  max-width: 80vw;
+  max-height: 80vh;
+}
+
+.sti-gallery-nav {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sti-gallery-nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 卡片主体里的横排格子占满一行，底部操作条另起一行 */
+.sti-cs-body > .sti-cs-strip {
+  width: 100%;
 }

@@ -19,12 +19,13 @@ import {
   readTagGenChannelId,
   type SharedChannelInfo,
 } from '../baibai/secondaryLlm';
-import { getSettings } from '../host/sillytavern';
-import { DEFAULT_SETTINGS } from '../types';
+import { getSettings, saveSettings } from '../host/sillytavern';
+import { DEFAULT_SETTINGS, type CreationMode, type StoryIllustratorSettings } from '../types';
+import { buildStudioTabs } from './studio';
+import { destroyWandMenu, injectWandMenu } from './wandMenu';
 
 const PANEL_ID = 'sti-config-panel';
 const OVERLAY_ID = 'sti-config-overlay';
-const MENU_ID = 'sti-config-menu-item';
 
 /** 模式中文名（与选段弹窗保持一致） */
 const MODE_LABEL: Record<string, string> = {
@@ -94,7 +95,7 @@ function render(panel: HTMLElement): void {
   const head = document.createElement('div');
   head.className = 'sti-config-head';
   const title = document.createElement('h2');
-  title.textContent = '出图配置同步';
+  title.textContent = '配图设置';
   head.appendChild(title);
   const close = document.createElement('button');
   close.type = 'button';
@@ -103,6 +104,7 @@ function render(panel: HTMLElement): void {
   close.addEventListener('click', () => hideConfigPanel());
   head.appendChild(close);
   panel.appendChild(head);
+  panel.appendChild(buildStudioTabs('settings'));
 
   const body = document.createElement('div');
   body.className = 'sti-config-body';
@@ -124,6 +126,13 @@ function render(panel: HTMLElement): void {
     cur.appendChild(hintEl);
   }
   body.appendChild(cur);
+
+  // ── 小剧场三套 ──
+  body.appendChild(renderTheaterSettings());
+  // ── 正文漫画分镜 ──
+  body.appendChild(renderComicSettings());
+  // ── 显示与入口 ──
+  body.appendChild(renderUiSettings());
 
   // ── 各模式指定方案（只读，改在选段弹窗）──
   const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
@@ -239,16 +248,303 @@ function render(panel: HTMLElement): void {
   refresh.addEventListener('click', () => showConfigPanel());
   foot.appendChild(refresh);
   const note = document.createElement('span');
-  note.textContent = '本面板只读柏宝绘配置，出图仍由柏宝绘执行。';
+  note.textContent = '出图仍由柏宝绘执行；本页开关只影响本插件。';
   foot.appendChild(note);
   panel.appendChild(foot);
 }
 
-function activeModel(snap: OutConfigSnapshot): string {
-  return snap.plans.find(p => p.id === snap.activePlanId)?.model || '(未配置)';
+// ============================================================
+// 小剧场 / 显示设置
+// ============================================================
+
+const SHOT_OPTIONS: Array<[string, string]> = [
+  ['1', '1 格 · 单画面'],
+  ['2', '2 格 · 起 → 落'],
+  ['3', '3 格 · 起 → 转 → 落'],
+  ['4', '4 格 · 小分镜'],
+];
+
+const CHANCE_OPTIONS: Array<[string, string]> = [
+  ['0', '0% · 不出'],
+  ['25', '25% · 偶尔'],
+  ['50', '50% · 一半'],
+  ['100', '100% · 每楼都出'],
+];
+
+/** 改设置 → 落盘 → 重绘面板 → 通知运行中的队列重建。 */
+function patchSettings(mutate: (s: StoryIllustratorSettings) => void): void {
+  const next = getSettings(DEFAULT_SETTINGS);
+  // 旧存档可能缺某些模式的字段：先补齐再改，避免点一下就抛错
+  const empty: StoryIllustratorSettings['modes'][keyof StoryIllustratorSettings['modes']] = {
+    enabled: false, autoTrigger: false, profileId: '', shots: 1,
+  };
+  next.modes = (next.modes ?? {}) as StoryIllustratorSettings['modes'];
+  for (const mode of ['illustration', 'comic', 'chibi-status', 'chibi-bonus', 'bw-manga'] as const) {
+    next.modes[mode] = { ...empty, ...(next.modes[mode] ?? {}) };
+  }
+  mutate(next);
+  saveSettings(next);
+  showConfigPanel();
+  window.dispatchEvent(new CustomEvent('sti-settings-changed'));
 }
 
-function activeEndpointName(snap: OutConfigSnapshot): string {
+function settingRow(label: string, hint?: string): { el: HTMLElement; control: HTMLElement } {
+  const el = document.createElement('div');
+  el.className = 'sti-set-row';
+
+  const left = document.createElement('div');
+  left.className = 'sti-set-label';
+  left.textContent = label;
+  if (hint) {
+    const small = document.createElement('small');
+    small.textContent = hint;
+    left.appendChild(small);
+  }
+
+  const control = document.createElement('div');
+  control.className = 'sti-set-control';
+
+  el.appendChild(left);
+  el.appendChild(control);
+  return { el, control };
+}
+
+function toggleRow(
+  label: string,
+  checked: boolean,
+  onChange: (value: boolean) => void,
+  hint?: string,
+): HTMLElement {
+  const { el, control } = settingRow(label, hint);
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = checked;
+  cb.addEventListener('change', () => onChange(cb.checked));
+  control.appendChild(cb);
+  return el;
+}
+
+function selectRow(
+  label: string,
+  value: string,
+  options: Array<[string, string]>,
+  onChange: (value: string) => void,
+  hint?: string,
+): HTMLElement {
+  const { el, control } = settingRow(label, hint);
+  const select = document.createElement('select');
+  for (const [val, text] of options) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = text;
+    if (val === value) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener('change', () => onChange(select.value));
+  control.appendChild(select);
+  return el;
+}
+
+/** 小剧场三套的开关与格数（真的会改变出图行为，不是摆设）。 */
+function renderTheaterSettings(): HTMLElement {
+  const s = getSettings(DEFAULT_SETTINGS);
+  const status = s.modes?.['chibi-status'];
+  const bonus = s.modes?.['chibi-bonus'];
+  const manga = s.modes?.['bw-manga'];
+
+  const group = document.createElement('div');
+  group.className = 'sti-config-group';
+
+  const head = document.createElement('div');
+  head.className = 'sti-config-group-h';
+  head.textContent = '小剧场（QQ 人 / 彩蛋 / 黑白漫）';
+  group.appendChild(head);
+
+  const tip = document.createElement('div');
+  tip.className = 'sti-config-sub';
+  tip.textContent = '三套互不影响，可以同时开；同时开时每层出图量会叠加。画风与画师串跟随下面选中的出图方案。';
+  group.appendChild(tip);
+
+  // ① QQ 人状态栏
+  const a = section('① QQ 人小剧场状态栏', '楼层底部一张卡片，按剧情时间顺序排出「怎么走到这个结果」的几格。');
+  a.appendChild(selectRow(
+    '每层格数',
+    String(status?.shots ?? 1),
+    SHOT_OPTIONS,
+    v => patchSettings(st => { st.modes['chibi-status'].shots = Number(v); st.chibiStatusShots = Number(v); }),
+  ));
+  a.appendChild(selectRow(
+    '画风',
+    status?.chibiStyle ?? 'card',
+    [['card', 'Q 版（大头小身）'], ['thumb', '写实小图']],
+    v => patchSettings(st => {
+      st.modes['chibi-status'].chibiStyle = v === 'thumb' ? 'thumb' : 'card';
+      st.chibiStatusStyle = v === 'thumb' ? 'thumb' : 'card';
+    }),
+  ));
+  a.appendChild(planSelectRow('chibi-status'));
+  a.appendChild(toggleRow(
+    '新楼层自动出图',
+    !!status?.autoTrigger,
+    v => patchSettings(st => { st.modes['chibi-status'].autoTrigger = v; }),
+    '开启后每一层 AI 回复完自动生成，不再需要划线。注意会持续消耗出图额度。',
+  ));
+  group.appendChild(a);
+
+  // ② 彩蛋
+  const b = section('② 彩蛋小剧场', '与正文剧情无关的平行小片段，题材放开，每次换花样。');
+  b.appendChild(selectRow(
+    '每条格数',
+    String(bonus?.shots ?? 1),
+    SHOT_OPTIONS,
+    v => patchSettings(st => { st.modes['chibi-bonus'].shots = Number(v); st.chibiBonusShots = Number(v); }),
+  ));
+  b.appendChild(selectRow(
+    '自动触发概率',
+    String(bonus?.chibiBonusChance ?? s.chibiBonusChance ?? 25),
+    CHANCE_OPTIONS,
+    v => patchSettings(st => {
+      st.modes['chibi-bonus'].chibiBonusChance = Number(v);
+      st.chibiBonusChance = Number(v);
+    }),
+    '只在「新楼层自动出图」开着时生效；手动点彩蛋不受概率限制。',
+  ));
+  b.appendChild(planSelectRow('chibi-bonus'));
+  b.appendChild(toggleRow(
+    '新楼层自动出彩蛋',
+    !!bonus?.autoTrigger,
+    v => patchSettings(st => { st.modes['chibi-bonus'].autoTrigger = v; }),
+  ));
+  group.appendChild(b);
+
+  // ③ 黑白漫
+  const c = section('③ 黑白漫小剧场', '正常比例、黑白画风；画风由出图方案里的画师串决定。');
+  c.appendChild(selectRow(
+    '每条格数',
+    String(manga?.shots ?? 1),
+    SHOT_OPTIONS,
+    v => patchSettings(st => { st.modes['bw-manga'].shots = Number(v); st.mangaShots = Number(v); }),
+  ));
+  c.appendChild(toggleRow(
+    '安全洗（去掉写实/彩色相关词）',
+    manga?.bwMangaSafeMode !== false,
+    v => patchSettings(st => { st.modes['bw-manga'].bwMangaSafeMode = v; st.mangaSafe = v; }),
+    '只改负面词与冲突词，不改你的画师串。',
+  ));
+  c.appendChild(planSelectRow('bw-manga'));
+  c.appendChild(toggleRow(
+    '新楼层自动出黑白漫',
+    !!manga?.autoTrigger,
+    v => patchSettings(st => { st.modes['bw-manga'].autoTrigger = v; }),
+  ));
+  group.appendChild(c);
+
+  return group;
+}
+
+/**
+ * 「出图方案」下拉：方案 = 接入点 + 模型 + 画师串，柏宝绘里已经建好的那几套。
+ * 留空 = 跟随柏宝绘当前方案（不切换）。
+ */
+function planSelectRow(mode: CreationMode): HTMLElement {
+  const snap = readOutConfig();
+  const current = getSettings(DEFAULT_SETTINGS).modeOutPlans?.[mode] ?? '';
+  const options: Array<[string, string]> = [['', '跟随当前方案']];
+  for (const plan of snap.plans) {
+    options.push([plan.id, `${plan.name} · ${plan.endpointName} / ${plan.model || '未填模型'}`]);
+  }
+  return selectRow(
+    '出图方案',
+    current,
+    options,
+    v => patchSettings(st => {
+      st.modeOutPlans = { ...(st.modeOutPlans ?? {}) };
+      if (v) st.modeOutPlans[mode] = v;
+      else delete st.modeOutPlans[mode];
+    }),
+    snap.plans.length === 0
+      ? '柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。'
+      : '出图前会临时切到这套方案（串行执行，互不打断）。',
+  );
+}
+
+/** ④ 正文漫画分镜 */
+function renderComicSettings(): HTMLElement {
+  const s = getSettings(DEFAULT_SETTINGS);
+  const comic = s.modes?.['comic'];
+
+  const group = document.createElement('div');
+  group.className = 'sti-config-group';
+  const head = document.createElement('div');
+  head.className = 'sti-config-group-h';
+  head.textContent = '④ 正文漫画分镜';
+  group.appendChild(head);
+
+  const box = section('正文插图切成漫画格', '与三套小剧场并列；勾选「正文漫画分镜」时生效，图会按分镜插进正文。');
+  box.appendChild(selectRow(
+    '版面',
+    comic?.comicLayout ?? 'regular',
+    [['regular', '规整四格'], ['irregular', '斜切分镜'], ['inset', '主图 + 嵌入格'], ['unframed', '无边框融白']],
+    v => patchSettings(st => {
+      st.modes['comic'].comicLayout = v as StoryIllustratorSettings['modes']['comic']['comicLayout'];
+      st.panelLayout = v as StoryIllustratorSettings['panelLayout'];
+    }),
+  ));
+  box.appendChild(selectRow(
+    '最多页数',
+    String(comic?.comicMaxPages ?? 1),
+    [['1', '1 页'], ['2', '2 页'], ['3', '3 页']],
+    v => patchSettings(st => { st.modes['comic'].comicMaxPages = Number(v); }),
+  ));
+  box.appendChild(toggleRow(
+    '气泡对白',
+    s.dialogueEnabled !== false,
+    v => patchSettings(st => {
+      st.dialogueEnabled = v;
+      st.modes['comic'].comicDialoguePolicy = v ? 'always' : 'auto';
+    }),
+    '开启后会把选段里的台词排进气泡，出图后合成一次到图上。',
+  ));
+  group.appendChild(box);
+  return group;
+}
+
+/** 显示与入口：悬浮球、划词按钮。 */
+function renderUiSettings(): HTMLElement {
+  const s = getSettings(DEFAULT_SETTINGS);
+  const group = document.createElement('div');
+  group.className = 'sti-config-group';
+
+  const head = document.createElement('div');
+  head.className = 'sti-config-group-h';
+  head.textContent = '入口与显示';
+  group.appendChild(head);
+
+  group.appendChild(toggleRow(
+    '悬浮球（🎨）',
+    s.showFloatingBall !== false,
+    v => patchSettings(st => { st.showFloatingBall = v; }),
+    '关掉后仍可从魔杖菜单打开；悬浮球可以拖动，位置会记住。',
+  ));
+  group.appendChild(toggleRow(
+    '划词时显示「生成配图」按钮',
+    s.showSelectionToolbar !== false,
+    v => patchSettings(st => { st.showSelectionToolbar = v; }),
+    '关掉后只能从魔杖菜单或悬浮球打开面板。',
+  ));
+  group.appendChild(toggleRow(
+    '选段只提取 <content> 里的正文',
+    s.preferContentTag !== false,
+    v => patchSettings(st => { st.preferContentTag = v; }),
+    '兼容把思维链写进正文的预设，避免把思考过程算进剧情。',
+  ));
+
+  return group;
+}
+
+function activeModel(snap: OutConfigSnapshot): string {
+  return snap.plans.find(p => p.id === snap.activePlanId)?.model || '(未配置)';
+}function activeEndpointName(snap: OutConfigSnapshot): string {
   const p = snap.plans.find(x => x.id === snap.activePlanId);
   return p?.endpointName || '(未配置)';
 }
@@ -262,41 +558,13 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
 }
 
-/** 注入魔杖菜单入口（懒加载轮询）。 */
+/** 兼容旧入口：魔杖菜单现在由 wandMenu.ts 统一注入两个入口。 */
 export function injectConfigMenu(): () => void {
-  let done = false;
-  const tryInject = () => {
-    const menu = document.getElementById('extensionsMenu');
-    if (!menu || document.getElementById(MENU_ID)) return;
-    const item = document.createElement('div');
-    item.className = 'extension_container interactable';
-    item.tabIndex = 0;
-    const link = document.createElement('a');
-    link.id = MENU_ID;
-    link.className = 'list-group-item';
-    link.href = '#';
-    link.title = 'ST 故事插画 · 出图配置';
-    link.innerHTML = '<i class="fa-solid fa-images"></i> <span>配图设置</span>';
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      showConfigPanel();
-      const m = document.getElementById('extensionsMenu');
-      if (m) m.style.display = 'none';
-    });
-    item.appendChild(link);
-    menu.appendChild(item);
-    done = true;
-  };
-  tryInject();
-  const timer = window.setInterval(() => {
-    tryInject();
-    if (done || document.getElementById(MENU_ID)) window.clearInterval(timer);
-  }, 500);
-  return () => window.clearInterval(timer);
+  return injectWandMenu();
 }
 
 export function destroyConfigPanel(): void {
   if (panelEl) { panelEl.remove(); panelEl = null; }
   if (overlayEl) { overlayEl.remove(); overlayEl = null; }
-  document.getElementById(MENU_ID)?.remove();
+  destroyWandMenu();
 }

@@ -150,6 +150,22 @@ async function generateQuietPrompt(prompt, options) {
   }
   return await ctx.generateQuietPrompt(prompt, options);
 }
+function isAiStoryMessage(message) {
+  var _a;
+  if (!message || typeof message.mes !== "string" || !message.mes.trim()) {
+    return false;
+  }
+  return !message.is_user && !(message.is_system && typeof ((_a = message.extra) == null ? void 0 : _a.type) === "string");
+}
+function lastAssistantFloor() {
+  const chat = getChat();
+  for (let i = chat.length - 1; i >= 0; i--) {
+    if (isAiStoryMessage(chat[i])) {
+      return i;
+    }
+  }
+  return -1;
+}
 function getSendDate(floor) {
   const msg = getMessage(floor);
   const d = msg == null ? void 0 : msg.send_date;
@@ -521,6 +537,8 @@ const DEFAULT_SETTINGS = {
   modeChannels: {},
   // 默认不指定，跟随柏宝绘当前出图方案；用户在弹窗里可为每个模式分别指派
   modeOutPlans: {},
+  showFloatingBall: true,
+  showSelectionToolbar: true,
   modes: {
     "illustration": defaultModeSettings("illustration"),
     "comic": defaultModeSettings("comic"),
@@ -1187,6 +1205,42 @@ function moneySavingHint(snap) {
   }
   return "";
 }
+let handlers = null;
+function registerStudio(next) {
+  handlers = next;
+}
+function openStudio(tab, options) {
+  if (!handlers) {
+    console.warn("[ST-Story-Illustrator] 面板尚未就绪。");
+    return;
+  }
+  if (tab === "settings") handlers.settings();
+  else handlers.generate(options);
+}
+const TAB_LABELS = [
+  { tab: "generate", label: "生成配图", icon: "fa-wand-magic-sparkles" },
+  { tab: "settings", label: "配图设置", icon: "fa-sliders" }
+];
+function buildStudioTabs(active) {
+  const bar = document.createElement("div");
+  bar.className = "sti-studio-tabs";
+  for (const { tab, label, icon } of TAB_LABELS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `sti-studio-tab${tab === active ? " active" : ""}`;
+    btn.dataset.tab = tab;
+    const i = document.createElement("i");
+    i.className = `fa-solid ${icon}`;
+    btn.appendChild(i);
+    btn.appendChild(document.createTextNode(" " + label));
+    btn.addEventListener("click", () => {
+      if (tab === active) return;
+      openStudio(tab);
+    });
+    bar.appendChild(btn);
+  }
+  return bar;
+}
 const PANEL_ID$1 = "sti-selection-panel";
 const PANEL_OVERLAY_ID = "sti-selection-panel-overlay";
 const METHOD_ORDER = ["local", "single", "range", "picked"];
@@ -1263,8 +1317,9 @@ function renderPanel() {
   panelElement.innerHTML = "";
   const title = document.createElement("div");
   title.className = "sti-panel-title";
-  title.textContent = "剧情选段";
+  title.textContent = "生成配图";
   panelElement.appendChild(title);
+  panelElement.appendChild(buildStudioTabs("generate"));
   const methodTabs = document.createElement("div");
   methodTabs.className = "sti-method-tabs";
   for (const method of METHOD_ORDER) {
@@ -1855,11 +1910,102 @@ function ensureOverlay() {
   overlay.style.display = "none";
   document.body.appendChild(overlay);
 }
+let gallery = null;
+let galleryItems = [];
+let galleryIndex = 0;
+function openGallery(items, startIndex = 0) {
+  if (items.length === 0) return;
+  galleryItems = items;
+  galleryIndex = Math.min(Math.max(startIndex, 0), items.length - 1);
+  ensureGallery();
+  renderGallery();
+  if (gallery) gallery.style.display = "flex";
+}
+function ensureGallery() {
+  if (gallery) return;
+  const el = document.createElement("div");
+  el.id = "sti-gallery";
+  el.className = "sti-lightbox sti-gallery";
+  el.style.display = "none";
+  el.addEventListener("click", (e) => {
+    if (e.target === el) closeGallery();
+  });
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "sti-gallery-nav prev";
+  prev.textContent = "‹";
+  prev.addEventListener("click", (e) => {
+    e.stopPropagation();
+    stepGallery(-1);
+  });
+  el.appendChild(prev);
+  const stage = document.createElement("div");
+  stage.className = "sti-gallery-stage";
+  el.appendChild(stage);
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "sti-gallery-nav next";
+  next.textContent = "›";
+  next.addEventListener("click", (e) => {
+    e.stopPropagation();
+    stepGallery(1);
+  });
+  el.appendChild(next);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "sti-lightbox-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "关闭");
+  close.addEventListener("click", closeGallery);
+  el.appendChild(close);
+  document.body.appendChild(el);
+  gallery = el;
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") stepGallery(-1);
+    if (e.key === "ArrowRight") stepGallery(1);
+    if (e.key === "Escape") closeGallery();
+  });
+  el.tabIndex = 0;
+}
+function renderGallery() {
+  if (!gallery) return;
+  const stage = gallery.querySelector(".sti-gallery-stage");
+  if (!stage) return;
+  stage.innerHTML = "";
+  const item = galleryItems[galleryIndex];
+  if (!item) return;
+  const img = document.createElement("img");
+  img.className = "sti-lightbox-img";
+  img.src = item.src;
+  img.alt = item.caption ?? "图片";
+  stage.appendChild(img);
+  const cap = document.createElement("div");
+  cap.className = "sti-lightbox-caption";
+  cap.textContent = `${galleryIndex + 1}/${galleryItems.length}${item.caption ? " · " + item.caption : ""}`;
+  stage.appendChild(cap);
+  const single = galleryItems.length <= 1;
+  gallery.querySelectorAll(".sti-gallery-nav").forEach((n) => {
+    n.style.display = single ? "none" : "";
+  });
+}
+function stepGallery(delta) {
+  if (galleryItems.length === 0) return;
+  galleryIndex = (galleryIndex + delta + galleryItems.length) % galleryItems.length;
+  renderGallery();
+}
+function closeGallery() {
+  if (gallery) gallery.style.display = "none";
+}
 function destroyLightbox() {
   if (overlay) {
     overlay.remove();
     overlay = null;
   }
+  if (gallery) {
+    gallery.remove();
+    gallery = null;
+  }
+  galleryItems = [];
 }
 function findPlanRadio(root, planName) {
   const radios = Array.from(root.querySelectorAll('button.item-main[role="radio"]'));
@@ -1939,9 +2085,76 @@ async function switchBaiBaiPlan(planId, timeoutMs = 8e3) {
   }
   return await confirmSwitched(planId, target.name);
 }
+const ITEMS = [
+  {
+    id: "sti-menu-generate",
+    label: "生成配图",
+    title: "ST 故事插画 · 生成配图（也可先划线）",
+    icon: "fa-wand-magic-sparkles",
+    tab: "generate"
+  },
+  {
+    id: "sti-menu-config",
+    label: "配图设置",
+    title: "ST 故事插画 · 出图方案 / 小剧场设置",
+    icon: "fa-images",
+    tab: "settings"
+  }
+];
+function buildItem(spec) {
+  const wrap = document.createElement("div");
+  wrap.className = "extension_container interactable";
+  wrap.tabIndex = 0;
+  const link = document.createElement("a");
+  link.id = spec.id;
+  link.className = "list-group-item";
+  link.href = "#";
+  link.title = spec.title;
+  const icon = document.createElement("i");
+  icon.className = `fa-solid ${spec.icon}`;
+  link.appendChild(icon);
+  const text = document.createElement("span");
+  text.textContent = " " + spec.label;
+  link.appendChild(text);
+  link.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openStudio(spec.tab);
+    const menu = document.getElementById("extensionsMenu");
+    if (menu) {
+      menu.style.display = "none";
+      menu.classList.remove("visible");
+    }
+  });
+  wrap.appendChild(link);
+  return wrap;
+}
+function injectWandMenu() {
+  let timer = 0;
+  const tryInject = () => {
+    const menu = document.getElementById("extensionsMenu");
+    if (!menu) return;
+    for (const spec of ITEMS) {
+      if (document.getElementById(spec.id)) continue;
+      menu.appendChild(buildItem(spec));
+    }
+    if (ITEMS.every((spec) => !!document.getElementById(spec.id))) {
+      window.clearInterval(timer);
+    }
+  };
+  tryInject();
+  timer = window.setInterval(tryInject, 800);
+  return () => window.clearInterval(timer);
+}
+function destroyWandMenu() {
+  var _a, _b, _c;
+  for (const spec of ITEMS) {
+    (_b = (_a = document.getElementById(spec.id)) == null ? void 0 : _a.closest(".extension_container")) == null ? void 0 : _b.remove();
+    (_c = document.getElementById(spec.id)) == null ? void 0 : _c.remove();
+  }
+}
 const PANEL_ID = "sti-config-panel";
 const OVERLAY_ID = "sti-config-overlay";
-const MENU_ID = "sti-config-menu-item";
 const MODE_LABEL = {
   "illustration": "正文插画",
   "comic": "正文漫画分镜",
@@ -1999,7 +2212,7 @@ function render(panel) {
   const head = document.createElement("div");
   head.className = "sti-config-head";
   const title = document.createElement("h2");
-  title.textContent = "出图配置同步";
+  title.textContent = "配图设置";
   head.appendChild(title);
   const close = document.createElement("button");
   close.type = "button";
@@ -2008,6 +2221,7 @@ function render(panel) {
   close.addEventListener("click", () => hideConfigPanel());
   head.appendChild(close);
   panel.appendChild(head);
+  panel.appendChild(buildStudioTabs("settings"));
   const body = document.createElement("div");
   body.className = "sti-config-body";
   const cur = section("当前出图方案", "以下是柏宝绘此刻实际用于出图的配置，本面板实时同步。");
@@ -2023,6 +2237,9 @@ function render(panel) {
     cur.appendChild(hintEl);
   }
   body.appendChild(cur);
+  body.appendChild(renderTheaterSettings());
+  body.appendChild(renderComicSettings());
+  body.appendChild(renderUiSettings());
   const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
   const assigned = Object.entries(modePlans).filter(([, id]) => !!id);
   if (assigned.length > 0) {
@@ -2124,9 +2341,276 @@ function render(panel) {
   refresh.addEventListener("click", () => showConfigPanel());
   foot.appendChild(refresh);
   const note = document.createElement("span");
-  note.textContent = "本面板只读柏宝绘配置，出图仍由柏宝绘执行。";
+  note.textContent = "出图仍由柏宝绘执行；本页开关只影响本插件。";
   foot.appendChild(note);
   panel.appendChild(foot);
+}
+const SHOT_OPTIONS = [
+  ["1", "1 格 · 单画面"],
+  ["2", "2 格 · 起 → 落"],
+  ["3", "3 格 · 起 → 转 → 落"],
+  ["4", "4 格 · 小分镜"]
+];
+const CHANCE_OPTIONS = [
+  ["0", "0% · 不出"],
+  ["25", "25% · 偶尔"],
+  ["50", "50% · 一半"],
+  ["100", "100% · 每楼都出"]
+];
+function patchSettings(mutate) {
+  const next = getSettings(DEFAULT_SETTINGS);
+  const empty = {
+    enabled: false,
+    autoTrigger: false,
+    profileId: "",
+    shots: 1
+  };
+  next.modes = next.modes ?? {};
+  for (const mode of ["illustration", "comic", "chibi-status", "chibi-bonus", "bw-manga"]) {
+    next.modes[mode] = { ...empty, ...next.modes[mode] ?? {} };
+  }
+  mutate(next);
+  saveSettings(next);
+  showConfigPanel();
+  window.dispatchEvent(new CustomEvent("sti-settings-changed"));
+}
+function settingRow(label, hint) {
+  const el = document.createElement("div");
+  el.className = "sti-set-row";
+  const left = document.createElement("div");
+  left.className = "sti-set-label";
+  left.textContent = label;
+  if (hint) {
+    const small = document.createElement("small");
+    small.textContent = hint;
+    left.appendChild(small);
+  }
+  const control = document.createElement("div");
+  control.className = "sti-set-control";
+  el.appendChild(left);
+  el.appendChild(control);
+  return { el, control };
+}
+function toggleRow(label, checked, onChange, hint) {
+  const { el, control } = settingRow(label, hint);
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = checked;
+  cb.addEventListener("change", () => onChange(cb.checked));
+  control.appendChild(cb);
+  return el;
+}
+function selectRow(label, value, options, onChange, hint) {
+  const { el, control } = settingRow(label, hint);
+  const select = document.createElement("select");
+  for (const [val, text] of options) {
+    const opt = document.createElement("option");
+    opt.value = val;
+    opt.textContent = text;
+    if (val === value) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => onChange(select.value));
+  control.appendChild(select);
+  return el;
+}
+function renderTheaterSettings() {
+  var _a, _b, _c;
+  const s = getSettings(DEFAULT_SETTINGS);
+  const status = (_a = s.modes) == null ? void 0 : _a["chibi-status"];
+  const bonus = (_b = s.modes) == null ? void 0 : _b["chibi-bonus"];
+  const manga = (_c = s.modes) == null ? void 0 : _c["bw-manga"];
+  const group = document.createElement("div");
+  group.className = "sti-config-group";
+  const head = document.createElement("div");
+  head.className = "sti-config-group-h";
+  head.textContent = "小剧场（QQ 人 / 彩蛋 / 黑白漫）";
+  group.appendChild(head);
+  const tip = document.createElement("div");
+  tip.className = "sti-config-sub";
+  tip.textContent = "三套互不影响，可以同时开；同时开时每层出图量会叠加。画风与画师串跟随下面选中的出图方案。";
+  group.appendChild(tip);
+  const a = section("① QQ 人小剧场状态栏", "楼层底部一张卡片，按剧情时间顺序排出「怎么走到这个结果」的几格。");
+  a.appendChild(selectRow(
+    "每层格数",
+    String((status == null ? void 0 : status.shots) ?? 1),
+    SHOT_OPTIONS,
+    (v) => patchSettings((st) => {
+      st.modes["chibi-status"].shots = Number(v);
+      st.chibiStatusShots = Number(v);
+    })
+  ));
+  a.appendChild(selectRow(
+    "画风",
+    (status == null ? void 0 : status.chibiStyle) ?? "card",
+    [["card", "Q 版（大头小身）"], ["thumb", "写实小图"]],
+    (v) => patchSettings((st) => {
+      st.modes["chibi-status"].chibiStyle = v === "thumb" ? "thumb" : "card";
+      st.chibiStatusStyle = v === "thumb" ? "thumb" : "card";
+    })
+  ));
+  a.appendChild(planSelectRow("chibi-status"));
+  a.appendChild(toggleRow(
+    "新楼层自动出图",
+    !!(status == null ? void 0 : status.autoTrigger),
+    (v) => patchSettings((st) => {
+      st.modes["chibi-status"].autoTrigger = v;
+    }),
+    "开启后每一层 AI 回复完自动生成，不再需要划线。注意会持续消耗出图额度。"
+  ));
+  group.appendChild(a);
+  const b = section("② 彩蛋小剧场", "与正文剧情无关的平行小片段，题材放开，每次换花样。");
+  b.appendChild(selectRow(
+    "每条格数",
+    String((bonus == null ? void 0 : bonus.shots) ?? 1),
+    SHOT_OPTIONS,
+    (v) => patchSettings((st) => {
+      st.modes["chibi-bonus"].shots = Number(v);
+      st.chibiBonusShots = Number(v);
+    })
+  ));
+  b.appendChild(selectRow(
+    "自动触发概率",
+    String((bonus == null ? void 0 : bonus.chibiBonusChance) ?? s.chibiBonusChance ?? 25),
+    CHANCE_OPTIONS,
+    (v) => patchSettings((st) => {
+      st.modes["chibi-bonus"].chibiBonusChance = Number(v);
+      st.chibiBonusChance = Number(v);
+    }),
+    "只在「新楼层自动出图」开着时生效；手动点彩蛋不受概率限制。"
+  ));
+  b.appendChild(planSelectRow("chibi-bonus"));
+  b.appendChild(toggleRow(
+    "新楼层自动出彩蛋",
+    !!(bonus == null ? void 0 : bonus.autoTrigger),
+    (v) => patchSettings((st) => {
+      st.modes["chibi-bonus"].autoTrigger = v;
+    })
+  ));
+  group.appendChild(b);
+  const c = section("③ 黑白漫小剧场", "正常比例、黑白画风；画风由出图方案里的画师串决定。");
+  c.appendChild(selectRow(
+    "每条格数",
+    String((manga == null ? void 0 : manga.shots) ?? 1),
+    SHOT_OPTIONS,
+    (v) => patchSettings((st) => {
+      st.modes["bw-manga"].shots = Number(v);
+      st.mangaShots = Number(v);
+    })
+  ));
+  c.appendChild(toggleRow(
+    "安全洗（去掉写实/彩色相关词）",
+    (manga == null ? void 0 : manga.bwMangaSafeMode) !== false,
+    (v) => patchSettings((st) => {
+      st.modes["bw-manga"].bwMangaSafeMode = v;
+      st.mangaSafe = v;
+    }),
+    "只改负面词与冲突词，不改你的画师串。"
+  ));
+  c.appendChild(planSelectRow("bw-manga"));
+  c.appendChild(toggleRow(
+    "新楼层自动出黑白漫",
+    !!(manga == null ? void 0 : manga.autoTrigger),
+    (v) => patchSettings((st) => {
+      st.modes["bw-manga"].autoTrigger = v;
+    })
+  ));
+  group.appendChild(c);
+  return group;
+}
+function planSelectRow(mode) {
+  var _a;
+  const snap = readOutConfig();
+  const current = ((_a = getSettings(DEFAULT_SETTINGS).modeOutPlans) == null ? void 0 : _a[mode]) ?? "";
+  const options = [["", "跟随当前方案"]];
+  for (const plan of snap.plans) {
+    options.push([plan.id, `${plan.name} · ${plan.endpointName} / ${plan.model || "未填模型"}`]);
+  }
+  return selectRow(
+    "出图方案",
+    current,
+    options,
+    (v) => patchSettings((st) => {
+      st.modeOutPlans = { ...st.modeOutPlans ?? {} };
+      if (v) st.modeOutPlans[mode] = v;
+      else delete st.modeOutPlans[mode];
+    }),
+    snap.plans.length === 0 ? "柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。" : "出图前会临时切到这套方案（串行执行，互不打断）。"
+  );
+}
+function renderComicSettings() {
+  var _a;
+  const s = getSettings(DEFAULT_SETTINGS);
+  const comic = (_a = s.modes) == null ? void 0 : _a["comic"];
+  const group = document.createElement("div");
+  group.className = "sti-config-group";
+  const head = document.createElement("div");
+  head.className = "sti-config-group-h";
+  head.textContent = "④ 正文漫画分镜";
+  group.appendChild(head);
+  const box = section("正文插图切成漫画格", "与三套小剧场并列；勾选「正文漫画分镜」时生效，图会按分镜插进正文。");
+  box.appendChild(selectRow(
+    "版面",
+    (comic == null ? void 0 : comic.comicLayout) ?? "regular",
+    [["regular", "规整四格"], ["irregular", "斜切分镜"], ["inset", "主图 + 嵌入格"], ["unframed", "无边框融白"]],
+    (v) => patchSettings((st) => {
+      st.modes["comic"].comicLayout = v;
+      st.panelLayout = v;
+    })
+  ));
+  box.appendChild(selectRow(
+    "最多页数",
+    String((comic == null ? void 0 : comic.comicMaxPages) ?? 1),
+    [["1", "1 页"], ["2", "2 页"], ["3", "3 页"]],
+    (v) => patchSettings((st) => {
+      st.modes["comic"].comicMaxPages = Number(v);
+    })
+  ));
+  box.appendChild(toggleRow(
+    "气泡对白",
+    s.dialogueEnabled !== false,
+    (v) => patchSettings((st) => {
+      st.dialogueEnabled = v;
+      st.modes["comic"].comicDialoguePolicy = v ? "always" : "auto";
+    }),
+    "开启后会把选段里的台词排进气泡，出图后合成一次到图上。"
+  ));
+  group.appendChild(box);
+  return group;
+}
+function renderUiSettings() {
+  const s = getSettings(DEFAULT_SETTINGS);
+  const group = document.createElement("div");
+  group.className = "sti-config-group";
+  const head = document.createElement("div");
+  head.className = "sti-config-group-h";
+  head.textContent = "入口与显示";
+  group.appendChild(head);
+  group.appendChild(toggleRow(
+    "悬浮球（🎨）",
+    s.showFloatingBall !== false,
+    (v) => patchSettings((st) => {
+      st.showFloatingBall = v;
+    }),
+    "关掉后仍可从魔杖菜单打开；悬浮球可以拖动，位置会记住。"
+  ));
+  group.appendChild(toggleRow(
+    "划词时显示「生成配图」按钮",
+    s.showSelectionToolbar !== false,
+    (v) => patchSettings((st) => {
+      st.showSelectionToolbar = v;
+    }),
+    "关掉后只能从魔杖菜单或悬浮球打开面板。"
+  ));
+  group.appendChild(toggleRow(
+    "选段只提取 <content> 里的正文",
+    s.preferContentTag !== false,
+    (v) => patchSettings((st) => {
+      st.preferContentTag = v;
+    }),
+    "兼容把思维链写进正文的预设，避免把思考过程算进剧情。"
+  ));
+  return group;
 }
 function activeModel(snap) {
   var _a;
@@ -2143,39 +2627,7 @@ function maskUrl(url) {
 function esc(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
 }
-function injectConfigMenu() {
-  let done = false;
-  const tryInject = () => {
-    const menu = document.getElementById("extensionsMenu");
-    if (!menu || document.getElementById(MENU_ID)) return;
-    const item = document.createElement("div");
-    item.className = "extension_container interactable";
-    item.tabIndex = 0;
-    const link = document.createElement("a");
-    link.id = MENU_ID;
-    link.className = "list-group-item";
-    link.href = "#";
-    link.title = "ST 故事插画 · 出图配置";
-    link.innerHTML = '<i class="fa-solid fa-images"></i> <span>配图设置</span>';
-    link.addEventListener("click", (e) => {
-      e.preventDefault();
-      showConfigPanel();
-      const m = document.getElementById("extensionsMenu");
-      if (m) m.style.display = "none";
-    });
-    item.appendChild(link);
-    menu.appendChild(item);
-    done = true;
-  };
-  tryInject();
-  const timer = window.setInterval(() => {
-    tryInject();
-    if (done || document.getElementById(MENU_ID)) window.clearInterval(timer);
-  }, 500);
-  return () => window.clearInterval(timer);
-}
 function destroyConfigPanel() {
-  var _a;
   if (panelEl) {
     panelEl.remove();
     panelEl = null;
@@ -2184,7 +2636,7 @@ function destroyConfigPanel() {
     overlayEl.remove();
     overlayEl = null;
   }
-  (_a = document.getElementById(MENU_ID)) == null ? void 0 : _a.remove();
+  destroyWandMenu();
 }
 const ARTIFACTS_KEY = "sti_artifacts";
 const CHAT_META_KEY = "STStoryIllustrator";
@@ -2280,7 +2732,7 @@ function mountInline(mes, floor, artifact) {
   var _a;
   const mesText = mes.querySelector(".mes_text");
   if (!mesText) return;
-  const card = buildCard(artifact, floor, true);
+  const card = buildCard$1(artifact, floor, true);
   let inserted = false;
   if (artifact.textAnchor) {
     const anchor = artifact.textAnchor;
@@ -2316,10 +2768,10 @@ function mountTrailing(mes, floor, artifacts) {
     mesBlock.appendChild(area);
   }
   for (const artifact of artifacts) {
-    area.appendChild(buildCard(artifact, floor, false));
+    area.appendChild(buildCard$1(artifact, floor, false));
   }
 }
-function buildCard(artifact, floor, inline) {
+function buildCard$1(artifact, floor, inline) {
   const card = document.createElement("div");
   card.className = inline ? INLINE_CLASS : "sti-floor-card";
   card.setAttribute(MOUNTED_ATTR$1, String(floor));
@@ -2368,217 +2820,105 @@ function getStories(floor, bucket) {
   const extra = msg.extra;
   return readStore$1(extra == null ? void 0 : extra[THEATER_KEY]).buckets[bucket];
 }
-function saveStory(floor, bucket, story) {
+function hasStory(floor, bucket) {
+  return getStories(floor, bucket).length > 0;
+}
+function newSetId() {
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+function getSets(floor, bucket) {
+  const list = getStories(floor, bucket);
+  const order = [];
+  const map = /* @__PURE__ */ new Map();
+  for (const story of list) {
+    const key = story.setId && story.setId.trim() ? story.setId : `single-${story.storyId}`;
+    if (!map.has(key)) {
+      map.set(key, []);
+      order.push(key);
+    }
+    map.get(key).push(story);
+  }
+  const sets = [];
+  for (const key of order) {
+    const panels = (map.get(key) ?? []).slice().sort((a, b) => a.index - b.index);
+    const first = panels[0];
+    if (!first) continue;
+    const cast = dedupe(panels.flatMap((p) => p.cast ?? []));
+    const mood = panels.map((p) => p.mood).find((m) => !!m) ?? "";
+    sets.push({
+      setId: key,
+      kind: bucket,
+      title: first.setTitle ?? first.title ?? "",
+      cast,
+      mood,
+      panels,
+      sourceText: first.sourceText ?? "",
+      characterName: first.characterName ?? "",
+      createdAt: first.storyAt ?? 0
+    });
+  }
+  return sets;
+}
+function saveSet(floor, bucket, stories) {
+  if (stories.length === 0) return false;
   const msg = getMessage(floor);
   if (!msg) return false;
   if (!msg.extra) msg.extra = {};
   const extra = msg.extra;
   const store = readStore$1(extra[THEATER_KEY]);
-  const clean = {
-    ...story,
-    ...story.lines && story.lines.length ? { lines: story.lines } : { lines: void 0 }
-  };
-  store.buckets[bucket].push(clean);
+  for (const story of stories) {
+    store.buckets[bucket].push({
+      ...story,
+      ...story.lines && story.lines.length ? { lines: story.lines } : { lines: void 0 }
+    });
+  }
   return writeStore(floor, store);
 }
-function removeStory(floor, bucket, storyId) {
+function updatePanel(floor, bucket, setId, index2, patch) {
+  const msg = getMessage(floor);
+  if (!(msg == null ? void 0 : msg.extra)) return false;
+  const extra = msg.extra;
+  const store = readStore$1(extra[THEATER_KEY]);
+  const list = store.buckets[bucket];
+  const at = list.findIndex((s) => s.setId === setId && s.index === index2);
+  if (at < 0) return false;
+  list[at] = { ...list[at], ...patch };
+  return writeStore(floor, store);
+}
+function replaceSet(floor, bucket, setId, stories) {
+  const msg = getMessage(floor);
+  if (!(msg == null ? void 0 : msg.extra)) return false;
+  const extra = msg.extra;
+  const store = readStore$1(extra[THEATER_KEY]);
+  const kept = store.buckets[bucket].filter((s) => s.setId !== setId);
+  const firstAt = store.buckets[bucket].findIndex((s) => s.setId === setId);
+  const merged = kept.slice();
+  const insertAt = firstAt < 0 ? merged.length : Math.min(firstAt, merged.length);
+  merged.splice(insertAt, 0, ...stories.map((s) => ({
+    ...s,
+    ...s.lines && s.lines.length ? { lines: s.lines } : { lines: void 0 }
+  })));
+  store.buckets[bucket] = merged;
+  return writeStore(floor, store);
+}
+function removeSet(floor, bucket, setId) {
   const msg = getMessage(floor);
   if (!(msg == null ? void 0 : msg.extra)) return false;
   const extra = msg.extra;
   const store = readStore$1(extra[THEATER_KEY]);
   const before = store.buckets[bucket].length;
-  store.buckets[bucket] = store.buckets[bucket].filter((s) => s.storyId !== storyId);
+  store.buckets[bucket] = store.buckets[bucket].filter((s) => s.setId !== setId);
   if (store.buckets[bucket].length === before) return false;
   return writeStore(floor, store);
 }
-const AREA_ID = "sti-theater-area-";
-const AREA_CLASS = "sti-cs-bar";
-const MOUNTED_ATTR = "data-sti-theater-mounted";
-const BUCKET_LABELS = {
-  status: "QQ人小剧场",
-  bonus: "彩蛋",
-  manga: "黑白漫"
-};
-function mountTheater(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  unmountTheater(floor);
-  const all = [];
-  for (const bucket of ["status", "bonus", "manga"]) {
-    for (const story of getStories(floor, bucket)) all.push({ bucket, story });
+function dedupe(list) {
+  const out = [];
+  for (const item of list) {
+    const v = String(item ?? "").trim();
+    if (!v || out.includes(v)) continue;
+    out.push(v);
   }
-  if (all.length === 0) return;
-  const mesBlock = mes.querySelector(".mes_block") ?? mes;
-  const area = document.createElement("div");
-  area.id = `${AREA_ID}${floor}`;
-  area.className = AREA_CLASS;
-  area.setAttribute(MOUNTED_ATTR, String(floor));
-  for (const { bucket, story } of all) {
-    area.appendChild(buildTheaterCard(floor, bucket, story));
-  }
-  mesBlock.appendChild(area);
-}
-function unmountTheater(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  const areas = mes.querySelectorAll(`[${MOUNTED_ATTR}="${floor}"]`);
-  for (const area of Array.from(areas)) area.remove();
-}
-function buildTheaterCard(floor, bucket, story) {
-  const card = document.createElement("details");
-  card.className = "sti-cs-card";
-  const summary = document.createElement("summary");
-  summary.className = "sti-cs-headline";
-  const kicker = document.createElement("span");
-  kicker.className = "sti-cs-kicker";
-  kicker.textContent = BUCKET_LABELS[bucket];
-  summary.appendChild(kicker);
-  summary.appendChild(document.createTextNode(" " + (story.title || `第 ${story.index + 1} 格`)));
-  card.appendChild(summary);
-  const body = document.createElement("div");
-  body.className = "sti-cs-body";
-  if (story.imagePath) {
-    const figure = document.createElement("div");
-    figure.className = "sti-cs-figure";
-    const img = document.createElement("img");
-    img.className = "sti-cs-photo";
-    img.src = story.imagePath;
-    img.alt = story.title ?? "小剧场";
-    img.loading = "lazy";
-    img.addEventListener("click", () => openLightbox(story.imagePath, story.title));
-    figure.appendChild(img);
-    body.appendChild(figure);
-  }
-  if (story.lines && story.lines.length) {
-    const lines = document.createElement("div");
-    lines.className = "sti-cs-lines";
-    for (const line of story.lines) {
-      const row = document.createElement("div");
-      row.className = "sti-cs-line";
-      if (line.speaker) {
-        const b = document.createElement("b");
-        b.textContent = line.speaker;
-        row.appendChild(b);
-      }
-      row.appendChild(document.createTextNode(line.text));
-      lines.appendChild(row);
-    }
-    body.appendChild(lines);
-  }
-  const actions = document.createElement("div");
-  actions.className = "sti-cs-actions";
-  const del = document.createElement("button");
-  del.className = "sti-cs-regen";
-  del.textContent = "删除";
-  del.addEventListener("click", (e) => {
-    e.preventDefault();
-    removeStory(floor, bucket, story.storyId);
-    mountTheater(floor);
-  });
-  actions.appendChild(del);
-  body.appendChild(actions);
-  card.appendChild(body);
-  return card;
-}
-class TaskQueue {
-  constructor(runner, options = {}) {
-    this.pending = [];
-    this.current = null;
-    this.running = false;
-    this.runner = runner;
-    this.options = options;
-    this.timeoutMs = options.taskTimeoutMs ?? 5 * 60 * 1e3;
-  }
-  /** 入队。重复 task.id 会被去重（忽略后入的）。 */
-  enqueue(task) {
-    var _a;
-    if (this.pending.some((t) => t.id === task.id)) return;
-    if (((_a = this.current) == null ? void 0 : _a.task.id) === task.id) return;
-    this.pending.push(task);
-    this.setStatus(task, "queued");
-    void this.drain();
-  }
-  /** 取消指定任务：排队中的直接移除；运行中的发出 abort。 */
-  cancel(taskId) {
-    var _a;
-    const idx = this.pending.findIndex((t) => t.id === taskId);
-    if (idx >= 0) {
-      const [task] = this.pending.splice(idx, 1);
-      this.setStatus(task, "cancelled");
-      return;
-    }
-    if (((_a = this.current) == null ? void 0 : _a.task.id) === taskId) {
-      this.current.controller.abort();
-    }
-  }
-  /** 取消全部（排队中 + 运行中）。 */
-  cancelAll() {
-    for (const task of this.pending.splice(0)) this.setStatus(task, "cancelled");
-    if (this.current) this.current.controller.abort();
-  }
-  /** 等待当前队列排空（测试用）。 */
-  async idle() {
-    while (this.running || this.pending.length > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  get size() {
-    return this.pending.length + (this.current ? 1 : 0);
-  }
-  // ----------------------------------------------------------
-  // 内部调度
-  // ----------------------------------------------------------
-  async drain() {
-    var _a, _b, _c, _d;
-    if (this.running) return;
-    this.running = true;
-    try {
-      while (this.pending.length > 0) {
-        const task = this.pending.shift();
-        const controller = new AbortController();
-        const entry = { task, controller, timer: null };
-        this.current = entry;
-        if (this.timeoutMs > 0) {
-          entry.timer = setTimeout(() => controller.abort(), this.timeoutMs);
-        }
-        const ctx = {
-          signal: controller.signal,
-          report: (progress) => {
-            task.progress = progress;
-            task.updatedAt = Date.now();
-          },
-          setStatus: (status) => this.setStatus(task, status)
-        };
-        try {
-          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
-          this.setStatus(task, "reading");
-          await this.runner(task, ctx);
-          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
-          this.setStatus(task, "completed");
-          (_b = (_a = this.options).onComplete) == null ? void 0 : _b.call(_a, task);
-        } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          const cancelled = error.name === "AbortError" || controller.signal.aborted;
-          this.setStatus(task, cancelled ? "cancelled" : "failed");
-          if (!cancelled) {
-            task.error = error.message;
-            (_d = (_c = this.options).onError) == null ? void 0 : _d.call(_c, task, error);
-          }
-        } finally {
-          if (entry.timer) clearTimeout(entry.timer);
-          this.current = null;
-        }
-      }
-    } finally {
-      this.running = false;
-    }
-  }
-  setStatus(task, status) {
-    var _a, _b;
-    task.status = status;
-    task.updatedAt = Date.now();
-    (_b = (_a = this.options).onStatusChange) == null ? void 0 : _b.call(_a, task, status);
-  }
+  return out;
 }
 function toBaiBaiRequest(input, character) {
   const size = input.size === "landscape" ? "landscape" : "portrait";
@@ -2616,6 +2956,25 @@ const baiBaiAdapter = {
     };
   }
 };
+async function ensureModeOutPlan$1(mode, settings2) {
+  var _a;
+  const planId = (_a = settings2.modeOutPlans) == null ? void 0 : _a[mode];
+  if (!planId) return;
+  const snap = readOutConfig();
+  if (!snap.plans.some((p) => p.id === planId)) {
+    console.warn(`[ST-Story-Illustrator] ${mode} 指定的出图方案已不存在，改用当前方案。`);
+    return;
+  }
+  if (snap.activePlanId === planId) return;
+  try {
+    const result = await switchBaiBaiPlan(planId);
+    if (!result.ok && result.reason !== "already") {
+      console.warn(`[ST-Story-Illustrator] 切换出图方案失败（继续用当前方案）：${result.message}`);
+    }
+  } catch (e) {
+    console.warn("[ST-Story-Illustrator] 切换出图方案异常（继续用当前方案）:", e);
+  }
+}
 const PANEL_BUBBLE_AREAS = [
   "tl",
   "tc",
@@ -3177,6 +3536,1161 @@ async function generateComicPlan(input) {
     return { ok: true, data: parsed.pages, warnings: parsed.warnings };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+const STATUS_MAX_CHARACTERS = 2;
+const STATUS_MAX_PANELS = 4;
+const STATUS_MAX_LINES = 4;
+const STYLE_BLOCKLIST = [
+  "masterpiece",
+  "best quality",
+  "high quality",
+  "highly detailed",
+  "ultra detailed",
+  "absurdres",
+  "8k",
+  "4k",
+  "photorealistic",
+  "realistic",
+  "photo",
+  "cinematic",
+  "depth of field",
+  "chibi",
+  "anime style",
+  "illustration",
+  "lineart",
+  "flat color",
+  "cel shading",
+  "full body",
+  "cowboy shot",
+  "wide shot",
+  "from below",
+  "foreshortening"
+];
+const HAS_CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
+const MAX_TAGS = 14;
+function sanitizeStatusTags(raw) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const piece of String(raw ?? "").split(/[,，、\n]/)) {
+    let tag = piece.trim().toLowerCase();
+    if (!tag) continue;
+    tag = tag.replace(/^\(?\s*[\d.]+::/, "").replace(/::$/, "").replace(/^\(|\)$/g, "");
+    tag = tag.replace(/:\s*[\d.]+$/, "").trim();
+    if (!tag || HAS_CJK.test(tag)) continue;
+    if (STYLE_BLOCKLIST.some((word) => tag === word || tag.includes(word))) continue;
+    if (seen.has(tag)) continue;
+    seen.add(tag);
+    out.push(tag);
+    if (out.length >= MAX_TAGS) break;
+  }
+  return out;
+}
+function emptyFrame() {
+  return { title: "", characters: [], roles: [], mood: "", tags: "", nl: "" };
+}
+function parseStatusReply(raw) {
+  const empty = { ...emptyFrame(), panels: [] };
+  const text = String(raw ?? "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return empty;
+  const body = text.slice(start, end + 1);
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    try {
+      parsed = JSON.parse(body.replace(/'/g, '"'));
+    } catch {
+      return empty;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return empty;
+  const record = parsed;
+  const pick = (v) => typeof v === "string" ? v.trim() : "";
+  const parseFrame = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return emptyFrame();
+    const frame = value;
+    const roles = [];
+    const push = (item) => {
+      if (roles.length >= STATUS_MAX_CHARACTERS) return;
+      if (typeof item === "string") {
+        const name = item.trim();
+        if (name && !roles.some((r) => r.name === name)) roles.push({ name, act: "" });
+        return;
+      }
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        const rec = item;
+        const name = typeof rec.name === "string" ? rec.name.trim() : "";
+        const act = typeof rec.act === "string" ? rec.act.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+        if (name && !roles.some((r) => r.name === name)) roles.push({ name, act });
+      }
+    };
+    if (Array.isArray(frame.characters)) frame.characters.forEach(push);
+    else push(frame.characters);
+    push(frame.character);
+    const tagsRaw = Array.isArray(frame.tags) ? frame.tags.join(", ") : pick(frame.tags);
+    const tags = sanitizeStatusTags(tagsRaw);
+    const lines = [];
+    if (Array.isArray(frame.lines)) {
+      for (const lineRaw of frame.lines) {
+        if (lines.length >= STATUS_MAX_LINES) break;
+        if (typeof lineRaw === "string") {
+          const t = lineRaw.trim().slice(0, 60);
+          if (t) lines.push({ speaker: "", text: t });
+          continue;
+        }
+        if (lineRaw && typeof lineRaw === "object" && !Array.isArray(lineRaw)) {
+          const rec = lineRaw;
+          const speaker = typeof rec.speaker === "string" ? rec.speaker.trim().slice(0, 16) : "";
+          const text2 = typeof rec.text === "string" ? rec.text.trim().slice(0, 60) : "";
+          if (text2) lines.push({ speaker, text: text2 });
+        }
+      }
+    }
+    const nlRaw = pick(frame.nl).replace(/\s+/g, " ").slice(0, 300);
+    const nl = nlRaw && !HAS_CJK.test(nlRaw) ? nlRaw : "";
+    return {
+      title: pick(frame.title).slice(0, 40),
+      characters: roles.map((r) => r.name),
+      roles,
+      mood: pick(frame.mood).slice(0, 24),
+      tags: tags.join(", "),
+      nl,
+      ...lines.length ? { lines } : {}
+    };
+  };
+  const panels = [];
+  const seen = /* @__PURE__ */ new Set();
+  if (Array.isArray(record.panels)) {
+    for (const panelRaw of record.panels) {
+      if (panels.length >= STATUS_MAX_PANELS) break;
+      const frame = parseFrame(panelRaw);
+      if (!frame.tags) continue;
+      const key = frame.tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean).sort().join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      panels.push(frame);
+    }
+  }
+  const top = parseFrame(record);
+  if (!panels.length && top.tags) panels.push(top);
+  if (!panels.length) return empty;
+  const head = panels[0];
+  return { ...head, title: (pick(record.title) || head.title).slice(0, 40), panels };
+}
+function clampMangaShots(raw) {
+  const value = Math.round(Number(raw) || 1);
+  return Math.min(Math.max(value, 1), STATUS_MAX_PANELS);
+}
+const BODY_LIMIT = 2400;
+const BODY_LIMIT_STORY = 3600;
+const FRAMING_RE = /\b(?:upper body|cowboy shot|close[- ]?up|portrait|headshot)\b/i;
+function clampBody(body, many) {
+  const text = String(body ?? "");
+  const limit = many ? BODY_LIMIT_STORY : BODY_LIMIT;
+  return text.length > limit ? text.slice(-limit) : text;
+}
+const JSON_FIELDS = '{"title":"中文，14 字以内，这一楼发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}';
+const COMMON_RULES = [
+  "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
+  "characters 最多 2 项；每一项的 act 用英文写这个角色自己在做什么。两人互动时主动方和被动方 act 必须分开写。",
+  "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
+  "tags 只写四类：① 人数与互动；② 表情；③ 动作或姿态；④ 手里/身上的道具、与场景的互动。",
+  "nl 用英文自然语言写同一件事，不要分点、不要换行。",
+  "禁止写：画风、画质、镜头景别、光照颜色、服装细节、角色外貌——这些另有固定来源。",
+  "不要解释，不要 markdown 代码块，不要多余文字。"
+];
+function statusSingleSystem() {
+  return [
+    "读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。",
+    `格式：${JSON_FIELDS}`,
+    "tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。",
+    ...COMMON_RULES,
+    '没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。'
+  ].join("\n");
+}
+function statusManySystem(count) {
+  return [
+    `读一段角色扮演正文，把这一楼发生的事挑成 ${count} 个先后画面，像一条小分镜，只输出一个 JSON 对象。`,
+    `格式：{"title":"中文，14 字以内，这一楼讲了一件什么事","panels":[${JSON_FIELDS}]}`,
+    "panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。",
+    "每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。",
+    ...COMMON_RULES,
+    '没有角色出场时输出 {"title":"","panels":[]}。'
+  ].join("\n");
+}
+function bonusSystem(count) {
+  const linesSchema = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
+  const many = count > 1;
+  const panelsSchema = many ? `,"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences","lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]` : "";
+  return [
+    "读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。",
+    `格式：{"title":"中文，14 字以内，以「彩蛋：」开头","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${linesSchema}${panelsSchema}}`,
+    "题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。",
+    "每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。",
+    `每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。${many ? `把彩蛋拆成最多 ${count} 个先后画面（panels），按时间顺序，每格不同瞬间。` : "只画一个画面。"}`,
+    "彩蛋不是正文的延续：不要接着正文里刚发生的事画。",
+    ...COMMON_RULES
+  ].join("\n");
+}
+function mangaSingleSystem(safe) {
+  const rules = [
+    "读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。",
+    `格式：${JSON_FIELDS}`,
+    ...COMMON_RULES,
+    "tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。",
+    "禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。",
+    "禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。"
+  ];
+  if (safe) {
+    rules.push("这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。");
+  }
+  rules.push('没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。');
+  return rules.join("\n");
+}
+function mangaManySystem(count, safe) {
+  const rules = [
+    `读一段角色扮演正文，把这一楼发生的事挑成最多 ${count} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。`,
+    `格式：{"title":"中文，14 字以内","panels":[${JSON_FIELDS}]}`,
+    "panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。",
+    ...COMMON_RULES,
+    "tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。",
+    "禁止写：黑白、网点、screentone、画风、角色外貌、chibi 比例词；禁止 speech bubble / text / dialogue / caption / comic panel border。"
+  ];
+  if (safe) rules.push("每格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写；用表情、留白、构图表达张力，tags 与 act 里不许出现 NSFW 词。");
+  rules.push('没有角色出场时输出 {"title":"","panels":[]}。');
+  return rules.join("\n");
+}
+function buildTheaterPrompt(input) {
+  const count = Math.min(Math.max(Math.round(Number(input.shots) || 1), 1), STATUS_MAX_PANELS);
+  const many = count > 1;
+  const body = clampBody(input.body, many || input.kind === "bonus");
+  const name = input.characterName || "（未命名）";
+  let system;
+  let bodyLabel = "正文：";
+  switch (input.kind) {
+    case "bonus":
+      system = bonusSystem(count);
+      bodyLabel = "正文（只用来认人，不用来取材）：";
+      break;
+    case "manga":
+      system = many ? mangaManySystem(count, input.mangaSafe !== false) : mangaSingleSystem(input.mangaSafe !== false);
+      break;
+    case "status":
+    default:
+      system = many ? statusManySystem(count) : statusSingleSystem();
+      break;
+  }
+  return {
+    system,
+    user: `角色：${name}
+${bodyLabel}
+${body}`
+  };
+}
+const CHIBI_STYLE_STRONG = "2.3::super deformed, big head, small body::, 2.2::oversized eyes, round face, simplified facial features::, 2.0::tiny hands, short limbs::, 1.9::soft rounded shading, pastel highlights::, 1.8::glossy eyes, sparkles, bokeh background, warm rim light::, 1.7::exaggerated head-to-body ratio, rounded silhouette, simplified anatomy, stylized proportions, simple background::";
+const MANGA_FRAMING = [
+  "extreme close-up",
+  "close-up",
+  "upper body",
+  "cowboy shot",
+  "full body",
+  "wide shot",
+  "medium shot",
+  "from above",
+  "from below",
+  "from side",
+  "dutch angle"
+];
+const MANGA_FRAMING_RE = new RegExp(
+  `\\b(?:${MANGA_FRAMING.map((w) => w.replace(/-/g, "[- ]?")).join("|")})\\b`,
+  "i"
+);
+function buildStatusPrompt(appearances, tags, chibi = true) {
+  const looks = appearances.map((t) => t.trim()).filter(Boolean).join(", ");
+  const body = tags.trim();
+  const framing = body && !FRAMING_RE.test(body) ? "upper body" : "";
+  return [chibi ? CHIBI_STYLE_STRONG : "", looks, body, framing].filter(Boolean).join(", ");
+}
+function buildMangaPrompt(appearances, tags) {
+  const looks = appearances.map((t) => t.trim()).filter(Boolean).join(", ");
+  const body = tags.trim();
+  const framing = body && !MANGA_FRAMING_RE.test(body) ? "cowboy shot" : "";
+  return [looks, body, framing].filter(Boolean).join(", ");
+}
+function buildTheaterImagePrompt(kind, appearances, tags, chibi) {
+  return kind === "manga" ? buildMangaPrompt(appearances, tags) : buildStatusPrompt(appearances, tags, chibi);
+}
+const MANGA_SAFE_NEGATIVE = "nsfw, nude, naked, completely nude, topless, bottomless, nipples, areolae, underwear, panties, lingerie, braless, see-through, cleavage, underboob, sideboob, pussy, penis, genitals, anus, buttocks, sex, intercourse, fellatio, cunnilingus, paizuri, handjob, masturbation, cum, semen, creampie, ahegao, spread legs";
+const UNSAFE_RE = new RegExp(
+  `\\b(?:${[
+    "nsfw",
+    "nudes?",
+    "naked",
+    "topless",
+    "bottomless",
+    "nipples?",
+    "areolae?",
+    "underwear",
+    "panties?",
+    "lingerie",
+    "braless",
+    "see[ -]through",
+    "cleavage",
+    "underboob",
+    "sideboob",
+    "downblouse",
+    "upskirt",
+    "pussy",
+    "penis",
+    "genitals?",
+    "anus",
+    "buttocks?",
+    "ass",
+    "groin",
+    "breasts?",
+    "sex",
+    "sexual",
+    "intercourse",
+    "fellatio",
+    "cunnilingus",
+    "paizuri",
+    "handjob",
+    "masturbation",
+    "orgasm",
+    "ejaculat\\w*",
+    "cum",
+    "semen",
+    "creampie",
+    "ahegao",
+    "spread legs",
+    "exposed breasts?"
+  ].join("|")})\\b`,
+  "i"
+);
+function stripMangaUnsafeTags(tags) {
+  const hits = [];
+  const kept = String(tags ?? "").split(/[,，]/).map((p) => p.trim()).filter(Boolean).filter((part) => {
+    if (!UNSAFE_RE.test(part)) return true;
+    hits.push(part);
+    return false;
+  });
+  return { tags: kept.join(", "), hits };
+}
+function scrubMangaReading(reading) {
+  const hits = [];
+  const scrubFrame = (frame) => {
+    const tags = stripMangaUnsafeTags(frame.tags);
+    hits.push(...tags.hits);
+    const roles = frame.roles.map((role) => {
+      if (!role.act || !UNSAFE_RE.test(role.act)) return role;
+      hits.push(`${role.name} 的动作描写`);
+      return { ...role, act: "" };
+    });
+    let nl = frame.nl;
+    if (nl && UNSAFE_RE.test(nl)) {
+      hits.push(`${frame.title || "一格"} 的自然语言描述`);
+      nl = "";
+    }
+    return { ...frame, tags: tags.tags, roles, nl };
+  };
+  const panels = reading.panels.map(scrubFrame).filter((f) => !!f.tags);
+  const head = panels[0];
+  if (!head) {
+    return { reading: { ...reading, panels, tags: "", roles: [], characters: [], nl: "" }, hits };
+  }
+  return { reading: { ...reading, ...head, title: reading.title, panels }, hits };
+}
+function statusSeedFor(name) {
+  const text = (Array.isArray(name) ? name : [name]).map((s) => String(s ?? "").trim()).filter(Boolean).join("|");
+  if (!text) return 0;
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash % 4294967294 + 1;
+}
+function rerollSeed(backend, previous = 0) {
+  const pick = backend === "nai" ? () => Math.floor(Math.random() * 4294967294) + 1 : () => Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) + 1;
+  for (let i = 0; i < 8; i += 1) {
+    const seed = pick();
+    if (seed > 0 && seed !== previous) return seed;
+  }
+  return previous > 0 ? previous + 1 : 1;
+}
+function decideSeed(backend, override, fixedSeed = 0) {
+  if (backend === "nai") return fixedSeed > 0 ? fixedSeed : rerollSeed("nai");
+  return rerollSeed(backend);
+}
+async function readTheater(input) {
+  const { system, user } = buildTheaterPrompt({
+    kind: input.kind,
+    characterName: input.characterName,
+    body: input.body,
+    shots: clampMangaShots(input.shots),
+    mangaSafe: input.mangaSafe
+  });
+  const raw = await input.llm(`${system}
+
+---
+
+${user}`);
+  let reading = parseStatusReply(raw);
+  const hits = [];
+  if (input.kind === "manga" && input.mangaSafe) {
+    const scrubbed = scrubMangaReading(reading);
+    reading = scrubbed.reading;
+    hits.push(...scrubbed.hits);
+  }
+  return { reading, hits };
+}
+async function runTheaterOne(input) {
+  var _a;
+  try {
+    const { reading, hits } = await readTheater(input);
+    if (reading.panels.length === 0) {
+      return { ok: false, stories: [], error: "读剧情未返回可解析的分镜。", hits };
+    }
+    const names = /* @__PURE__ */ new Set();
+    for (const panel of reading.panels) {
+      for (const n of panel.characters) if (n) names.add(n);
+      for (const l of panel.lines ?? []) if (l.speaker && l.speaker !== "旁白") names.add(l.speaker);
+    }
+    const looks = input.readLooks([...names]);
+    const appearances = looks.map((l) => l.tag).filter(Boolean);
+    const fixedSeed = statusSeedFor([...names]);
+    const stories = [];
+    for (let i = 0; i < reading.panels.length; i += 1) {
+      const panel = reading.panels[i];
+      const prompt = buildTheaterImagePrompt(
+        input.kind,
+        appearances,
+        panel.tags,
+        input.chibi
+      );
+      const negative = input.kind === "manga" && input.mangaSafe ? MANGA_SAFE_NEGATIVE : void 0;
+      const seed = decideSeed(input.backend, void 0, fixedSeed);
+      const result = await input.generate(
+        {
+          prompt,
+          ...negative ? { negative } : {},
+          seed,
+          size: "portrait"
+        },
+        input.profile
+      );
+      const path = result.path ?? result.dataUrl ?? "";
+      if (!path) continue;
+      stories.push({
+        storyId: `s${Date.now().toString(36)}-${i}-${Math.random().toString(36).slice(2, 5)}`,
+        index: i,
+        storyAt: Date.now(),
+        title: panel.title || reading.title,
+        story: panel.nl || void 0,
+        mood: panel.mood || void 0,
+        cast: panel.characters.length ? panel.characters : void 0,
+        lines: panel.lines,
+        imagePath: path,
+        bonus: input.kind === "bonus",
+        manga: input.kind === "manga",
+        kind: input.kind,
+        // 重画这张要用的原始参数：不存就只能「整条重出」，单格没法还原
+        prompt,
+        ...negative ? { negative } : {},
+        seed: result.seed ?? seed,
+        ...((_a = input.profile) == null ? void 0 : _a.id) ? { profileId: input.profile.id } : {}
+      });
+    }
+    if (stories.length === 0) {
+      return { ok: false, stories, error: "所有分格出图均失败。", hits };
+    }
+    return { ok: true, stories, hits };
+  } catch (err) {
+    return {
+      ok: false,
+      stories: [],
+      error: err instanceof Error ? err.message : String(err),
+      hits: []
+    };
+  }
+}
+function kindOfMode(mode) {
+  if (mode === "chibi-status") return "status";
+  if (mode === "chibi-bonus") return "bonus";
+  return "manga";
+}
+function modeOfKind(kind) {
+  if (kind === "status") return "chibi-status";
+  if (kind === "bonus") return "chibi-bonus";
+  return "bw-manga";
+}
+function pickProfile$1(profiles, mode) {
+  return profiles.find((p) => p.mode === mode);
+}
+function fallbackProfile$1(mode) {
+  return {
+    id: `default-${mode}`,
+    name: "默认",
+    mode,
+    backend: "nai",
+    promptTemplateId: "default",
+    options: {}
+  };
+}
+async function runTheaterTask(input) {
+  const { mode, settings: settings2, floor } = input;
+  const kind = kindOfMode(mode);
+  const modeSettings = settings2.modes[mode];
+  const characters = await getCharacters(floor);
+  const profile = pickProfile$1(settings2.profiles ?? [], mode);
+  const result = await runTheaterOne({
+    kind,
+    chatId: input.chatId,
+    floor,
+    swipe: input.swipe,
+    characterName: input.characterName,
+    body: input.body,
+    shots: modeSettings == null ? void 0 : modeSettings.shots,
+    chibi: kind !== "manga" && (modeSettings == null ? void 0 : modeSettings.chibiStyle) !== "thumb",
+    mangaSafe: (modeSettings == null ? void 0 : modeSettings.bwMangaSafeMode) ?? true,
+    backend: "nai",
+    ...profile ? { profile } : {},
+    llm: async (prompt) => {
+      const caller = makeModeLlmCaller(settings2, mode);
+      try {
+        return await caller("", prompt);
+      } catch {
+        return await generateQuietPrompt(prompt);
+      }
+    },
+    generate: async (genInput, genProfile) => {
+      const r = await baiBaiAdapter.generate({
+        prompt: genInput.prompt,
+        ...genInput.negative ? { negative: genInput.negative } : {},
+        seed: genInput.seed,
+        size: genInput.size,
+        save: true
+      }, genProfile ?? fallbackProfile$1(mode));
+      return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+    },
+    readLooks: (names) => {
+      const lookup = new Map(characters.characters.map((c) => [c.name, c]));
+      return names.map((name) => {
+        const c = lookup.get(name);
+        return c ? { name, tag: c.tag, ...c.nl ? { nl: c.nl } : {} } : { name, tag: "" };
+      });
+    }
+  });
+  return { ok: result.ok, stories: result.stories, ...result.error ? { error: result.error } : {} };
+}
+function randomSeed() {
+  return Math.floor(Math.random() * 4294967295);
+}
+async function rerollPanel(floor, kind, setId, index2) {
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const set = getSets(floor, kind).find((s) => s.setId === setId);
+  const panel = set == null ? void 0 : set.panels.find((p) => p.index === index2);
+  if (!panel) return { ok: false, message: "找不到这一格。" };
+  if (!panel.prompt) {
+    return { ok: false, message: "这一格没存下当时的出图词，请用「整条重出」。" };
+  }
+  const mode = modeOfKind(kind);
+  await ensureModeOutPlan$1(mode, settings2);
+  const seed = randomSeed();
+  try {
+    const result = await baiBaiAdapter.generate(
+      {
+        prompt: panel.prompt,
+        ...panel.negative ? { negative: panel.negative } : {},
+        seed,
+        size: "portrait",
+        save: true
+      },
+      pickProfile$1(settings2.profiles ?? [], mode) ?? fallbackProfile$1(mode)
+    );
+    const path = result.path ?? result.dataUrl;
+    if (!path) return { ok: false, message: "出图没有返回图片。" };
+    updatePanel(floor, kind, setId, index2, {
+      imagePath: path,
+      seed: result.seed ?? seed,
+      storyAt: Date.now()
+    });
+    await saveChatSafe();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+async function rerollSet(floor, kind, setId) {
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const set = getSets(floor, kind).find((s) => s.setId === setId);
+  if (!set) return { ok: false, message: "找不到这张卡片。" };
+  const body = (set.sourceText ?? "").trim();
+  if (!body) {
+    return { ok: false, message: "这张卡片没存下当时的选段，请重新选段生成。" };
+  }
+  const mode = modeOfKind(kind);
+  await ensureModeOutPlan$1(mode, settings2);
+  const result = await runTheaterTask({
+    mode,
+    settings: settings2,
+    floor,
+    chatId: getCurrentChatId(),
+    swipe: getSwipeId(floor),
+    body,
+    characterName: set.characterName
+  });
+  if (!result.ok) return { ok: false, message: result.error ?? "整条重出失败。" };
+  const total = result.stories.length;
+  const stories = result.stories.map((story) => ({
+    ...story,
+    setId,
+    setTitle: story.title ?? set.title,
+    setSize: total,
+    sourceText: body,
+    characterName: set.characterName
+  }));
+  replaceSet(floor, kind, setId, stories);
+  await saveChatSafe();
+  return { ok: true };
+}
+const AREA_ID = "sti-theater-area-";
+const AREA_CLASS = "sti-cs-bar";
+const MOUNTED_ATTR = "data-sti-theater-mounted";
+const BUCKET_LABELS = {
+  status: "Q 版小剧场",
+  bonus: "彩蛋时刻",
+  manga: "黑白漫"
+};
+const KIND_ORDER = ["status", "bonus", "manga"];
+function mountTheater(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  unmountTheater(floor);
+  const groups = [];
+  for (const kind of KIND_ORDER) {
+    for (const set of getSets(floor, kind)) groups.push({ kind, set });
+  }
+  if (groups.length === 0) return;
+  const mesBlock = mes.querySelector(".mes_block") ?? mes;
+  const area = document.createElement("div");
+  area.id = `${AREA_ID}${floor}`;
+  area.className = AREA_CLASS;
+  area.setAttribute(MOUNTED_ATTR, String(floor));
+  for (const { kind, set } of groups) {
+    area.appendChild(buildCard(floor, kind, set));
+  }
+  mesBlock.appendChild(area);
+}
+function unmountTheater(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  const areas = mes.querySelectorAll(`[${MOUNTED_ATTR}="${floor}"]`);
+  for (const area of Array.from(areas)) area.remove();
+}
+function remountAllTheater() {
+  const nodes = document.querySelectorAll(".mes[mesid]");
+  for (const node of Array.from(nodes)) {
+    const floor = parseInt(node.getAttribute("mesid") ?? "", 10);
+    if (Number.isFinite(floor)) {
+      try {
+        mountTheater(floor);
+      } catch {
+      }
+    }
+  }
+}
+function buildCard(floor, kind, set) {
+  var _a;
+  const card = document.createElement("details");
+  card.className = "sti-cs-card";
+  card.open = true;
+  card.setAttribute("data-sti-set", `${kind}:${set.setId}`);
+  const total = set.panels.length;
+  const cover = firstImage(set.panels);
+  const summary = document.createElement("summary");
+  summary.className = "sti-cs-summary";
+  if (cover) {
+    const thumb = document.createElement("img");
+    thumb.className = "sti-cs-thumb";
+    thumb.src = cover;
+    thumb.alt = "";
+    thumb.loading = "lazy";
+    summary.appendChild(thumb);
+  }
+  const kicker = document.createElement("span");
+  kicker.className = "sti-cs-kicker";
+  kicker.textContent = kind === "bonus" ? BUCKET_LABELS.bonus : `${BUCKET_LABELS[kind]} · ${total} 格`;
+  summary.appendChild(kicker);
+  const headline = document.createElement("span");
+  headline.className = "sti-cs-headline";
+  headline.textContent = set.title || "小剧场";
+  summary.appendChild(headline);
+  const chevron = document.createElement("i");
+  chevron.className = "fa-solid fa-chevron-down sti-cs-chevron";
+  summary.appendChild(chevron);
+  card.appendChild(summary);
+  const single = total === 1 && (((_a = set.panels[0].lines) == null ? void 0 : _a.length) ?? 0) > 0;
+  const body = document.createElement("div");
+  body.className = single ? "sti-cs-body is-story" : "sti-cs-body";
+  if (single) {
+    body.appendChild(buildSinglePanel(floor, kind, set, set.panels[0]));
+  } else {
+    const strip = document.createElement("div");
+    strip.className = "sti-cs-strip";
+    for (const panel of set.panels) {
+      strip.appendChild(buildStripPanel(floor, kind, set, panel, total));
+    }
+    body.appendChild(strip);
+  }
+  body.appendChild(buildFoot(floor, kind, set));
+  card.appendChild(body);
+  return card;
+}
+function buildStripPanel(floor, kind, set, panel, total) {
+  const figure = document.createElement("figure");
+  figure.className = "sti-cs-panel";
+  const shot = document.createElement("div");
+  shot.className = "sti-cs-shot";
+  const cell = document.createElement("div");
+  cell.className = "sti-cs-cell";
+  cell.tabIndex = 0;
+  cell.setAttribute("role", "button");
+  if (panel.imagePath) {
+    const img = document.createElement("img");
+    img.className = "sti-cs-cell-img";
+    img.src = panel.imagePath;
+    img.alt = panel.title ?? `第 ${panel.index + 1} 格`;
+    img.loading = "lazy";
+    cell.appendChild(img);
+    cell.addEventListener("click", () => openPanel(set, panel));
+    cell.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openPanel(set, panel);
+      }
+    });
+  } else {
+    const ph = document.createElement("div");
+    ph.className = "sti-cs-placeholder";
+    ph.textContent = "未出图";
+    cell.appendChild(ph);
+  }
+  const num = document.createElement("span");
+  num.className = "sti-cs-num";
+  num.textContent = `${panel.index + 1}/${total}`;
+  cell.appendChild(num);
+  shot.appendChild(cell);
+  shot.appendChild(buildRerollButton(floor, kind, set, panel));
+  figure.appendChild(shot);
+  const cap = document.createElement("figcaption");
+  cap.className = "sti-cs-panel-cap";
+  cap.textContent = panel.title ?? "";
+  figure.appendChild(cap);
+  return figure;
+}
+function buildSinglePanel(floor, kind, set, panel) {
+  const row = document.createElement("div");
+  row.className = "sti-cs-single";
+  const shot = document.createElement("div");
+  shot.className = "sti-cs-shot is-figure";
+  const figure = document.createElement("div");
+  figure.className = "sti-cs-cell";
+  figure.tabIndex = 0;
+  figure.setAttribute("role", "button");
+  if (panel.imagePath) {
+    const img = document.createElement("img");
+    img.className = "sti-cs-photo";
+    img.src = panel.imagePath;
+    img.alt = panel.title ?? "小剧场";
+    img.loading = "lazy";
+    figure.appendChild(img);
+    figure.addEventListener("click", () => openPanel(set, panel));
+  }
+  shot.appendChild(figure);
+  shot.appendChild(buildRerollButton(floor, kind, set, panel));
+  row.appendChild(shot);
+  const meta = document.createElement("div");
+  meta.className = "sti-cs-meta";
+  const title = document.createElement("div");
+  title.className = "sti-cs-caption";
+  title.textContent = panel.title || set.title || "小剧场";
+  meta.appendChild(title);
+  const sub = document.createElement("div");
+  sub.className = "sti-cs-cast";
+  sub.textContent = (panel.cast ?? []).join(" · ");
+  if (panel.mood) {
+    const chip = document.createElement("span");
+    chip.className = "sti-cs-chip";
+    chip.textContent = panel.mood;
+    sub.appendChild(chip);
+  }
+  if (sub.textContent) meta.appendChild(sub);
+  const lines = document.createElement("div");
+  lines.className = "sti-cs-lines";
+  for (const line of panel.lines ?? []) {
+    const rowEl = document.createElement("div");
+    rowEl.className = line.speaker === "旁白" || !line.speaker ? "sti-cs-line is-narr" : "sti-cs-line";
+    if (line.speaker && line.speaker !== "旁白") {
+      const b = document.createElement("b");
+      b.textContent = `${line.speaker}：`;
+      rowEl.appendChild(b);
+    }
+    rowEl.appendChild(document.createTextNode(line.text));
+    lines.appendChild(rowEl);
+  }
+  if (lines.childElementCount > 0) meta.appendChild(lines);
+  row.appendChild(meta);
+  return row;
+}
+function buildFoot(floor, kind, set, total) {
+  const foot = document.createElement("div");
+  foot.className = "sti-cs-foot";
+  if (set.cast.length > 0) {
+    const cast = document.createElement("span");
+    cast.className = "sti-cs-cast";
+    cast.textContent = set.cast.join(" · ");
+    foot.appendChild(cast);
+  }
+  if (set.mood) {
+    const chip = document.createElement("span");
+    chip.className = "sti-cs-chip";
+    chip.textContent = set.mood;
+    foot.appendChild(chip);
+  }
+  const spacer = document.createElement("span");
+  spacer.className = "sti-cs-spacer";
+  foot.appendChild(spacer);
+  const reroll = document.createElement("button");
+  reroll.type = "button";
+  reroll.className = "sti-cs-regen";
+  reroll.textContent = "整条重出";
+  reroll.addEventListener("click", async () => {
+    await runBusy(reroll, "重出中…", async () => {
+      const result = await rerollSet(floor, kind, set.setId);
+      if (!result.ok) throw new Error(result.message ?? "整条重出失败。");
+      mountTheater(floor);
+    });
+  });
+  foot.appendChild(reroll);
+  if (set.panels.some((p) => !!p.imagePath)) {
+    const gallery2 = document.createElement("button");
+    gallery2.type = "button";
+    gallery2.className = "sti-cs-link";
+    gallery2.textContent = "逐格看大图";
+    gallery2.addEventListener("click", () => {
+      openGallery(
+        set.panels.filter((p) => !!p.imagePath).map((p) => ({ src: p.imagePath, caption: p.title ?? "" }))
+      );
+    });
+    foot.appendChild(gallery2);
+  }
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "sti-cs-link danger";
+  del.textContent = "删除";
+  del.addEventListener("click", async () => {
+    removeSet(floor, kind, set.setId);
+    await saveChatSafe();
+    mountTheater(floor);
+  });
+  foot.appendChild(del);
+  return foot;
+}
+function buildRerollButton(floor, kind, set, panel) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sti-cs-reroll";
+  btn.title = "重画这张";
+  btn.setAttribute("aria-label", "重画这张");
+  btn.textContent = "↻";
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await runBusy(btn, "…", async () => {
+      const result = await rerollPanel(floor, kind, set.setId, panel.index);
+      if (!result.ok) throw new Error(result.message ?? "重画失败。");
+      mountTheater(floor);
+    });
+  });
+  return btn;
+}
+function openPanel(set, panel) {
+  const images = set.panels.filter((p) => !!p.imagePath).map((p) => ({ src: p.imagePath, caption: p.title ?? "" }));
+  if (images.length <= 1) {
+    if (panel.imagePath) openLightbox(panel.imagePath, panel.title);
+    return;
+  }
+  const at = images.findIndex((i) => i.src === panel.imagePath);
+  openGallery(images, at < 0 ? 0 : at);
+}
+async function runBusy(btn, busyText, task) {
+  const label = btn.textContent ?? "";
+  btn.disabled = true;
+  btn.textContent = busyText;
+  btn.classList.add("is-busy");
+  try {
+    await task();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    notify(message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    btn.classList.remove("is-busy");
+  }
+}
+function notify(message, level) {
+  var _a;
+  const toastr = window.toastr;
+  if (toastr) {
+    (_a = toastr.error) == null ? void 0 : _a.call(toastr, message);
+  } else {
+    console.error("[ST-Story-Illustrator]", message);
+  }
+}
+function firstImage(panels) {
+  var _a;
+  return (_a = panels.find((p) => !!p.imagePath)) == null ? void 0 : _a.imagePath;
+}
+const BALL_ID = "sti-fab";
+const HIDE_ID = "sti-fab-hide";
+const DRAG_THRESHOLD = 4;
+let ball = null;
+let startX = 0;
+let startY = 0;
+let originLeft = 0;
+let originTop = 0;
+let moved = false;
+let dragging = false;
+function currentSettings() {
+  return getSettings(DEFAULT_SETTINGS);
+}
+function defaultPosition() {
+  const size = 46;
+  const left = Math.max(8, window.innerWidth - size - 18);
+  const top = Math.max(8, window.innerHeight - size - 110);
+  return { left, top };
+}
+function mountFloatingBall() {
+  const settings2 = currentSettings();
+  if (settings2.showFloatingBall === false) {
+    unmountFloatingBall();
+    return;
+  }
+  if (ball && document.body.contains(ball)) return;
+  const pos = settings2.floatingBallPos ?? defaultPosition();
+  const el = document.createElement("div");
+  el.id = BALL_ID;
+  el.className = "sti-fab";
+  el.title = "ST 故事插画 · 点一下打开配图面板，可拖动";
+  el.textContent = "🎨";
+  el.style.left = `${clamp(pos.left, 0, window.innerWidth - 46)}px`;
+  el.style.top = `${clamp(pos.top, 0, window.innerHeight - 46)}px`;
+  el.tabIndex = 0;
+  const hide = document.createElement("button");
+  hide.type = "button";
+  hide.id = HIDE_ID;
+  hide.className = "sti-fab-hide";
+  hide.title = "隐藏悬浮球（可在配图设置里重新打开）";
+  hide.textContent = "×";
+  hide.addEventListener("pointerdown", (e) => e.stopPropagation());
+  hide.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideFloatingBall();
+  });
+  el.appendChild(hide);
+  el.addEventListener("pointerdown", onPointerDown);
+  el.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (moved) {
+      moved = false;
+      return;
+    }
+    openStudio("generate");
+  });
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openStudio("generate");
+    }
+  });
+  document.body.appendChild(el);
+  ball = el;
+  window.addEventListener("resize", keepInside);
+}
+function onPointerDown(e) {
+  var _a, _b;
+  if (!ball) return;
+  if (((_a = e.target) == null ? void 0 : _a.id) === HIDE_ID) return;
+  dragging = true;
+  moved = false;
+  startX = e.clientX;
+  startY = e.clientY;
+  originLeft = ball.offsetLeft;
+  originTop = ball.offsetTop;
+  ball.classList.add("dragging");
+  (_b = ball.setPointerCapture) == null ? void 0 : _b.call(ball, e.pointerId);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+}
+function onPointerMove(e) {
+  if (!dragging || !ball) return;
+  const dx = e.clientX - startX;
+  const dy = e.clientY - startY;
+  if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+  moved = true;
+  const left = clamp(originLeft + dx, 0, window.innerWidth - ball.offsetWidth);
+  const top = clamp(originTop + dy, 0, window.innerHeight - ball.offsetHeight);
+  ball.style.left = `${left}px`;
+  ball.style.top = `${top}px`;
+}
+function onPointerUp() {
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  if (!dragging || !ball) return;
+  dragging = false;
+  ball.classList.remove("dragging");
+  if (moved) {
+    const settings2 = currentSettings();
+    settings2.floatingBallPos = { left: ball.offsetLeft, top: ball.offsetTop };
+    saveSettings(settings2);
+  }
+}
+function keepInside() {
+  if (!ball) return;
+  const left = clamp(ball.offsetLeft, 0, window.innerWidth - ball.offsetWidth);
+  const top = clamp(ball.offsetTop, 0, window.innerHeight - ball.offsetHeight);
+  ball.style.left = `${left}px`;
+  ball.style.top = `${top}px`;
+}
+function hideFloatingBall() {
+  const settings2 = currentSettings();
+  settings2.showFloatingBall = false;
+  saveSettings(settings2);
+  unmountFloatingBall();
+  window.dispatchEvent(new CustomEvent("sti-settings-changed"));
+}
+function unmountFloatingBall() {
+  if (ball) {
+    ball.remove();
+    ball = null;
+  }
+  window.removeEventListener("resize", keepInside);
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  dragging = false;
+}
+function syncFloatingBall() {
+  unmountFloatingBall();
+  mountFloatingBall();
+}
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+class TaskQueue {
+  constructor(runner, options = {}) {
+    this.pending = [];
+    this.current = null;
+    this.running = false;
+    this.runner = runner;
+    this.options = options;
+    this.timeoutMs = options.taskTimeoutMs ?? 5 * 60 * 1e3;
+  }
+  /** 入队。重复 task.id 会被去重（忽略后入的）。 */
+  enqueue(task) {
+    var _a;
+    if (this.pending.some((t) => t.id === task.id)) return;
+    if (((_a = this.current) == null ? void 0 : _a.task.id) === task.id) return;
+    this.pending.push(task);
+    this.setStatus(task, "queued");
+    void this.drain();
+  }
+  /** 取消指定任务：排队中的直接移除；运行中的发出 abort。 */
+  cancel(taskId) {
+    var _a;
+    const idx = this.pending.findIndex((t) => t.id === taskId);
+    if (idx >= 0) {
+      const [task] = this.pending.splice(idx, 1);
+      this.setStatus(task, "cancelled");
+      return;
+    }
+    if (((_a = this.current) == null ? void 0 : _a.task.id) === taskId) {
+      this.current.controller.abort();
+    }
+  }
+  /** 取消全部（排队中 + 运行中）。 */
+  cancelAll() {
+    for (const task of this.pending.splice(0)) this.setStatus(task, "cancelled");
+    if (this.current) this.current.controller.abort();
+  }
+  /** 等待当前队列排空（测试用）。 */
+  async idle() {
+    while (this.running || this.pending.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  get size() {
+    return this.pending.length + (this.current ? 1 : 0);
+  }
+  // ----------------------------------------------------------
+  // 内部调度
+  // ----------------------------------------------------------
+  async drain() {
+    var _a, _b, _c, _d;
+    if (this.running) return;
+    this.running = true;
+    try {
+      while (this.pending.length > 0) {
+        const task = this.pending.shift();
+        const controller = new AbortController();
+        const entry = { task, controller, timer: null };
+        this.current = entry;
+        if (this.timeoutMs > 0) {
+          entry.timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        }
+        const ctx = {
+          signal: controller.signal,
+          report: (progress) => {
+            task.progress = progress;
+            task.updatedAt = Date.now();
+          },
+          setStatus: (status) => this.setStatus(task, status)
+        };
+        try {
+          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
+          this.setStatus(task, "reading");
+          await this.runner(task, ctx);
+          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
+          this.setStatus(task, "completed");
+          (_b = (_a = this.options).onComplete) == null ? void 0 : _b.call(_a, task);
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          const cancelled = error.name === "AbortError" || controller.signal.aborted;
+          this.setStatus(task, cancelled ? "cancelled" : "failed");
+          if (!cancelled) {
+            task.error = error.message;
+            (_d = (_c = this.options).onError) == null ? void 0 : _d.call(_c, task, error);
+          }
+        } finally {
+          if (entry.timer) clearTimeout(entry.timer);
+          this.current = null;
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+  setStatus(task, status) {
+    var _a, _b;
+    task.status = status;
+    task.updatedAt = Date.now();
+    (_b = (_a = this.options).onStatusChange) == null ? void 0 : _b.call(_a, task, status);
   }
 }
 function composeEnglishPrompt(segments) {
@@ -4145,478 +5659,6 @@ async function replaceEntryPath(floor, swipeId, hash, generationId, nextPath) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-const STATUS_MAX_CHARACTERS = 2;
-const STATUS_MAX_PANELS = 4;
-const STATUS_MAX_LINES = 4;
-const STYLE_BLOCKLIST = [
-  "masterpiece",
-  "best quality",
-  "high quality",
-  "highly detailed",
-  "ultra detailed",
-  "absurdres",
-  "8k",
-  "4k",
-  "photorealistic",
-  "realistic",
-  "photo",
-  "cinematic",
-  "depth of field",
-  "chibi",
-  "anime style",
-  "illustration",
-  "lineart",
-  "flat color",
-  "cel shading",
-  "full body",
-  "cowboy shot",
-  "wide shot",
-  "from below",
-  "foreshortening"
-];
-const HAS_CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
-const MAX_TAGS = 14;
-function sanitizeStatusTags(raw) {
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const piece of String(raw ?? "").split(/[,，、\n]/)) {
-    let tag = piece.trim().toLowerCase();
-    if (!tag) continue;
-    tag = tag.replace(/^\(?\s*[\d.]+::/, "").replace(/::$/, "").replace(/^\(|\)$/g, "");
-    tag = tag.replace(/:\s*[\d.]+$/, "").trim();
-    if (!tag || HAS_CJK.test(tag)) continue;
-    if (STYLE_BLOCKLIST.some((word) => tag === word || tag.includes(word))) continue;
-    if (seen.has(tag)) continue;
-    seen.add(tag);
-    out.push(tag);
-    if (out.length >= MAX_TAGS) break;
-  }
-  return out;
-}
-function emptyFrame() {
-  return { title: "", characters: [], roles: [], mood: "", tags: "", nl: "" };
-}
-function parseStatusReply(raw) {
-  const empty = { ...emptyFrame(), panels: [] };
-  const text = String(raw ?? "");
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) return empty;
-  const body = text.slice(start, end + 1);
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    try {
-      parsed = JSON.parse(body.replace(/'/g, '"'));
-    } catch {
-      return empty;
-    }
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return empty;
-  const record = parsed;
-  const pick = (v) => typeof v === "string" ? v.trim() : "";
-  const parseFrame = (value) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return emptyFrame();
-    const frame = value;
-    const roles = [];
-    const push = (item) => {
-      if (roles.length >= STATUS_MAX_CHARACTERS) return;
-      if (typeof item === "string") {
-        const name = item.trim();
-        if (name && !roles.some((r) => r.name === name)) roles.push({ name, act: "" });
-        return;
-      }
-      if (item && typeof item === "object" && !Array.isArray(item)) {
-        const rec = item;
-        const name = typeof rec.name === "string" ? rec.name.trim() : "";
-        const act = typeof rec.act === "string" ? rec.act.replace(/\s+/g, " ").trim().slice(0, 200) : "";
-        if (name && !roles.some((r) => r.name === name)) roles.push({ name, act });
-      }
-    };
-    if (Array.isArray(frame.characters)) frame.characters.forEach(push);
-    else push(frame.characters);
-    push(frame.character);
-    const tagsRaw = Array.isArray(frame.tags) ? frame.tags.join(", ") : pick(frame.tags);
-    const tags = sanitizeStatusTags(tagsRaw);
-    const lines = [];
-    if (Array.isArray(frame.lines)) {
-      for (const lineRaw of frame.lines) {
-        if (lines.length >= STATUS_MAX_LINES) break;
-        if (typeof lineRaw === "string") {
-          const t = lineRaw.trim().slice(0, 60);
-          if (t) lines.push({ speaker: "", text: t });
-          continue;
-        }
-        if (lineRaw && typeof lineRaw === "object" && !Array.isArray(lineRaw)) {
-          const rec = lineRaw;
-          const speaker = typeof rec.speaker === "string" ? rec.speaker.trim().slice(0, 16) : "";
-          const text2 = typeof rec.text === "string" ? rec.text.trim().slice(0, 60) : "";
-          if (text2) lines.push({ speaker, text: text2 });
-        }
-      }
-    }
-    const nlRaw = pick(frame.nl).replace(/\s+/g, " ").slice(0, 300);
-    const nl = nlRaw && !HAS_CJK.test(nlRaw) ? nlRaw : "";
-    return {
-      title: pick(frame.title).slice(0, 40),
-      characters: roles.map((r) => r.name),
-      roles,
-      mood: pick(frame.mood).slice(0, 24),
-      tags: tags.join(", "),
-      nl,
-      ...lines.length ? { lines } : {}
-    };
-  };
-  const panels = [];
-  const seen = /* @__PURE__ */ new Set();
-  if (Array.isArray(record.panels)) {
-    for (const panelRaw of record.panels) {
-      if (panels.length >= STATUS_MAX_PANELS) break;
-      const frame = parseFrame(panelRaw);
-      if (!frame.tags) continue;
-      const key = frame.tags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean).sort().join("|");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      panels.push(frame);
-    }
-  }
-  const top = parseFrame(record);
-  if (!panels.length && top.tags) panels.push(top);
-  if (!panels.length) return empty;
-  const head = panels[0];
-  return { ...head, title: (pick(record.title) || head.title).slice(0, 40), panels };
-}
-function clampMangaShots(raw) {
-  const value = Math.round(Number(raw) || 1);
-  return Math.min(Math.max(value, 1), STATUS_MAX_PANELS);
-}
-const BODY_LIMIT = 2400;
-const BODY_LIMIT_STORY = 3600;
-const FRAMING_RE = /\b(?:upper body|cowboy shot|close[- ]?up|portrait|headshot)\b/i;
-function clampBody(body, many) {
-  const text = String(body ?? "");
-  const limit = many ? BODY_LIMIT_STORY : BODY_LIMIT;
-  return text.length > limit ? text.slice(-limit) : text;
-}
-const JSON_FIELDS = '{"title":"中文，14 字以内，这一楼发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}';
-const COMMON_RULES = [
-  "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
-  "characters 最多 2 项；每一项的 act 用英文写这个角色自己在做什么。两人互动时主动方和被动方 act 必须分开写。",
-  "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
-  "tags 只写四类：① 人数与互动；② 表情；③ 动作或姿态；④ 手里/身上的道具、与场景的互动。",
-  "nl 用英文自然语言写同一件事，不要分点、不要换行。",
-  "禁止写：画风、画质、镜头景别、光照颜色、服装细节、角色外貌——这些另有固定来源。",
-  "不要解释，不要 markdown 代码块，不要多余文字。"
-];
-function statusSingleSystem() {
-  return [
-    "读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。",
-    `格式：${JSON_FIELDS}`,
-    "tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。",
-    ...COMMON_RULES,
-    '没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。'
-  ].join("\n");
-}
-function statusManySystem(count) {
-  return [
-    `读一段角色扮演正文，把这一楼发生的事挑成 ${count} 个先后画面，像一条小分镜，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内，这一楼讲了一件什么事","panels":[${JSON_FIELDS}]}`,
-    "panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。",
-    "每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。",
-    ...COMMON_RULES,
-    '没有角色出场时输出 {"title":"","panels":[]}。'
-  ].join("\n");
-}
-function bonusSystem(count) {
-  const linesSchema = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
-  const many = count > 1;
-  const panelsSchema = many ? `,"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences","lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]` : "";
-  return [
-    "读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。",
-    `格式：{"title":"中文，14 字以内，以「彩蛋：」开头","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${linesSchema}${panelsSchema}}`,
-    "题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。",
-    "每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。",
-    `每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。${many ? `把彩蛋拆成最多 ${count} 个先后画面（panels），按时间顺序，每格不同瞬间。` : "只画一个画面。"}`,
-    "彩蛋不是正文的延续：不要接着正文里刚发生的事画。",
-    ...COMMON_RULES
-  ].join("\n");
-}
-function mangaSingleSystem(safe) {
-  const rules = [
-    "读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。",
-    `格式：${JSON_FIELDS}`,
-    ...COMMON_RULES,
-    "tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。",
-    "禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。",
-    "禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。"
-  ];
-  if (safe) {
-    rules.push("这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。");
-  }
-  rules.push('没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。');
-  return rules.join("\n");
-}
-function mangaManySystem(count, safe) {
-  const rules = [
-    `读一段角色扮演正文，把这一楼发生的事挑成最多 ${count} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内","panels":[${JSON_FIELDS}]}`,
-    "panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。",
-    ...COMMON_RULES,
-    "tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。",
-    "禁止写：黑白、网点、screentone、画风、角色外貌、chibi 比例词；禁止 speech bubble / text / dialogue / caption / comic panel border。"
-  ];
-  if (safe) rules.push("每格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写；用表情、留白、构图表达张力，tags 与 act 里不许出现 NSFW 词。");
-  rules.push('没有角色出场时输出 {"title":"","panels":[]}。');
-  return rules.join("\n");
-}
-function buildTheaterPrompt(input) {
-  const count = Math.min(Math.max(Math.round(Number(input.shots) || 1), 1), STATUS_MAX_PANELS);
-  const many = count > 1;
-  const body = clampBody(input.body, many || input.kind === "bonus");
-  const name = input.characterName || "（未命名）";
-  let system;
-  let bodyLabel = "正文：";
-  switch (input.kind) {
-    case "bonus":
-      system = bonusSystem(count);
-      bodyLabel = "正文（只用来认人，不用来取材）：";
-      break;
-    case "manga":
-      system = many ? mangaManySystem(count, input.mangaSafe !== false) : mangaSingleSystem(input.mangaSafe !== false);
-      break;
-    case "status":
-    default:
-      system = many ? statusManySystem(count) : statusSingleSystem();
-      break;
-  }
-  return {
-    system,
-    user: `角色：${name}
-${bodyLabel}
-${body}`
-  };
-}
-const CHIBI_STYLE_STRONG = "2.3::super deformed, big head, small body::, 2.2::oversized eyes, round face, simplified facial features::, 2.0::tiny hands, short limbs::, 1.9::soft rounded shading, pastel highlights::, 1.8::glossy eyes, sparkles, bokeh background, warm rim light::, 1.7::exaggerated head-to-body ratio, rounded silhouette, simplified anatomy, stylized proportions, simple background::";
-const MANGA_FRAMING = [
-  "extreme close-up",
-  "close-up",
-  "upper body",
-  "cowboy shot",
-  "full body",
-  "wide shot",
-  "medium shot",
-  "from above",
-  "from below",
-  "from side",
-  "dutch angle"
-];
-const MANGA_FRAMING_RE = new RegExp(
-  `\\b(?:${MANGA_FRAMING.map((w) => w.replace(/-/g, "[- ]?")).join("|")})\\b`,
-  "i"
-);
-function buildStatusPrompt(appearances, tags, chibi = true) {
-  const looks = appearances.map((t) => t.trim()).filter(Boolean).join(", ");
-  const body = tags.trim();
-  const framing = body && !FRAMING_RE.test(body) ? "upper body" : "";
-  return [chibi ? CHIBI_STYLE_STRONG : "", looks, body, framing].filter(Boolean).join(", ");
-}
-function buildMangaPrompt(appearances, tags) {
-  const looks = appearances.map((t) => t.trim()).filter(Boolean).join(", ");
-  const body = tags.trim();
-  const framing = body && !MANGA_FRAMING_RE.test(body) ? "cowboy shot" : "";
-  return [looks, body, framing].filter(Boolean).join(", ");
-}
-function buildTheaterImagePrompt(kind, appearances, tags, chibi) {
-  return kind === "manga" ? buildMangaPrompt(appearances, tags) : buildStatusPrompt(appearances, tags, chibi);
-}
-const MANGA_SAFE_NEGATIVE = "nsfw, nude, naked, completely nude, topless, bottomless, nipples, areolae, underwear, panties, lingerie, braless, see-through, cleavage, underboob, sideboob, pussy, penis, genitals, anus, buttocks, sex, intercourse, fellatio, cunnilingus, paizuri, handjob, masturbation, cum, semen, creampie, ahegao, spread legs";
-const UNSAFE_RE = new RegExp(
-  `\\b(?:${[
-    "nsfw",
-    "nudes?",
-    "naked",
-    "topless",
-    "bottomless",
-    "nipples?",
-    "areolae?",
-    "underwear",
-    "panties?",
-    "lingerie",
-    "braless",
-    "see[ -]through",
-    "cleavage",
-    "underboob",
-    "sideboob",
-    "downblouse",
-    "upskirt",
-    "pussy",
-    "penis",
-    "genitals?",
-    "anus",
-    "buttocks?",
-    "ass",
-    "groin",
-    "breasts?",
-    "sex",
-    "sexual",
-    "intercourse",
-    "fellatio",
-    "cunnilingus",
-    "paizuri",
-    "handjob",
-    "masturbation",
-    "orgasm",
-    "ejaculat\\w*",
-    "cum",
-    "semen",
-    "creampie",
-    "ahegao",
-    "spread legs",
-    "exposed breasts?"
-  ].join("|")})\\b`,
-  "i"
-);
-function stripMangaUnsafeTags(tags) {
-  const hits = [];
-  const kept = String(tags ?? "").split(/[,，]/).map((p) => p.trim()).filter(Boolean).filter((part) => {
-    if (!UNSAFE_RE.test(part)) return true;
-    hits.push(part);
-    return false;
-  });
-  return { tags: kept.join(", "), hits };
-}
-function scrubMangaReading(reading) {
-  const hits = [];
-  const scrubFrame = (frame) => {
-    const tags = stripMangaUnsafeTags(frame.tags);
-    hits.push(...tags.hits);
-    const roles = frame.roles.map((role) => {
-      if (!role.act || !UNSAFE_RE.test(role.act)) return role;
-      hits.push(`${role.name} 的动作描写`);
-      return { ...role, act: "" };
-    });
-    let nl = frame.nl;
-    if (nl && UNSAFE_RE.test(nl)) {
-      hits.push(`${frame.title || "一格"} 的自然语言描述`);
-      nl = "";
-    }
-    return { ...frame, tags: tags.tags, roles, nl };
-  };
-  const panels = reading.panels.map(scrubFrame).filter((f) => !!f.tags);
-  const head = panels[0];
-  if (!head) {
-    return { reading: { ...reading, panels, tags: "", roles: [], characters: [], nl: "" }, hits };
-  }
-  return { reading: { ...reading, ...head, title: reading.title, panels }, hits };
-}
-function statusSeedFor(name) {
-  const text = (Array.isArray(name) ? name : [name]).map((s) => String(s ?? "").trim()).filter(Boolean).join("|");
-  if (!text) return 0;
-  let hash = 2166136261;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return hash % 4294967294 + 1;
-}
-function rerollSeed(backend, previous = 0) {
-  const pick = backend === "nai" ? () => Math.floor(Math.random() * 4294967294) + 1 : () => Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) + 1;
-  for (let i = 0; i < 8; i += 1) {
-    const seed = pick();
-    if (seed > 0 && seed !== previous) return seed;
-  }
-  return previous > 0 ? previous + 1 : 1;
-}
-function decideSeed(backend, override, fixedSeed = 0) {
-  if (backend === "nai") return fixedSeed > 0 ? fixedSeed : rerollSeed("nai");
-  return rerollSeed(backend);
-}
-async function readTheater(input) {
-  const { system, user } = buildTheaterPrompt({
-    kind: input.kind,
-    characterName: input.characterName,
-    body: input.body,
-    shots: clampMangaShots(input.shots),
-    mangaSafe: input.mangaSafe
-  });
-  const raw = await input.llm(`${system}
-
----
-
-${user}`);
-  let reading = parseStatusReply(raw);
-  const hits = [];
-  if (input.kind === "manga" && input.mangaSafe) {
-    const scrubbed = scrubMangaReading(reading);
-    reading = scrubbed.reading;
-    hits.push(...scrubbed.hits);
-  }
-  return { reading, hits };
-}
-async function runTheaterOne(input) {
-  try {
-    const { reading, hits } = await readTheater(input);
-    if (reading.panels.length === 0) {
-      return { ok: false, stories: [], error: "读剧情未返回可解析的分镜。", hits };
-    }
-    const names = /* @__PURE__ */ new Set();
-    for (const panel of reading.panels) {
-      for (const n of panel.characters) if (n) names.add(n);
-      for (const l of panel.lines ?? []) if (l.speaker && l.speaker !== "旁白") names.add(l.speaker);
-    }
-    const looks = input.readLooks([...names]);
-    const appearances = looks.map((l) => l.tag).filter(Boolean);
-    const fixedSeed = statusSeedFor([...names]);
-    const stories = [];
-    for (let i = 0; i < reading.panels.length; i += 1) {
-      const panel = reading.panels[i];
-      const prompt = buildTheaterImagePrompt(
-        input.kind,
-        appearances,
-        panel.tags,
-        input.chibi
-      );
-      const negative = input.kind === "manga" && input.mangaSafe ? MANGA_SAFE_NEGATIVE : void 0;
-      const seed = decideSeed(input.backend, void 0, fixedSeed);
-      const result = await input.generate(
-        {
-          prompt,
-          ...negative ? { negative } : {},
-          seed,
-          size: "portrait"
-        },
-        input.profile
-      );
-      const path = result.path ?? result.dataUrl ?? "";
-      if (!path) continue;
-      stories.push({
-        storyId: `s${Date.now().toString(36)}-${i}-${Math.random().toString(36).slice(2, 5)}`,
-        index: i,
-        storyAt: Date.now(),
-        title: panel.title || reading.title,
-        story: panel.nl || void 0,
-        mood: panel.mood || void 0,
-        cast: panel.characters.length ? panel.characters : void 0,
-        lines: panel.lines,
-        imagePath: path,
-        bonus: input.kind === "bonus",
-        manga: input.kind === "manga"
-      });
-    }
-    if (stories.length === 0) {
-      return { ok: false, stories, error: "所有分格出图均失败。", hits };
-    }
-    return { ok: true, stories, hits };
-  } catch (err) {
-    return {
-      ok: false,
-      stories: [],
-      error: err instanceof Error ? err.message : String(err),
-      hits: []
-    };
-  }
-}
 function pickProfile(profiles, mode) {
   return profiles.find((p) => p.mode === mode);
 }
@@ -4906,7 +5948,7 @@ async function runComic(task, ctx, deps) {
   ctx.report({ stage: "completed" });
 }
 async function runTheaterMode(task, ctx, deps) {
-  var _a, _b;
+  var _a, _b, _c, _d;
   const segment = task.source;
   const mode = task.mode;
   const floor = getAnchorFloor(segment);
@@ -4955,9 +5997,20 @@ async function runTheaterMode(task, ctx, deps) {
     }
   });
   if (!result.ok) throw new Error(result.error ?? "小剧场生成失败。");
-  for (const story of result.stories) {
-    saveStory(floor, kind, story);
-  }
+  const setId = newSetId();
+  const characterName = ((_c = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _c.speaker) ?? "";
+  const setTitle = ((_d = result.stories[0]) == null ? void 0 : _d.title) ?? "";
+  const total = result.stories.length;
+  const stories = result.stories.map((story) => ({
+    ...story,
+    setId,
+    setTitle,
+    setSize: total,
+    sourceText: segment.text,
+    characterName
+  }));
+  if (!saveSet(floor, kind, stories)) throw new Error("小剧场已生成，但写不进本楼（聊天上下文不可用）。");
+  await saveChatSafe();
   mountTheater(floor);
   ctx.report({ stage: "completed" });
 }
@@ -5003,9 +6056,20 @@ async function onActivate() {
     }
     settings = getSettings(DEFAULT_SETTINGS);
     applySettings();
+    registerStudio({
+      generate: (options) => {
+        hideConfigPanel();
+        openGeneratePanel(options);
+      },
+      settings: () => {
+        hideSelectionPanel();
+        showConfigPanel();
+      }
+    });
     registerEvents();
     setupSelectionListener();
-    cleanupFunctions.push(injectConfigMenu());
+    cleanupFunctions.push(injectWandMenu());
+    mountFloatingBall();
     initQueue();
     remountAllSafe();
     void waitForApi(10).then((result) => {
@@ -5045,6 +6109,11 @@ function remountAllSafe() {
   } catch (e) {
     console.warn("[ST-Story-Illustrator] 挂载历史作品失败:", e);
   }
+  try {
+    remountAllTheater();
+  } catch (e) {
+    console.warn("[ST-Story-Illustrator] 挂载小剧场失败:", e);
+  }
 }
 function applySettings() {
   setSegmentCleanOptions({
@@ -5059,6 +6128,7 @@ function registerEvents() {
     applySettings();
     queue = null;
     initQueue();
+    syncFloatingBall();
   });
   cleanupFunctions.push(offSettings);
   const onModeSettingsChanged = () => {
@@ -5066,6 +6136,7 @@ function registerEvents() {
     applySettings();
     queue = null;
     initQueue();
+    syncFloatingBall();
   };
   window.addEventListener("sti-settings-changed", onModeSettingsChanged);
   cleanupFunctions.push(() => window.removeEventListener("sti-settings-changed", onModeSettingsChanged));
@@ -5097,7 +6168,11 @@ function registerEvents() {
       }
     }
   };
-  cleanupFunctions.push(on(events.CHARACTER_MESSAGE_RENDERED, reMount));
+  cleanupFunctions.push(on(events.CHARACTER_MESSAGE_RENDERED, (...args) => {
+    reMount(...args);
+    const floor = extractFloorFromEventArg(args[0]);
+    if (floor >= 0) maybeAutoTrigger(floor);
+  }));
   cleanupFunctions.push(on(events.MESSAGE_SWIPED, reMount));
 }
 function extractFloorFromEventArg(arg) {
@@ -5120,7 +6195,7 @@ function setupSelectionListener() {
       hideToolbar();
       return;
     }
-    if (valid && selection) showToolbar(selection);
+    if (valid && selection && settings.showSelectionToolbar !== false) showToolbar(selection);
     else hideToolbar();
   });
 }
@@ -5154,6 +6229,60 @@ function handleGenerateFromSelection() {
     handleSegmentConfirmed
   );
   hideToolbar();
+}
+function openGeneratePanel(options) {
+  hideToolbar();
+  const text = ((options == null ? void 0 : options.text) ?? "").trim();
+  const floor = typeof (options == null ? void 0 : options.floor) === "number" ? options.floor : lastAssistantFloor();
+  if (text) {
+    showSelectionPanel(
+      {
+        ...floor >= 0 ? { initialFloor: floor } : {},
+        selectedText: text,
+        startAtLocal: true
+      },
+      handleSegmentConfirmed
+    );
+  } else {
+    showSelectionPanel(
+      { ...floor >= 0 ? { initialFloor: floor } : {}, startAtLocal: false },
+      handleSegmentConfirmed
+    );
+  }
+}
+const autoRunning = /* @__PURE__ */ new Set();
+function maybeAutoTrigger(floor) {
+  if (!isAvailable()) return;
+  const modes = settings.modes ?? {};
+  const orders = [
+    { mode: "chibi-status", kind: "status" },
+    { mode: "chibi-bonus", kind: "bonus" },
+    { mode: "bw-manga", kind: "manga" }
+  ];
+  const picks = [];
+  for (const { mode, kind } of orders) {
+    const conf = modes[mode];
+    if (!(conf == null ? void 0 : conf.autoTrigger)) continue;
+    if (hasStory(floor, kind)) continue;
+    if (kind === "bonus") {
+      const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);
+      if (chance <= 0) continue;
+      if (chance < 100 && Math.random() * 100 >= chance) continue;
+    }
+    const key = `${floor}:${mode}`;
+    if (autoRunning.has(key)) continue;
+    picks.push(mode);
+  }
+  if (picks.length === 0) return;
+  const segment = buildSingleSegment(floor);
+  if (!segment) return;
+  for (const mode of picks) {
+    autoRunning.add(`${floor}:${mode}`);
+    const task = createVisualTask(segment, mode);
+    task.status = "queued";
+    queue == null ? void 0 : queue.enqueue(task);
+  }
+  showToast(`本楼自动生成 ${picks.length} 份小剧场，排队中。`, "info");
 }
 function handleSegmentConfirmed(segment, modes) {
   console.log("[ST-Story-Illustrator] 选段已确认:", {
@@ -5195,6 +6324,8 @@ function onDisable() {
   destroySelectionPanel();
   destroyLightbox();
   destroyConfigPanel();
+  destroyWandMenu();
+  unmountFloatingBall();
   for (const cleanup of cleanupFunctions) {
     try {
       cleanup();
