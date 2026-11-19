@@ -602,7 +602,7 @@ function defaultModeSettings(mode) {
     case "comic":
       return {
         ...base,
-        comicLayout: "regular",
+        comicLayout: "auto",
         comicPageType: "auto",
         comicMaxPages: 1,
         comicPanelsPerPage: 0,
@@ -3493,12 +3493,13 @@ function renderComicSettings() {
   const box = section("正文插图切成漫画格", "与三套小剧场并列；勾选「正文漫画分镜」时生效，图会按分镜插进正文。");
   box.appendChild(selectRow(
     "版面",
-    (comic == null ? void 0 : comic.comicLayout) ?? "regular",
-    [["regular", "规整四格"], ["irregular", "斜切分镜"], ["inset", "主图 + 嵌入格"], ["unframed", "无边框融白"]],
+    (comic == null ? void 0 : comic.comicLayout) ?? "auto",
+    [["auto", "自动（按剧情挑，推荐）"], ["regular", "规整分格"], ["irregular", "斜切分镜"], ["inset", "主图 + 嵌入格"], ["unframed", "无边框融白"]],
     (v) => patchSettings((st) => {
       st.modes["comic"].comicLayout = v;
-      st.panelLayout = v;
-    })
+      st.panelLayout = v === "auto" ? "regular" : v;
+    }),
+    "自动：写 tag 的模型读过这一段剧情，由它逐页决定用哪一档（动作戏给拼版、只有人的独白给白底特写）。看不懂这几档就留着自动。"
   ));
   box.appendChild(selectRow(
     "每页格数",
@@ -3884,6 +3885,22 @@ function appendArtifact(floor, artifact) {
   touchChatIndex();
   return true;
 }
+function updateArtifact(floor, artifactId, patch) {
+  const msg = getMessage(floor);
+  if (!(msg == null ? void 0 : msg.extra)) return false;
+  const extra = msg.extra;
+  const store = readStore$2(extra[ARTIFACTS_KEY]);
+  let found = false;
+  store.artifacts = store.artifacts.map((a) => {
+    if (a.id !== artifactId) return a;
+    found = true;
+    return { ...a, ...patch };
+  });
+  if (!found) return false;
+  extra[ARTIFACTS_KEY] = store;
+  touchChatIndex();
+  return true;
+}
 function touchChatIndex() {
   const index2 = getChatMetadata(CHAT_META_KEY, { version: SCHEMA_VERSION, updatedAt: 0, count: 0 });
   saveChatMetadata(CHAT_META_KEY, {
@@ -3897,238 +3914,9 @@ function createArtifactId() {
   seq += 1;
   return `sti-${Date.now().toString(36)}-${seq.toString(36)}`;
 }
-const INLINE_CLASS = "sti-inline-card";
-const TRAILING_AREA_CLASS = "sti-trailing-area";
-const TRAILING_AREA_ID = "sti-trailing-area-";
-const MOUNTED_ATTR$1 = "data-sti-mounted";
-const MODE_LABELS = {
-  "illustration": "插画",
-  "comic": "漫画分镜",
-  "chibi-status": "QQ人状态",
-  "chibi-bonus": "QQ人彩蛋",
-  "bw-manga": "黑白漫"
-};
-function mountFloor(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  unmountFloor(floor);
-  const artifacts = getArtifacts(floor);
-  const visible = artifacts.filter((a) => {
-    var _a;
-    return ((_a = a.metadata) == null ? void 0 : _a.embeddedInBody) !== true;
-  });
-  const inline = visible.filter((a) => a.mountMode === "inline");
-  const trailing = visible.filter((a) => a.mountMode !== "inline");
-  for (const artifact of inline) mountInline(mes, floor, artifact);
-  if (trailing.length > 0) mountTrailing(mes, floor, trailing);
-}
-function unmountFloor(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  const cards = mes.querySelectorAll(`[${MOUNTED_ATTR$1}="${floor}"]`);
-  for (const card of Array.from(cards)) card.remove();
-}
-function remountAll() {
-  const nodes = document.querySelectorAll(".mes[mesid]");
-  for (const node of Array.from(nodes)) {
-    const floor = parseInt(node.getAttribute("mesid") ?? "", 10);
-    if (Number.isFinite(floor)) mountFloor(floor);
-  }
-}
-function mountInline(mes, floor, artifact) {
-  var _a;
-  const mesText = mes.querySelector(".mes_text");
-  if (!mesText) return;
-  const card = buildCard$1(artifact, floor, true);
-  let inserted = false;
-  if (artifact.textAnchor) {
-    const anchor = artifact.textAnchor;
-    const target = findTextNodeAfter(mesText, anchor.selectedText);
-    if (target) {
-      (_a = target.parentNode) == null ? void 0 : _a.insertBefore(card, target.nextSibling);
-      inserted = true;
-    }
-  }
-  if (!inserted) mesText.appendChild(card);
-}
-function findTextNodeAfter(root, selectedText) {
-  if (!selectedText) return null;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let node;
-  while (node = walker.nextNode()) {
-    if ((node.textContent ?? "").includes(selectedText)) return node;
-  }
-  return null;
-}
-function mountTrailing(mes, floor, artifacts) {
-  const mesBlock = mes.querySelector(".mes_block") ?? mes;
-  let area = mesBlock.querySelector(`#${TRAILING_AREA_ID}${floor}`);
-  if (!area) {
-    area = document.createElement("div");
-    area.id = `${TRAILING_AREA_ID}${floor}`;
-    area.className = TRAILING_AREA_CLASS;
-    area.setAttribute(MOUNTED_ATTR$1, String(floor));
-    const header = document.createElement("div");
-    header.className = "sti-trailing-header";
-    header.textContent = "ST 创作";
-    area.appendChild(header);
-    mesBlock.appendChild(area);
-  }
-  for (const artifact of artifacts) {
-    area.appendChild(buildCard$1(artifact, floor, false));
-  }
-}
-function buildCard$1(artifact, floor, inline) {
-  const card = document.createElement("div");
-  card.className = inline ? INLINE_CLASS : "sti-floor-card";
-  card.setAttribute(MOUNTED_ATTR$1, String(floor));
-  card.setAttribute("data-sti-artifact-id", artifact.id);
-  const img = document.createElement("img");
-  img.className = "sti-card-image";
-  img.src = artifact.imagePath;
-  img.alt = `${MODE_LABELS[artifact.mode] || artifact.mode} 作品`;
-  img.loading = "lazy";
-  img.addEventListener("click", () => openLightbox(artifact.imagePath, img.alt));
-  card.appendChild(img);
-  const caption = document.createElement("div");
-  caption.className = "sti-card-caption";
-  caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ""));
-  if (caption.textContent) card.appendChild(caption);
-  return card;
-}
-const THEATER_KEY = "sti_theater";
-function emptyStore() {
-  return { version: 1, buckets: { status: [], bonus: [], manga: [] } };
-}
-function readStore$1(raw) {
-  const store = emptyStore();
-  if (!raw || typeof raw !== "object") return store;
-  const o = raw;
-  const buckets = o.buckets ?? {};
-  for (const b of ["status", "bonus", "manga"]) {
-    if (Array.isArray(buckets[b])) {
-      store.buckets[b] = buckets[b].filter(
-        (x) => !!x && typeof x === "object"
-      );
-    }
-  }
-  return store;
-}
-function writeStore(floor, store) {
-  const msg = getMessage(floor);
-  if (!msg) return false;
-  if (!msg.extra) msg.extra = {};
-  msg.extra[THEATER_KEY] = store;
-  return true;
-}
-function getStories(floor, bucket) {
-  const msg = getMessage(floor);
-  if (!msg) return [];
-  const extra = msg.extra;
-  return readStore$1(extra == null ? void 0 : extra[THEATER_KEY]).buckets[bucket];
-}
-function hasStory(floor, bucket) {
-  return getStories(floor, bucket).length > 0;
-}
-function newSetId() {
-  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-}
-function getSets(floor, bucket) {
-  const list = getStories(floor, bucket);
-  const order = [];
-  const map = /* @__PURE__ */ new Map();
-  for (const story of list) {
-    const key = story.setId && story.setId.trim() ? story.setId : `single-${story.storyId}`;
-    if (!map.has(key)) {
-      map.set(key, []);
-      order.push(key);
-    }
-    map.get(key).push(story);
-  }
-  const sets = [];
-  for (const key of order) {
-    const panels = (map.get(key) ?? []).slice().sort((a, b) => a.index - b.index);
-    const first = panels[0];
-    if (!first) continue;
-    const cast = dedupe(panels.flatMap((p) => p.cast ?? []));
-    const mood = panels.map((p) => p.mood).find((m) => !!m) ?? "";
-    sets.push({
-      setId: key,
-      kind: bucket,
-      title: first.setTitle ?? first.title ?? "",
-      cast,
-      mood,
-      panels,
-      sourceText: first.sourceText ?? "",
-      characterName: first.characterName ?? "",
-      createdAt: first.storyAt ?? 0
-    });
-  }
-  return sets;
-}
-function saveSet(floor, bucket, stories) {
-  if (stories.length === 0) return false;
-  const msg = getMessage(floor);
-  if (!msg) return false;
-  if (!msg.extra) msg.extra = {};
-  const extra = msg.extra;
-  const store = readStore$1(extra[THEATER_KEY]);
-  for (const story of stories) {
-    store.buckets[bucket].push({
-      ...story,
-      ...story.lines && story.lines.length ? { lines: story.lines } : { lines: void 0 }
-    });
-  }
-  return writeStore(floor, store);
-}
-function updatePanel(floor, bucket, setId, index2, patch) {
-  const msg = getMessage(floor);
-  if (!(msg == null ? void 0 : msg.extra)) return false;
-  const extra = msg.extra;
-  const store = readStore$1(extra[THEATER_KEY]);
-  const list = store.buckets[bucket];
-  const at = list.findIndex((s) => s.setId === setId && s.index === index2);
-  if (at < 0) return false;
-  list[at] = { ...list[at], ...patch };
-  return writeStore(floor, store);
-}
-function replaceSet(floor, bucket, setId, stories) {
-  const msg = getMessage(floor);
-  if (!(msg == null ? void 0 : msg.extra)) return false;
-  const extra = msg.extra;
-  const store = readStore$1(extra[THEATER_KEY]);
-  const kept = store.buckets[bucket].filter((s) => s.setId !== setId);
-  const firstAt = store.buckets[bucket].findIndex((s) => s.setId === setId);
-  const merged = kept.slice();
-  const insertAt = firstAt < 0 ? merged.length : Math.min(firstAt, merged.length);
-  merged.splice(insertAt, 0, ...stories.map((s) => ({
-    ...s,
-    ...s.lines && s.lines.length ? { lines: s.lines } : { lines: void 0 }
-  })));
-  store.buckets[bucket] = merged;
-  return writeStore(floor, store);
-}
-function removeSet(floor, bucket, setId) {
-  const msg = getMessage(floor);
-  if (!(msg == null ? void 0 : msg.extra)) return false;
-  const extra = msg.extra;
-  const store = readStore$1(extra[THEATER_KEY]);
-  const before = store.buckets[bucket].length;
-  store.buckets[bucket] = store.buckets[bucket].filter((s) => s.setId !== setId);
-  if (store.buckets[bucket].length === before) return false;
-  return writeStore(floor, store);
-}
-function dedupe(list) {
-  const out = [];
-  for (const item of list) {
-    const v = String(item ?? "").trim();
-    if (!v || out.includes(v)) continue;
-    out.push(v);
-  }
-  return out;
-}
 function toBaiBaiRequest(input, character) {
   const size = input.size === "landscape" ? "landscape" : "portrait";
+  const group = input.character || character;
   return {
     prompt: input.prompt,
     ...input.nl ? { nl: input.nl } : {},
@@ -4137,7 +3925,7 @@ function toBaiBaiRequest(input, character) {
     size,
     ...typeof input.seed === "number" ? { seed: input.seed } : {},
     save: input.save !== false,
-    ...character ? { character } : {}
+    ...group ? { character: group } : {}
   };
 }
 const baiBaiAdapter = {
@@ -4165,6 +3953,1155 @@ const baiBaiAdapter = {
 };
 async function readBackendState() {
   return await getBackendStatus();
+}
+const ALL_BUBBLE_STYLES = [
+  "classic",
+  "bubble-vertical",
+  "bubble-glow",
+  "bubble-ink",
+  "bubble-subtitle",
+  "blend",
+  "blend-vertical",
+  "blend-glow",
+  "blend-ink",
+  "blend-subtitle"
+];
+function normalizeBubbleStyle(v) {
+  return ALL_BUBBLE_STYLES.includes(v) ? v : "classic";
+}
+function bubbleShellOf(s) {
+  return String(s).startsWith("blend") ? "blend" : "bubble";
+}
+function isBlendStyle(s) {
+  return bubbleShellOf(s) === "blend";
+}
+function bubbleVariantOf(s) {
+  const n = normalizeBubbleStyle(s);
+  if (n === "classic" || n === "blend") return "normal";
+  return n.slice(n.indexOf("-") + 1);
+}
+function normalizeBubbleFont(v) {
+  return v === "serif" || v === "kai" || v === "round" ? v : "sans";
+}
+const BUBBLE_FONT_STACKS = {
+  sans: "sans-serif",
+  serif: '"Noto Serif SC", "SimSun", "Songti SC", "MS Song", serif',
+  kai: '"KaiTi", "STKaiti", "Kaiti SC", "DFKai-SB", serif',
+  round: '"Yuanti SC", "HYQiHei", "Microsoft YaHei", "PingFang SC", sans-serif'
+};
+const GAP = 0.024;
+function panelSlots(layout, count, pageType = "auto") {
+  const n = Math.min(4, Math.max(0, Math.round(Number(count) || 0)));
+  if (layout === "regular") {
+    if (n <= 1) return [{ x: 0, y: 0, width: 1, height: 1 }];
+    if (n === 2) {
+      const h2 = (1 - GAP) / 2;
+      return [
+        { x: 0, y: 0, width: 1, height: h2 },
+        { x: 0, y: h2 + GAP, width: 1, height: h2 }
+      ];
+    }
+    if (n === 3) {
+      const top = 0.378;
+      const botY = top + GAP;
+      const botH = 1 - botY;
+      const w2 = (1 - GAP) / 2;
+      return [
+        { x: 0, y: 0, width: 1, height: top },
+        { x: 0, y: botY, width: w2, height: botH },
+        { x: w2 + GAP, y: botY, width: w2, height: botH }
+      ];
+    }
+    const w = (1 - GAP) / 2;
+    const h = (1 - GAP) / 2;
+    return [
+      { x: 0, y: 0, width: w, height: h },
+      { x: w + GAP, y: 0, width: w, height: h },
+      { x: 0, y: h + GAP, width: w, height: h },
+      { x: w + GAP, y: h + GAP, width: w, height: h }
+    ];
+  }
+  if (layout === "irregular") return [];
+  if (layout === "inset") {
+    return [{ x: 0.02, y: 0.19, width: 0.96, height: 0.78 }];
+  }
+  switch (pageType) {
+    case "c":
+      return [{ x: 0.02, y: 0.02, width: 0.65, height: 0.96 }];
+    case "d":
+      return [{ x: 0.02, y: 0.02, width: 0.96, height: 0.96 }];
+    case "a":
+    case "b":
+    default:
+      return [{ x: 0.02, y: 0.21, width: 0.96, height: 0.77 }];
+  }
+}
+function layoutNoGoZones(layout, pageType = "auto") {
+  if (layout === "inset") {
+    return [
+      { x: 0, y: 0, width: 1, height: 0.19, weight: 3 },
+      { x: 0.6, y: 0.66, width: 0.4, height: 0.34, weight: 3 }
+    ];
+  }
+  if (layout === "unframed") {
+    if (pageType === "d") {
+      return [{ x: 0.66, y: 0.74, width: 0.34, height: 0.26, weight: 3 }];
+    }
+    if (pageType === "c") {
+      return [{ x: 0.66, y: 0, width: 0.34, height: 1, weight: 3 }];
+    }
+    return [{ x: 0.33, y: 0.71, width: 0.65, height: 0.27, weight: 3 }];
+  }
+  return [];
+}
+function slotIndexAt(slots, px, py) {
+  if (!slots.length) return 0;
+  let inside = -1;
+  slots.forEach((s, i) => {
+    if (px >= s.x && px <= s.x + s.width && py >= s.y && py <= s.y + s.height) inside = i;
+  });
+  if (inside >= 0) return inside;
+  let best = 0;
+  let bestDist = Infinity;
+  slots.forEach((s, i) => {
+    const dx = s.x + s.width / 2 - px;
+    const dy = s.y + s.height / 2 - py;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  });
+  return best;
+}
+const BUSY_COLS = 20;
+const BUSY_ROWS = 28;
+function clamp01$1(v) {
+  return v <= 0 ? 0 : v >= 1 ? 1 : v;
+}
+function buildBusyGrid(data, width, height, cols = BUSY_COLS, rows = BUSY_ROWS) {
+  const c = Math.max(1, Math.round(cols));
+  const r = Math.max(1, Math.round(rows));
+  const sum = new Array(c * r).fill(0);
+  const sumSq = new Array(c * r).fill(0);
+  const count = new Array(c * r).fill(0);
+  if (!width || !height || data.length < 4) {
+    return { cols: c, rows: r, cells: new Array(c * r).fill(0), mean: 0 };
+  }
+  const stepX = Math.max(1, Math.floor(width / (c * 4)));
+  const stepY = Math.max(1, Math.floor(height / (r * 4)));
+  for (let y = 0; y < height; y += stepY) {
+    const gy = Math.min(r - 1, Math.floor(y * r / height));
+    for (let x = 0; x < width; x += stepX) {
+      const gx = Math.min(c - 1, Math.floor(x * c / width));
+      const i = (y * width + x) * 4;
+      const alpha = data[i + 3];
+      if (alpha !== void 0 && alpha < 8) continue;
+      const lum = (0.299 * (data[i] ?? 0) + 0.587 * (data[i + 1] ?? 0) + 0.114 * (data[i + 2] ?? 0)) / 255;
+      const k = gy * c + gx;
+      sum[k] += lum;
+      sumSq[k] += lum * lum;
+      count[k] += 1;
+    }
+  }
+  const cells = [];
+  let total = 0;
+  for (let k = 0; k < c * r; k += 1) {
+    const n = count[k];
+    if (!n) {
+      cells.push(0);
+      continue;
+    }
+    const mean = sum[k] / n;
+    const variance = Math.max(0, sumSq[k] / n - mean * mean);
+    const std = Math.sqrt(variance);
+    const density = clamp01$1((std - 0.04) * 2.8);
+    const darkness = clamp01$1((0.52 - mean) * 1.6);
+    const busy = clamp01$1(0.75 * density + 0.45 * darkness);
+    cells.push(Math.round(busy * 1e3) / 1e3);
+    total += busy;
+  }
+  return {
+    cols: c,
+    rows: r,
+    cells,
+    mean: Math.round(total / Math.max(1, c * r) * 1e3) / 1e3
+  };
+}
+function busyInRect(grid, rect) {
+  if (!grid || !grid.cells.length) return 0;
+  const x0 = clamp01$1(Math.min(rect.x, rect.x + rect.width));
+  const y0 = clamp01$1(Math.min(rect.y, rect.y + rect.height));
+  const x1 = clamp01$1(Math.max(rect.x, rect.x + rect.width));
+  const y1 = clamp01$1(Math.max(rect.y, rect.y + rect.height));
+  if (x1 <= x0 || y1 <= y0) return 0;
+  const cw = 1 / grid.cols;
+  const ch = 1 / grid.rows;
+  let weighted = 0;
+  let area = 0;
+  for (let gy = 0; gy < grid.rows; gy += 1) {
+    const cy0 = gy * ch;
+    const cy1 = cy0 + ch;
+    const oy = Math.min(y1, cy1) - Math.max(y0, cy0);
+    if (oy <= 0) continue;
+    for (let gx = 0; gx < grid.cols; gx += 1) {
+      const cx0 = gx * cw;
+      const cx1 = cx0 + cw;
+      const ox = Math.min(x1, cx1) - Math.max(x0, cx0);
+      if (ox <= 0) continue;
+      const w = ox * oy;
+      weighted += (grid.cells[gy * grid.cols + gx] ?? 0) * w;
+      area += w;
+    }
+  }
+  return area > 0 ? weighted / area : 0;
+}
+function readBusyGrid(image, cols = BUSY_COLS, rows = BUSY_ROWS) {
+  try {
+    const w = Number(image.naturalWidth ?? image.width ?? 0);
+    const h = Number(image.naturalHeight ?? image.height ?? 0);
+    if (!w || !h) return null;
+    const small = document.createElement("canvas");
+    small.width = cols;
+    small.height = rows;
+    const ctx = small.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(image, 0, 0, cols, rows);
+    const { data } = ctx.getImageData(0, 0, cols, rows);
+    return buildBusyGrid(data, cols, rows, cols, rows);
+  } catch {
+    return null;
+  }
+}
+const PANEL_DIALOGUE_MAX$1 = 4;
+const BUBBLE_ANCHORS = {
+  tl: { x: 0.24, y: 0.15 },
+  tc: { x: 0.5, y: 0.13 },
+  tr: { x: 0.76, y: 0.15 },
+  ml: { x: 0.17, y: 0.44 },
+  mr: { x: 0.83, y: 0.44 },
+  bl: { x: 0.24, y: 0.79 },
+  bc: { x: 0.5, y: 0.84 },
+  br: { x: 0.76, y: 0.79 }
+};
+const SLOT_X = [0.16, 0.5, 0.84];
+const SLOT_Y = [0.1, 0.3, 0.62, 0.84];
+const FACE_AVOID_ZONES = [
+  { x: 0.33, y: 0.14, width: 0.34, height: 0.4, weight: 4 },
+  { x: 0.28, y: 0.42, width: 0.44, height: 0.38, weight: 1.2 }
+];
+function wrapText(text, maxWidth, measure) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  if (measure(clean) <= maxWidth) return [clean];
+  const lines = [];
+  let current = "";
+  for (const char of clean) {
+    const candidate = current + char;
+    if (current && measure(candidate) > maxWidth) {
+      lines.push(current);
+      current = char === " " ? "" : char;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.trim()) lines.push(current.trim());
+  return lines;
+}
+function bubbleFontSize(page) {
+  return Math.max(15, Math.min(44, Math.round(Math.min(page.width, page.height) * 0.034)));
+}
+function blendFontSize(page) {
+  return Math.max(13, Math.min(36, Math.round(Math.min(page.width, page.height) * 0.028)));
+}
+function blendSpacing(fontSize) {
+  return fontSize * 0.26;
+}
+function layoutBlendH(text, maxWidth, fontSize, measure) {
+  const spacing = blendSpacing(fontSize);
+  const widthOf = (s) => [...s].reduce((sum, ch) => sum + measure(ch), 0) + spacing * Math.max(0, [...s].length - 1);
+  const lines = wrapText(text, maxWidth, widthOf);
+  return {
+    lines,
+    width: Math.ceil(Math.max(0, ...lines.map(widthOf))),
+    height: Math.ceil(lines.length * fontSize * 1.35)
+  };
+}
+function layoutBlendV(text, maxHeight, fontSize) {
+  var _a;
+  const spacing = blendSpacing(fontSize);
+  const step = fontSize * 1.15;
+  const perCol = Math.max(4, Math.floor(maxHeight / step));
+  const chars = [...text];
+  const cols = [];
+  for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
+  return {
+    cols,
+    width: Math.ceil(cols.length * fontSize + (cols.length - 1) * spacing),
+    height: Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step)
+  };
+}
+function deriveTextColor(avg) {
+  const lin = (v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  const lum = (c) => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+  const L = lum(avg);
+  const text = L > 0.42 ? { r: Math.round(avg.r * 0.3), g: Math.round(avg.g * 0.28), b: Math.round(avg.b * 0.28) } : { r: Math.round(avg.r + (255 - avg.r) * 0.82), g: Math.round(avg.g + (255 - avg.g) * 0.82), b: Math.round(avg.b + (255 - avg.b) * 0.82) };
+  const contrast = (Math.max(lum(text), L) + 0.05) / (Math.min(lum(text), L) + 0.05);
+  const halo = L > 0.35 && L < 0.55 || contrast < 2.2 ? L > 0.42 ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.5)" : null;
+  return { color: `rgb(${text.r},${text.g},${text.b})`, halo };
+}
+function blendInkFor(style, avg) {
+  if (style === "blend-glow") return { color: "#fffaf2", halo: "rgba(0,0,0,0.38)", glow: "rgba(255,246,228,0.85)", band: null };
+  if (style === "blend-ink") return { color: "#2a2320", halo: "rgba(255,255,255,0.92)", glow: null, band: null };
+  if (style === "blend-subtitle") return { color: "#f7f4ef", halo: "rgba(0,0,0,0.45)", glow: null, band: "rgba(18,16,15,0.55)" };
+  const { color, halo } = deriveTextColor(avg);
+  return { color, halo, glow: null, band: null };
+}
+function boxInkFor(style) {
+  const variant = bubbleVariantOf(style);
+  if (variant === "glow") return { color: "#fffaf2", glow: "rgba(255,244,214,0.9)" };
+  if (variant === "ink") return { color: "#2a2320", glow: null };
+  return { color: "#111111", glow: null };
+}
+function overlapArea(a, b) {
+  const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+function atCenter(rect, cx, cy, page, margin) {
+  return {
+    x: Math.min(Math.max(margin, cx - rect.width / 2), Math.max(margin, page.width - rect.width - margin)),
+    y: Math.min(Math.max(margin, cy - rect.height / 2), Math.max(margin, page.height - rect.height - margin))
+  };
+}
+function candidatesFor(rect, item, page, margin) {
+  const out = [];
+  for (const ay of SLOT_Y) {
+    for (const ax of SLOT_X) out.push(atCenter(rect, ax * page.width, ay * page.height, page, margin));
+  }
+  if (item.area && BUBBLE_ANCHORS[item.area]) {
+    const a = BUBBLE_ANCHORS[item.area];
+    out.push(atCenter(rect, a.x * page.width, a.y * page.height, page, margin));
+  }
+  return out;
+}
+const THUMB = 1;
+const W_PLACED = 240;
+const W_FACE = 130;
+const W_CROSS = 14;
+const W_EDGE = 26;
+const W_BUSY = 150;
+const BUSY_FLOOR = 0.12;
+function normRect(rect, page) {
+  return {
+    x: rect.x / Math.max(1, page.width),
+    y: rect.y / Math.max(1, page.height),
+    width: rect.width / Math.max(1, page.width),
+    height: rect.height / Math.max(1, page.height)
+  };
+}
+function busyPenalty(busy, rect, page) {
+  if (!busy) return 0;
+  const ratio = busyInRect(busy, normRect(rect, page));
+  return Math.max(0, ratio - BUSY_FLOOR) * W_BUSY;
+}
+function scoreAt(rect, point, item, page, placed, zones, busy) {
+  const probe2 = { ...rect, x: point.x, y: point.y };
+  const area = Math.max(THUMB, rect.width * rect.height);
+  let score = 0;
+  score += busyPenalty(busy, probe2, page);
+  for (const zone of zones) {
+    const box = {
+      x: zone.x * page.width,
+      y: zone.y * page.height,
+      width: zone.width * page.width,
+      height: zone.height * page.height
+    };
+    const ratio = overlapArea(probe2, box) / area;
+    if (ratio <= 0) continue;
+    score += ratio * W_FACE * (zone.weight ?? 1);
+  }
+  for (const other of placed) {
+    const ratio = overlapArea(probe2, other) / area;
+    if (ratio > 0) score += ratio * W_PLACED;
+  }
+  const mid = page.width * 0.5;
+  if (probe2.x < mid && probe2.x + probe2.width > mid) score += W_CROSS;
+  const edge = Math.min(
+    probe2.x,
+    probe2.y,
+    page.width - probe2.x - probe2.width,
+    page.height - probe2.y - probe2.height
+  );
+  score += Math.max(0, edge) / Math.max(1, page.width) * W_EDGE;
+  if (item.area && BUBBLE_ANCHORS[item.area]) {
+    const a = BUBBLE_ANCHORS[item.area];
+    const ax = a.x * page.width;
+    const ay = a.y * page.height;
+    const dist = Math.hypot(probe2.x + probe2.width / 2 - ax, probe2.y + probe2.height / 2 - ay);
+    score += dist / Math.max(1, page.width) * 6;
+  }
+  return score;
+}
+function bestPoint(rect, item, page, margin, placed, zones, busy) {
+  let best = null;
+  for (const point of candidatesFor(rect, item, page, margin)) {
+    const score = scoreAt(rect, point, item, page, placed, zones, busy);
+    if (!best || score < best.score) best = { point, score };
+  }
+  return best ?? { point: { x: margin, y: margin }, score: 0 };
+}
+function faceCoverRatio(rect, page, zones = FACE_AVOID_ZONES) {
+  const face = zones[0];
+  if (!face) return 0;
+  const box = {
+    x: face.x * page.width,
+    y: face.y * page.height,
+    width: face.width * page.width,
+    height: face.height * page.height
+  };
+  const area = Math.max(1, rect.width * rect.height);
+  return overlapArea(rect, box) / area;
+}
+function placeRect(rect, item, index2, page, margin, zones, placed, withTail, busy) {
+  if (typeof item.x === "number" && typeof item.y === "number") {
+    rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+    rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+    placed.push(rect);
+    return;
+  }
+  const { point } = bestPoint(rect, item, page, margin, placed, zones, busy);
+  rect.x = point.x;
+  rect.y = point.y;
+  placed.push(rect);
+}
+function pageBox(zone, page) {
+  return {
+    x: zone.x * page.width,
+    y: zone.y * page.height,
+    width: zone.width * page.width,
+    height: zone.height * page.height
+  };
+}
+function innerOf(slot, page, pad) {
+  return {
+    x: slot.x * page.width + pad,
+    y: slot.y * page.height + pad,
+    width: Math.max(24, slot.width * page.width - pad * 2),
+    height: Math.max(24, slot.height * page.height - pad * 2)
+  };
+}
+function faceZoneInSlot(slot, page) {
+  return {
+    x: (slot.x + slot.width * 0.3) * page.width,
+    y: (slot.y + slot.height * 0.14) * page.height,
+    width: slot.width * 0.4 * page.width,
+    height: slot.height * 0.32 * page.height
+  };
+}
+function outsideRatio(rect, inner) {
+  const area = Math.max(1, rect.width * rect.height);
+  const inside = overlapArea(rect, inner);
+  return Math.max(0, area - inside) / area;
+}
+function candidatesInSlot(rect, inner, placed) {
+  const freeW = Math.max(0, inner.width - rect.width);
+  const freeH = Math.max(0, inner.height - rect.height);
+  const out = [];
+  for (const fy of [0, 0.18, 0.42, 0.68, 0.94]) {
+    for (const fx of [0, 0.5, 1]) {
+      out.push({ x: inner.x + fx * freeW, y: inner.y + fy * freeH });
+    }
+  }
+  for (const p of placed) {
+    const gap = Math.max(4, rect.height * 0.14);
+    const below = p.y + p.height + gap;
+    const above = p.y - rect.height - gap;
+    for (const x of [p.x, inner.x, inner.x + freeW]) {
+      if (below <= inner.y + freeH) out.push({ x, y: below });
+      if (above >= inner.y) out.push({ x, y: above });
+    }
+  }
+  return out;
+}
+function scoreInSlot(rect, point, inner, slot, item, page, placed, noGo, busy) {
+  const probe2 = { ...rect, x: point.x, y: point.y };
+  const area = Math.max(1, rect.width * rect.height);
+  let score = 0;
+  score += busyPenalty(busy, probe2, page);
+  for (const other of placed) {
+    score += overlapArea(probe2, other) / area * 400;
+    if (probe2.y + probe2.height <= other.y + 1) score += 34;
+  }
+  score += overlapArea(probe2, faceZoneInSlot(slot, page)) / area * 95;
+  for (const zone of noGo) {
+    score += overlapArea(probe2, pageBox(zone, page)) / area * 120 * (zone.weight ?? 1);
+  }
+  score += (probe2.y - inner.y) / Math.max(1, inner.height) * 7;
+  score += outsideRatio(probe2, inner) * 300;
+  if (item.area) {
+    const left = item.area.endsWith("l");
+    const right = item.area.endsWith("r");
+    const centerX = probe2.x + probe2.width / 2;
+    const slotMid = (slot.x + slot.width / 2) * page.width;
+    if (left && centerX > slotMid) score += 5;
+    if (right && centerX < slotMid) score += 5;
+  }
+  return score;
+}
+function nameKey(v) {
+  return String(v ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～\-—_]/g, "").toLowerCase();
+}
+function slotBySpeaker(item, casts) {
+  const speaker = nameKey(item.speaker ?? "");
+  if (!speaker || !(casts == null ? void 0 : casts.length)) return -1;
+  const hits = [];
+  casts.forEach((names, i) => {
+    if ((names ?? []).some((name) => {
+      const key = nameKey(name);
+      return key.length > 0 && (key === speaker || key.includes(speaker) || speaker.includes(key));
+    })) hits.push(i);
+  });
+  return hits.length === 1 ? hits[0] : -1;
+}
+function assignDialogueToSlots(items, slots, casts) {
+  const n = slots.length;
+  if (!n) return items.map(() => 0);
+  const zeroBased = items.some((item) => Number(item.panel) === 0);
+  const explicit = (item) => {
+    const raw = Number(item.panel);
+    if (!Number.isFinite(raw)) return -1;
+    const p = Math.round(zeroBased ? raw + 1 : raw);
+    return p >= 1 && p <= n ? p - 1 : -1;
+  };
+  const hasHint = items.some((item) => explicit(item) >= 0 || !!item.area || slotBySpeaker(item, casts) >= 0);
+  if (!hasHint) {
+    return items.map((_, i) => Math.min(n - 1, Math.floor(i * n / Math.max(1, items.length))));
+  }
+  let prev = 0;
+  return items.map((item) => {
+    const p = explicit(item);
+    const bySpeaker = slotBySpeaker(item, casts);
+    if (p >= 0) {
+      const chosen = bySpeaker >= 0 && bySpeaker !== p ? bySpeaker : p;
+      prev = chosen;
+      return chosen;
+    }
+    if (bySpeaker >= 0) {
+      prev = bySpeaker;
+      return bySpeaker;
+    }
+    if (item.area && BUBBLE_ANCHORS[item.area]) {
+      const a = BUBBLE_ANCHORS[item.area];
+      prev = slotIndexAt(slots, a.x, a.y);
+      return prev;
+    }
+    return prev;
+  });
+}
+function setTailInSlot(rect, slot, page) {
+  const midY = (slot.y + slot.height / 2) * page.height;
+  const midX = (slot.x + slot.width / 2) * page.width;
+  rect.tail = rect.y + rect.height / 2 < midY ? "down" : "up";
+  rect.tailX = rect.x + rect.width / 2 < midX ? rect.x + rect.width * 0.74 : rect.x + rect.width * 0.26;
+}
+function planBubbles(items, page, measure, opts = {}) {
+  if (!page.width || !page.height) return [];
+  const style = normalizeBubbleStyle(opts.style);
+  const slots = opts.panels && opts.panels.length ? opts.panels : [];
+  const zones = opts.avoidFace === false ? [] : opts.avoid ?? (slots.length ? [] : FACE_AVOID_ZONES);
+  if (isBlendStyle(style)) {
+    return planBlend(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast, opts.busy);
+  }
+  return planBubbleBox(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast, opts.busy);
+}
+const MAX_BUBBLE_RATIO = 0.34;
+function measureBox(item, page, measure, fontSize, variant, maxWidth, maxHeight) {
+  var _a;
+  const padX = fontSize * 0.7;
+  const padY = fontSize * 0.55;
+  if (variant === "vertical") {
+    const step = fontSize * 1.15;
+    const perCol = Math.max(3, Math.floor((maxHeight ?? page.height * 0.5) / step));
+    const chars = [...item.text];
+    const cols = [];
+    for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
+    return {
+      lines: cols,
+      width: Math.ceil(cols.length * fontSize + (cols.length - 1) * fontSize * 0.26 + padX * 2),
+      height: Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step + padY * 2),
+      vertical: true
+    };
+  }
+  const wrapWidth = Math.max(fontSize * 2, (maxWidth ?? page.width * MAX_BUBBLE_RATIO) - padX * 2);
+  const lines = wrapText(item.text, wrapWidth, measure);
+  if (!lines.length) return null;
+  return {
+    lines,
+    width: Math.ceil(Math.max(...lines.map(measure)) + padX * 2),
+    height: Math.ceil(lines.length * fontSize * 1.4 + padY * 2),
+    vertical: false
+  };
+}
+const PANEL_TEXT_RATIO = 0.88;
+function planBubbleBoxPanel(items, page, measure, variant, slots, noGo, paddingRatio, casts, busy) {
+  const baseFont = bubbleFontSize(page);
+  const pad = Math.max(3, Math.round(page.width * (paddingRatio ?? 0.012)));
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX$1).filter((item) => item.text.trim());
+  const groups = assignDialogueToSlots(capped, slots, casts);
+  const out = capped.map(() => null);
+  const placedAll = [];
+  slots.forEach((slot, si) => {
+    const inner = innerOf(slot, page, pad);
+    const placedHere = [];
+    const fontCap = Math.max(12, Math.round(Math.min(inner.width, inner.height) * 0.13));
+    const startFont = Math.min(baseFont, fontCap);
+    capped.forEach((item, idx) => {
+      if (groups[idx] !== si) return;
+      let best = null;
+      for (const scale of [1, 0.88, 0.76, 0.64]) {
+        const fontSize = Math.max(11, Math.round(startFont * scale));
+        const metrics = measureBox(
+          item,
+          page,
+          measure,
+          fontSize,
+          variant,
+          inner.width * PANEL_TEXT_RATIO,
+          inner.height * 0.8
+        );
+        if (!metrics) continue;
+        if (metrics.width > inner.width || metrics.height > inner.height * 0.85) continue;
+        const rect = {
+          x: 0,
+          y: 0,
+          width: metrics.width,
+          height: metrics.height,
+          lines: metrics.lines,
+          ...metrics.vertical ? { vertical: true } : {}
+        };
+        let point = { x: inner.x, y: inner.y };
+        let score = Infinity;
+        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedHere, noGo, busy);
+          if (s < score) {
+            score = s;
+            point = candidate;
+          }
+        }
+        const total = score + (1 - scale) * 5;
+        if (!best || total < best.score) {
+          best = { rect: { ...rect, x: point.x, y: point.y, fontSize }, score: total };
+        }
+      }
+      if (!best) return;
+      setTailInSlot(best.rect, slot, page);
+      best.rect.itemIndex = idx;
+      placedHere.push(best.rect);
+      placedAll.push(best.rect);
+      out[idx] = best.rect;
+    });
+  });
+  return out.filter((r) => !!r);
+}
+function planBubbleBox(items, page, measure, style, zones, slots = [], panelPadding, panelCasts, busy) {
+  const variant = bubbleVariantOf(style);
+  const baseFont = bubbleFontSize(page);
+  const margin = Math.round(page.width * 0.02);
+  const placed = [];
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX$1).filter((item) => item.text.trim());
+  if (slots.length && variant !== "subtitle") {
+    const casts = panelCasts;
+    const pinned = capped.filter((item) => typeof item.x === "number" && typeof item.y === "number");
+    const flowed = capped.filter((item) => !(typeof item.x === "number" && typeof item.y === "number"));
+    const byPanel = planBubbleBoxPanel(flowed, page, measure, variant, slots, zones, panelPadding, casts, busy);
+    const manual = [];
+    for (const item of pinned) {
+      const metrics = measureBox(item, page, measure, baseFont, variant);
+      if (!metrics) continue;
+      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...metrics.vertical ? { vertical: true } : {} };
+      rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+      rect.tail = item.y < 0.5 ? "down" : "up";
+      rect.itemIndex = capped.indexOf(item);
+      manual.push(rect);
+    }
+    const merged = capped.map(() => null);
+    let i = 0;
+    let j = 0;
+    capped.forEach((item, idx) => {
+      const isPinned = typeof item.x === "number" && typeof item.y === "number";
+      merged[idx] = isPinned ? manual[j++] ?? null : byPanel[i++] ?? null;
+    });
+    return merged.filter((r) => !!r);
+  }
+  capped.forEach((item) => {
+    if (typeof item.x === "number" && typeof item.y === "number") {
+      const metrics = measureBox(item, page, measure, baseFont, variant === "subtitle" ? "normal" : variant);
+      if (!metrics) return;
+      const rect = {
+        x: 0,
+        y: 0,
+        width: metrics.width,
+        height: metrics.height,
+        lines: metrics.lines,
+        ...metrics.vertical ? { vertical: true } : {}
+      };
+      rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+      rect.tail = item.y < 0.5 ? "down" : "up";
+      placed.push(rect);
+      return;
+    }
+    if (variant === "subtitle") {
+      const fontSize = baseFont;
+      const metrics = measureBox(item, page, measure, fontSize, "normal");
+      if (!metrics) return;
+      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines };
+      rect.x = Math.min(Math.max(margin, page.width * 0.5 - rect.width / 2), page.width - rect.width - margin);
+      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
+      for (let guard = 0; guard < 8; guard += 1) {
+        const hit = placed.find((o) => overlapArea(rect, o) > 0);
+        if (!hit) break;
+        rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.3);
+      }
+      placed.push(rect);
+      return;
+    }
+    let chosen = null;
+    for (const scale of [1, 0.86, 0.74]) {
+      const fontSize = Math.max(12, Math.round(baseFont * scale));
+      const metrics = measureBox(item, page, measure, fontSize, variant);
+      if (!metrics) continue;
+      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...metrics.vertical ? { vertical: true } : {} };
+      const { point, score } = bestPoint(rect, item, page, margin, placed, zones, busy);
+      rect.x = point.x;
+      rect.y = point.y;
+      rect.fontSize = fontSize;
+      const cover = faceCoverRatio(rect, page, zones);
+      if (!chosen || cover < 0.02 || score < chosen.score) {
+        chosen = { rect, score };
+        if (cover <= 1e-3 && score < W_PLACED) break;
+      }
+    }
+    if (!chosen) return;
+    chosen.rect.tail = chosen.rect.y + chosen.rect.height / 2 < page.height / 2 ? "down" : "up";
+    placed.push(chosen.rect);
+  });
+  return placed;
+}
+function planBlend(items, page, measure, style, zones, slots = [], panelPadding, casts, busy) {
+  const baseFont = blendFontSize(page);
+  const margin = Math.round(page.width * 0.02);
+  const forceVertical = style === "blend-vertical";
+  const subtitle = style === "blend-subtitle";
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX$1).filter((item) => item.text.trim());
+  if (slots.length && !subtitle) {
+    const pad = Math.max(3, Math.round(page.width * (panelPadding ?? 0.012)));
+    const groups = assignDialogueToSlots(capped, slots, casts);
+    const out = capped.map(() => null);
+    const placedAll = [];
+    slots.forEach((slot, si) => {
+      const inner = innerOf(slot, page, pad);
+      const placedHere = [];
+      const fontSize = Math.max(11, Math.min(baseFont, Math.round(Math.min(inner.width, inner.height) * 0.09)));
+      capped.forEach((item, idx) => {
+        if (groups[idx] !== si) return;
+        if (typeof item.x === "number" && typeof item.y === "number") return;
+        const vertical = forceVertical || item.dir === "v";
+        let rect;
+        if (vertical) {
+          const { cols, width, height } = layoutBlendV(item.text, inner.height * 0.85, fontSize);
+          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+        } else {
+          const { lines, width, height } = layoutBlendH(item.text, inner.width * 0.9, fontSize, measure);
+          if (!lines.length) return;
+          rect = { x: 0, y: 0, width, height, lines };
+        }
+        if (rect.width > inner.width || rect.height > inner.height * 0.9) return;
+        let point = { x: inner.x, y: inner.y };
+        let score = Infinity;
+        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedAll, zones, busy);
+          if (s < score) {
+            score = s;
+            point = candidate;
+          }
+        }
+        rect.x = point.x;
+        rect.y = point.y;
+        rect.fontSize = fontSize;
+        rect.itemIndex = idx;
+        placedHere.push(rect);
+        placedAll.push(rect);
+        out[idx] = rect;
+      });
+    });
+    const pinned = capped.filter((item) => typeof item.x === "number" && typeof item.y === "number");
+    if (pinned.length) {
+      const manual = [];
+      for (const item of pinned) {
+        const vertical = forceVertical || item.dir === "v";
+        let rect;
+        if (vertical) {
+          const { cols, width, height } = layoutBlendV(item.text, page.height * 0.42, baseFont);
+          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+        } else {
+          const { lines, width, height } = layoutBlendH(item.text, page.width * 0.42, baseFont, measure);
+          if (!lines.length) continue;
+          rect = { x: 0, y: 0, width, height, lines };
+        }
+        rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+        rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+        manual.push(rect);
+      }
+      let j = 0;
+      capped.forEach((item, idx) => {
+        if (typeof item.x === "number" && typeof item.y === "number") out[idx] = manual[j++] ?? null;
+      });
+    }
+    return out.filter((r) => !!r);
+  }
+  const maxW = page.width * (subtitle ? 0.86 : 0.42);
+  const maxH = page.height * 0.42;
+  const placed = [];
+  items.slice(0, PANEL_DIALOGUE_MAX$1).forEach((item, index2) => {
+    if (!item.text.trim()) return;
+    const vertical = forceVertical || !subtitle && item.dir === "v";
+    let rect;
+    if (vertical) {
+      const { cols, width, height } = layoutBlendV(item.text, maxH, baseFont);
+      rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+    } else {
+      const { lines, width, height } = layoutBlendH(item.text, maxW, baseFont, measure);
+      if (!lines.length) return;
+      rect = { x: 0, y: 0, width, height, lines };
+    }
+    if (subtitle) {
+      rect.x = Math.min(Math.max(margin, page.width * 0.5 - rect.width / 2), page.width - rect.width - margin);
+      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
+      for (let guard = 0; guard < 8; guard += 1) {
+        const hit = placed.find((o) => overlapArea(rect, o) > 0);
+        if (!hit) break;
+        rect.y = Math.max(margin, hit.y - rect.height - baseFont * 0.25);
+      }
+      placed.push(rect);
+      return;
+    }
+    placeRect(rect, item, index2, page, margin, zones, placed, false, busy);
+  });
+  return placed;
+}
+function perColOf(cols) {
+  return Math.max(0, ...cols.map((c) => [...c].length));
+}
+function roundRectPath(ctx, rect, radius) {
+  const { x, y, width, height } = rect;
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+function drawHeart(ctx, x, y, size, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(size / 24, size / 24);
+  ctx.beginPath();
+  ctx.moveTo(0, 9);
+  ctx.bezierCurveTo(-11, -3, -5, -12, 0, -5);
+  ctx.bezierCurveTo(5, -12, 11, -3, 0, 9);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.restore();
+}
+function drawBubbles(image, items, opts = {}) {
+  var _a;
+  const width = image.naturalWidth;
+  const height = image.naturalHeight;
+  if (!width || !height) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(image, 0, 0, width, height);
+  const style = normalizeBubbleStyle(opts.style);
+  const fontStack = BUBBLE_FONT_STACKS[normalizeBubbleFont(opts.font)];
+  const busy = opts.busy ?? readBusyGrid(image) ?? void 0;
+  const planOpts = busy ? { ...opts, busy } : opts;
+  if (isBlendStyle(style)) {
+    drawBlend(ctx, items, fontStack, width, height, style, planOpts);
+    return canvas;
+  }
+  const fontSize = bubbleFontSize({ width, height });
+  ctx.font = `400 ${fontSize}px ${fontStack}`;
+  const bubbles = planBubbles(items, { width, height }, (s) => ctx.measureText(s).width, planOpts);
+  const ink = boxInkFor(style);
+  for (const bubble of bubbles) {
+    const fs = bubble.fontSize ?? fontSize;
+    const font = (w) => `${w} ${fs}px ${fontStack}`;
+    const lineWidth = Math.max(2, Math.round(fs * 0.09));
+    const tailSize = fs * 0.5;
+    if (bubble.tail) {
+      const baseY = bubble.tail === "down" ? bubble.y + bubble.height : bubble.y;
+      const tipY = bubble.tail === "down" ? baseY + tailSize : baseY - tailSize;
+      const towardCenter = bubble.x + bubble.width / 2 < width / 2 ? 0.72 : 0.28;
+      const baseX = typeof bubble.tailX === "number" ? bubble.tailX : bubble.x + bubble.width * towardCenter;
+      const inner = lineWidth / 2;
+      ctx.beginPath();
+      ctx.moveTo(baseX - tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
+      ctx.lineTo(baseX, tipY);
+      ctx.lineTo(baseX + tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#1a1a1a";
+      ctx.lineWidth = lineWidth;
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      ctx.fill();
+      roundRectPath(ctx, bubble, fs * 0.45);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.strokeStyle = "#1a1a1a";
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(baseX - tailSize * 0.5, bubble.tail === "down" ? bubble.y + bubble.height - lineWidth : bubble.y, tailSize, lineWidth + 1);
+    } else {
+      roundRectPath(ctx, bubble, fs * 0.35);
+      ctx.fillStyle = "rgba(18,16,15,0.82)";
+      ctx.fill();
+      ctx.strokeStyle = "#e8e4dc";
+      ctx.lineWidth = Math.max(1.5, fs * 0.06);
+      ctx.stroke();
+    }
+    ctx.fillStyle = ink.color;
+    ctx.font = font("400");
+    if (ink.glow) {
+      ctx.shadowColor = ink.glow;
+      ctx.shadowBlur = fs * 0.7;
+    }
+    ctx.textBaseline = "top";
+    if (bubble.vertical) {
+      const step = fs * 1.15;
+      const colSpacing = fs * 0.26;
+      const colX = (ci) => bubble.x + bubble.width - fs * 0.7 - (ci + 1) * fs - ci * colSpacing;
+      const totalH = Math.min(perColOf(bubble.lines), ((_a = bubble.lines[0]) == null ? void 0 : _a.length) ?? 0) * step;
+      bubble.lines.forEach((col, ci) => [...col].forEach((ch, ri) => ctx.fillText(ch, colX(ci), bubble.y + (bubble.height - totalH) / 2 + ri * step)));
+    } else {
+      const textHeight = bubble.lines.length * fs * 1.4;
+      let cursorY = bubble.y + (bubble.height - textHeight) / 2 + fs * 0.08;
+      for (const line of bubble.lines) {
+        ctx.fillText(line, bubble.x + fs * 0.7, cursorY);
+        cursorY += fs * 1.4;
+      }
+    }
+    ctx.shadowBlur = 0;
+  }
+  return canvas;
+}
+function drawBlend(ctx, items, fontStack, width, height, style, opts = {}) {
+  const baseFont = blendFontSize({ width, height });
+  ctx.textBaseline = "top";
+  ctx.font = `400 ${baseFont}px ${fontStack}`;
+  ctx.lineJoin = "round";
+  const measure = (s) => ctx.measureText(s).width;
+  const rects = planBubbles(items, { width, height }, measure, { ...opts, style });
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX$1).filter((i) => i.text.trim());
+  const needsSampling = style === "blend" || style === "blend-vertical";
+  rects.forEach((rect, index2) => {
+    const item = capped[typeof rect.itemIndex === "number" ? rect.itemIndex : index2];
+    if (!item) return;
+    const fontSize = rect.fontSize ?? baseFont;
+    const spacing = style === "blend-subtitle" ? fontSize * 0.1 : blendSpacing(fontSize);
+    ctx.font = `400 ${fontSize}px ${fontStack}`;
+    let avg = { r: 246, g: 238, b: 236 };
+    if (needsSampling) {
+      try {
+        const sx = Math.max(0, Math.floor(rect.x - 8));
+        const sy = Math.max(0, Math.floor(rect.y - 8));
+        const sw = Math.min(width - sx, Math.ceil(rect.width + 16));
+        const sh = Math.min(height - sy, Math.ceil(rect.height + 16));
+        if (sw > 0 && sh > 0) {
+          const data = ctx.getImageData(sx, sy, sw, sh).data;
+          let r = 0, g = 0, b = 0, n = 0;
+          for (let i = 0; i < data.length; i += 16) {
+            if (data[i + 3] < 8) continue;
+            r += data[i];
+            g += data[i + 1];
+            b += data[i + 2];
+            n += 1;
+          }
+          if (n > 0) avg = { r: r / n, g: g / n, b: b / n };
+        }
+      } catch {
+      }
+    }
+    const ink = blendInkFor(style, avg);
+    if (ink.band) {
+      const padX = fontSize * 0.5;
+      const padY = fontSize * 0.3;
+      roundRectPath(ctx, { x: rect.x - padX, y: rect.y - padY, width: rect.width + padX * 2, height: rect.height + padY * 2 }, fontSize * 0.28);
+      ctx.fillStyle = ink.band;
+      ctx.fill();
+    }
+    ctx.fillStyle = ink.color;
+    if (ink.halo) {
+      ctx.strokeStyle = ink.halo;
+      ctx.lineWidth = Math.max(1.5, fontSize * 0.08);
+    }
+    if (ink.glow) {
+      ctx.shadowColor = ink.glow;
+      ctx.shadowBlur = fontSize * 0.6;
+    }
+    const drawChar = (ch, x, y) => {
+      if (ink.halo) ctx.strokeText(ch, x, y);
+      ctx.fillText(ch, x, y);
+    };
+    if (rect.vertical) {
+      const step = fontSize * 1.15;
+      rect.lines.forEach((col, ci) => {
+        const colX = rect.x + rect.width - (ci + 1) * fontSize - ci * spacing;
+        [...col].forEach((ch, ri) => drawChar(ch, colX, rect.y + ri * step));
+      });
+      ctx.shadowBlur = 0;
+      if (item.mood === "whisper" && style !== "blend-subtitle") {
+        const hx = Math.max(4, Math.min(width - fontSize * 3, rect.x + rect.width / 2));
+        const hy = Math.min(height - fontSize * 2, rect.y + rect.height + fontSize * 0.4);
+        drawHeart(ctx, hx, hy, fontSize * 0.9, "#D47F8E");
+        drawHeart(ctx, hx + fontSize * 1.3, hy + fontSize * 0.4, fontSize * 0.6, "#D47F8E");
+      }
+    } else {
+      let cursorY = rect.y + fontSize * 0.15;
+      for (const line of rect.lines) {
+        let x = rect.x;
+        for (const ch of [...line]) {
+          drawChar(ch, x, cursorY);
+          x += measure(ch) + spacing;
+        }
+        cursorY += fontSize * 1.35;
+      }
+      ctx.shadowBlur = 0;
+      if (item.mood === "whisper" && style !== "blend-subtitle") {
+        const hx = Math.min(width - fontSize * 3, rect.x + rect.width + spacing * 0.6);
+        const hy = Math.max(4, Math.min(height - fontSize * 2, rect.y + rect.height - fontSize * 0.2));
+        drawHeart(ctx, hx, hy, fontSize * 0.9, "#D47F8E");
+        drawHeart(ctx, hx + fontSize * 1.3, hy + fontSize * 0.4, fontSize * 0.6, "#D47F8E");
+      }
+    }
+  });
+}
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("图片加载失败"));
+    img.src = src;
+  });
+}
+async function loadDrawableImage(src) {
+  if (/^(blob|data):/i.test(src)) {
+    return { image: await loadImage(src), cleanup: () => {
+    } };
+  }
+  const response = await fetch(src, { mode: "cors" });
+  if (!response.ok) throw new Error(`fetch 失败: ${response.status}`);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    return { image: await loadImage(url), cleanup: () => URL.revokeObjectURL(url) };
+  } catch (e) {
+    URL.revokeObjectURL(url);
+    throw e;
+  }
+}
+async function compositeDialogue(imageUrl, items, opts = {}) {
+  try {
+    if (!items.length) return null;
+    const { image, cleanup } = await loadDrawableImage(imageUrl);
+    try {
+      const canvas = drawBubbles(image, items, opts);
+      if (!canvas) return null;
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) return null;
+      const url = URL.createObjectURL(blob);
+      return { url, filename: "dialogue.png", revoke: () => URL.revokeObjectURL(url) };
+    } finally {
+      cleanup();
+    }
+  } catch {
+    return null;
+  }
+}
+const COMPOSITE_FOLDER = "ST创作_带字";
+async function blobUrlToBase64(url) {
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result ?? "");
+        const comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.slice(comma + 1) : null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+async function uploadComposite(base64, filename) {
+  const ctx = getContext();
+  const headers = typeof ctx.getRequestHeaders === "function" ? ctx.getRequestHeaders() : {};
+  try {
+    const response = await fetch("/api/images/upload", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        image: base64,
+        format: "png",
+        ch_name: COMPOSITE_FOLDER,
+        filename
+      })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof data.path === "string" && data.path ? data.path : null;
+  } catch {
+    return null;
+  }
+}
+async function bakeDialogueIntoImage(input) {
+  const items = input.dialogue.filter((item) => {
+    var _a;
+    return (_a = item.text) == null ? void 0 : _a.trim();
+  });
+  if (!items.length || !input.imagePath) return null;
+  const composite = await compositeDialogue(input.imagePath, items, {
+    ...input.style ? { style: input.style } : {},
+    ...input.font ? { font: input.font } : {},
+    ...input.slots && input.slots.length ? { panels: input.slots } : {},
+    ...input.noGo && input.noGo.length ? { avoid: input.noGo } : {},
+    ...input.panelCast && input.panelCast.length ? { panelCast: input.panelCast } : {}
+  });
+  if (!composite) return null;
+  try {
+    const base64 = await blobUrlToBase64(composite.url);
+    if (!base64) return null;
+    const stamp = Date.now().toString(36);
+    const filename = `sti_bubble_${stamp}_${Math.random().toString(36).slice(2, 6)}.png`;
+    return await uploadComposite(base64, filename);
+  } finally {
+    composite.revoke();
+  }
 }
 let switchPlan = (planId, options) => switchBaiBaiPlan(planId, options);
 let savedPlanId = null;
@@ -4390,7 +5327,7 @@ const PANEL_BUBBLE_AREAS = [
   "bc",
   "br"
 ];
-const PANEL_DIALOGUE_MAX$1 = 4;
+const PANEL_DIALOGUE_MAX = 4;
 const PANEL_DIALOGUE_TEXT_MAX = 60;
 const PANEL_DIALOGUE_SPEAKER_MAX = 16;
 const PANEL_TAGS_BY_LAYOUT = {
@@ -4418,6 +5355,7 @@ function compositionTags(layout) {
 function resolvePanelsPerPage(layout, value) {
   const v = Number(value);
   if (Number.isFinite(v) && v >= 2 && v <= 4) return Math.round(v);
+  if (normalizeLayoutChoice(layout) === "auto") return 0;
   return normalizePanelLayout(layout) === "regular" ? 2 : 0;
 }
 function panelTagsForCount(layout, count) {
@@ -4429,6 +5367,9 @@ function panelTagsForCount(layout, count) {
 }
 function normalizePanelLayout(v) {
   return v === "irregular" || v === "inset" || v === "unframed" ? v : "regular";
+}
+function normalizeLayoutChoice(v) {
+  return v === "regular" || v === "irregular" || v === "inset" || v === "unframed" ? v : "auto";
 }
 function normalizePanelPageType(v) {
   return v === "a" || v === "b" || v === "c" || v === "d" ? v : "auto";
@@ -4443,7 +5384,7 @@ function normalizeDialogueItems(value) {
   if (!Array.isArray(value)) return [];
   const items = [];
   for (const raw of value) {
-    if (items.length >= PANEL_DIALOGUE_MAX$1) break;
+    if (items.length >= PANEL_DIALOGUE_MAX) break;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const item = raw;
     const text = typeof item.text === "string" ? item.text.trim().replace(/[\r\n]+/g, " ").slice(0, PANEL_DIALOGUE_TEXT_MAX) : "";
@@ -4483,8 +5424,8 @@ const PANEL_NL_SENTENCE = {
     landscape: "The canvas is divided into panels of unequal size — one large main panel with narrower panels beside it — separated by thin black gutters."
   },
   inset: {
-    portrait: "A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one in the bottom right corner — show close-up details of the same moment.",
-    landscape: "A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one along the right edge — show close-up details of the same moment."
+    portrait: "A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one in the bottom right corner — show close-up details of the same moment, each small panel floating on the white page with a wide clean white gap between it and the main illustration, never touching the characters.",
+    landscape: "A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one along the right edge — show close-up details of the same moment, each small panel floating on the white page with a wide clean white gap between it and the main illustration, never touching the characters."
   },
   unframed: {
     portrait: UNFRAMED_NL_PORTRAIT,
@@ -4609,9 +5550,9 @@ function insetRule(nlOn) {
     `1. 构图 tag 写这两个，原样照抄：${compositionTags("inset")}。 不要写任何场景 tag（indoors、bed、classroom、window、street 一类全不要）；不要写 split screen、2koma/3koma/4koma、panel layout、comic panel、manga、comic。`,
     "2. 版面：白底为主、以人物为主。绝不允许把画布均分成上下或左右两三块。",
     "3. 画面里只有人物，几乎没有场景：环境最多一两件小道具。tag 与 nl 都只写人物。",
-    "4. 特写小格 1～2 个，带细黑边框浮在白边上：顶部横条（宽约全宽、高约 15~20%）装脸部特写；贴边小格（右侧或右下角、宽约三分之一）装手/接触点。小格来自主画面同一瞬间、同一套外观词。",
+    "4. 特写小格 1～2 个，带细黑边框浮在白边上：顶部横条（宽约全宽、高约 15~20%）装脸部特写；贴边小格（右侧或右下角、宽约三分之一）装手/接触点。**小格与主画之间必须留出宽白边**（至少约页高 5%、页宽 4% 的纯白），小格绝不贴着人物或主画边缘——挤在一起会糊成一坨，读者分不清哪格是哪格。小格来自主画面同一瞬间、同一套外观词。",
     "5. 景别 tag 仍然只写一个（cowboy shot 或 full body）；小格特写写在 nl 里。",
-    "6. 画幅写 portrait：白底竖页，人物居中占主要位置；顶部横条贴上边缘，贴边小格在右下角。",
+    "6. 画幅写 portrait：白底竖页，人物居中占主要位置；顶部横条贴上边缘、与主画之间留白；贴边小格在右下角、与主画之间留白。",
     "7. focus tag 全图最多 1~2 个。",
     PANEL_FORBIDDEN_CLAUSE,
     ninth,
@@ -4641,27 +5582,59 @@ function unframedRule(nlOn, pageType) {
     '额外自检：场景词是否最多两个？nl 是否逐区写了页面百分比？主插画人物是否写大（占面积八成以上）？nl 结尾是否有"只有特写格有边框"的收束句？页面是否太空？'
   ].join("\n");
 }
+function autoRule(nlOn, panels) {
+  const table = [
+    `- "regular"（规整等分）：构图词 ${compositionTags("regular")}。2 格上下等分；3 格是上方一条宽格 + 下方左右两格。适合「同一个动作的上下两拍」「一问一答」「递进（上格动作、下格结果）」，最稳、最容易画对，拿不准就用它。`,
+    `- "irregular"（大小不等拼版）：构图词 ${compositionTags("irregular")}。2～4 格，至少一格面积是另一格两倍以上。适合有主次的场面：一个大格交代全景，一到两个小格给反应或细节。禁止上下各一半这种等分。`,
+    `- "inset"（白底人物页 + 带框特写格）：构图词 ${compositionTags("inset")}。白底、只有人物，几乎没有场景；1～2 个带细黑框的小格浮在白边上。适合对话、独白、心情、身体接触这类「只有人」的瞬间。`,
+    `- "unframed"（白底无框大字插画 + 带框特写格）：构图词 ${compositionTags("unframed")}。主插画无边框、人物占画面八成以上、手臂伸到页外；只有特写格带框。最像日系漫画的跨页感，适合名场面、情绪爆点。`
+  ].join("\n");
+  const ninth = nlOn ? "9. 先按你选的档位写 nl 的第一句版面句（regular/irregular 说清怎么分格、inset/unframed 说清白底主画与特写格的位置），再逐格/逐区写内容。不要用 Panel 1 / Panel 2 编号，不要写对白。" : "9. 本次没有 nl 通道：各格内容只能靠 tag 表达，让人物动作在格与格之间发生变化。";
+  return [
+    "[漫画分镜｜版面自选]",
+    "",
+    "这一张是一页漫画：一页 = 一张图，整页由 NovelAI 一次画成多格版面，不是一格一张图。",
+    "",
+    "1. **版面由你按剧情挑**，并在这一页的 `layout` 字段里写出你选的那一档（只能是下面四个值之一）：",
+    table,
+    "2. 挑法：先问「这一段的重点是动作还是情绪」。有明确动作与场景 → regular 或 irregular；只有人、只有情绪 → inset 或 unframed。**拿不准就用 regular。**",
+    "3. 有台词的一页优先给气泡留地方：选 inset / unframed 这类白底档，或让人物偏下、画面上方留出安静空白。人物头顶顶到页边时，气泡只能盖在脸上。",
+    "3a. 无论哪一档，格与格之间只留细黑 gutter（约页宽 3%）；白底档里特写小格与主画之间必须留出宽白边（至少约页高 5%），小格绝不贴在主画上——挤在一起会糊成一坨。",
+    panels >= 2 ? `4. **每页固定 ${panels} 格**：不管选哪一档，版面都必须真的切出 ${panels} 格，panels 条数与 nl 分区句数也必须是 ${panels}。` : "4. 格数 2～4。**同一页的 layout、panels 条数、nl 里的分区句数必须三者一致**：说 3 格就真的画 3 格，不能拿两格模板套三段内容。",
+    "5. 构图词只照抄你选的那一档那几行，原样保留 1.4:: 这类权重写法；**不要把两档的构图词混着写**（混写必然画出四不像的版面）。",
+    "6. 多页时相邻两页不要用同一档，同一档也别连续画同样的格数，节奏会平。",
+    "7. 景别 tag 整页只写一个；各格远近写在 nl 里。",
+    "8. 同一批人在每一格保持同一套外观词；focus tag 全图最多 1~2 个。",
+    PANEL_FORBIDDEN_CLAUSE,
+    ninth
+  ].join("\n");
+}
 function buildPanelRule(enabled, options) {
   if (!enabled) return "";
-  const layout = normalizePanelLayout(options.layout);
+  const choice = normalizeLayoutChoice(options.layout);
   const nlOn = options.nl !== false;
   const pageType = normalizePanelPageType(options.pageType);
-  const panels = resolvePanelsPerPage(layout, options.panelsPerPage);
   let body;
-  switch (layout) {
-    case "irregular":
-      body = irregularRule(nlOn);
-      break;
-    case "inset":
-      body = insetRule(nlOn);
-      break;
-    case "unframed":
-      body = unframedRule(nlOn, pageType);
-      break;
-    case "regular":
-    default:
-      body = panels >= 3 ? regularMultiRule(nlOn, panels) : regularRule(nlOn);
-      break;
+  if (choice === "auto") {
+    body = autoRule(nlOn, resolvePanelsPerPage("auto", options.panelsPerPage));
+  } else {
+    const layout = normalizePanelLayout(choice);
+    const panels = resolvePanelsPerPage(layout, options.panelsPerPage);
+    switch (layout) {
+      case "irregular":
+        body = irregularRule(nlOn);
+        break;
+      case "inset":
+        body = insetRule(nlOn);
+        break;
+      case "unframed":
+        body = unframedRule(nlOn, pageType);
+        break;
+      case "regular":
+      default:
+        body = panels >= 3 ? regularMultiRule(nlOn, panels) : regularRule(nlOn);
+        break;
+    }
   }
   const parts = [body, PANEL_SELF_CHECK];
   if (options.backend === "nai" && options.charPrompts === true) {
@@ -4684,6 +5657,11 @@ function normalizeCharacters(raw) {
   }
   return out;
 }
+function normalizePageLayout(raw, panelCount, fallback) {
+  if (raw === "regular" || raw === "irregular" || raw === "inset" || raw === "unframed") return raw;
+  if (fallback) return fallback;
+  return panelCount >= 3 ? "irregular" : "regular";
+}
 function normalizePanel(raw, index2) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw;
@@ -4702,7 +5680,7 @@ function normalizePanel(raw, index2) {
     })()
   };
 }
-function normalizePage(raw, pageIndex, warnings) {
+function normalizePage(raw, pageIndex, warnings, fallbackLayout) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     warnings.push(`第 ${pageIndex + 1} 页不是对象，已跳过`);
     return null;
@@ -4725,14 +5703,14 @@ function normalizePage(raw, pageIndex, warnings) {
   return {
     pageIndex: typeof o.pageIndex === "number" && Number.isFinite(o.pageIndex) ? Math.max(0, Math.floor(o.pageIndex)) : pageIndex,
     title: typeof o.title === "string" ? o.title.trim().slice(0, 120) : `第 ${pageIndex + 1} 页`,
-    layout: normalizePanelLayout(o.layout),
+    layout: normalizePageLayout(o.layout, panels.length, fallbackLayout),
     ...pageTags ? { tags: pageTags } : {},
     ...pageNl ? { nl: pageNl } : {},
     ...pageDialogue.length ? { dialogue: pageDialogue } : {},
     panels
   };
 }
-function parseComicPagePlan(input) {
+function parseComicPagePlan(input, options = {}) {
   const warnings = [];
   let data = input;
   if (typeof data === "string") {
@@ -4762,7 +5740,7 @@ function parseComicPagePlan(input) {
   }
   const pages = [];
   for (let i = 0; i < Math.min(rawPages.length, 8); i += 1) {
-    const page = normalizePage(rawPages[i], i, warnings);
+    const page = normalizePage(rawPages[i], i, warnings, options.fallbackLayout);
     if (page) pages.push(page);
   }
   return { pages, warnings };
@@ -4925,14 +5903,15 @@ function buildComicSystemPrompt(options, overrides) {
     charPrompts: options.charPrompts,
     nl: options.nl,
     lockedSize: options.lockedSize,
-    layout: normalizePanelLayout(options.panelLayout),
+    layout: normalizeLayoutChoice(options.panelLayout),
     pageType: normalizePanelPageType(options.pageType),
     dialogue: options.dialogue,
     dialogueMode: options.dialogueMode,
     dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy)
   };
   const rule = buildPanelRule(options.panelMode, ruleOptions);
-  const fixedPanels = resolvePanelsPerPage(normalizePanelLayout(options.panelLayout), options.panelsPerPage);
+  const choice = normalizeLayoutChoice(options.panelLayout);
+  const fixedPanels = choice === "auto" ? 0 : resolvePanelsPerPage(normalizePanelLayout(choice), options.panelsPerPage);
   return renderPromptDoc("comic", "single", {
     // 方案没有自然语言通道时，整页 nl 分区描述就无从谈起
     nl: options.nl !== false,
@@ -5018,7 +5997,7 @@ async function generateComicPlan(input) {
   );
   try {
     const raw = await caller(system, user);
-    const parsed = parseComicPagePlan(raw);
+    const parsed = parseComicPagePlan(raw, input.options.panelLayout === "auto" || !input.options.panelLayout ? {} : { fallbackLayout: normalizePanelLayout(input.options.panelLayout) });
     if (parsed.pages.length === 0) {
       return {
         ok: false,
@@ -5491,6 +6470,137 @@ function decideSeed(backend, override, fixedSeed = 0) {
   if (backend === "nai") return fixedSeed > 0 ? fixedSeed : rerollSeed("nai");
   return rerollSeed(backend);
 }
+const THEATER_KEY = "sti_theater";
+function emptyStore() {
+  return { version: 1, buckets: { status: [], bonus: [], manga: [] } };
+}
+function readStore$1(raw) {
+  const store = emptyStore();
+  if (!raw || typeof raw !== "object") return store;
+  const o = raw;
+  const buckets = o.buckets ?? {};
+  for (const b of ["status", "bonus", "manga"]) {
+    if (Array.isArray(buckets[b])) {
+      store.buckets[b] = buckets[b].filter(
+        (x) => !!x && typeof x === "object"
+      );
+    }
+  }
+  return store;
+}
+function writeStore(floor, store) {
+  const msg = getMessage(floor);
+  if (!msg) return false;
+  if (!msg.extra) msg.extra = {};
+  msg.extra[THEATER_KEY] = store;
+  return true;
+}
+function getStories(floor, bucket) {
+  const msg = getMessage(floor);
+  if (!msg) return [];
+  const extra = msg.extra;
+  return readStore$1(extra == null ? void 0 : extra[THEATER_KEY]).buckets[bucket];
+}
+function hasStory(floor, bucket) {
+  return getStories(floor, bucket).length > 0;
+}
+function newSetId() {
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+function getSets(floor, bucket) {
+  const list = getStories(floor, bucket);
+  const order = [];
+  const map = /* @__PURE__ */ new Map();
+  for (const story of list) {
+    const key = story.setId && story.setId.trim() ? story.setId : `single-${story.storyId}`;
+    if (!map.has(key)) {
+      map.set(key, []);
+      order.push(key);
+    }
+    map.get(key).push(story);
+  }
+  const sets = [];
+  for (const key of order) {
+    const panels = (map.get(key) ?? []).slice().sort((a, b) => a.index - b.index);
+    const first = panels[0];
+    if (!first) continue;
+    const cast = dedupe(panels.flatMap((p) => p.cast ?? []));
+    const mood = panels.map((p) => p.mood).find((m) => !!m) ?? "";
+    sets.push({
+      setId: key,
+      kind: bucket,
+      title: first.setTitle ?? first.title ?? "",
+      cast,
+      mood,
+      panels,
+      sourceText: first.sourceText ?? "",
+      characterName: first.characterName ?? "",
+      createdAt: first.storyAt ?? 0
+    });
+  }
+  return sets;
+}
+function saveSet(floor, bucket, stories) {
+  if (stories.length === 0) return false;
+  const msg = getMessage(floor);
+  if (!msg) return false;
+  if (!msg.extra) msg.extra = {};
+  const extra = msg.extra;
+  const store = readStore$1(extra[THEATER_KEY]);
+  for (const story of stories) {
+    store.buckets[bucket].push({
+      ...story,
+      ...story.lines && story.lines.length ? { lines: story.lines } : { lines: void 0 }
+    });
+  }
+  return writeStore(floor, store);
+}
+function updatePanel(floor, bucket, setId, index2, patch) {
+  const msg = getMessage(floor);
+  if (!(msg == null ? void 0 : msg.extra)) return false;
+  const extra = msg.extra;
+  const store = readStore$1(extra[THEATER_KEY]);
+  const list = store.buckets[bucket];
+  const at = list.findIndex((s) => s.setId === setId && s.index === index2);
+  if (at < 0) return false;
+  list[at] = { ...list[at], ...patch };
+  return writeStore(floor, store);
+}
+function replaceSet(floor, bucket, setId, stories) {
+  const msg = getMessage(floor);
+  if (!(msg == null ? void 0 : msg.extra)) return false;
+  const extra = msg.extra;
+  const store = readStore$1(extra[THEATER_KEY]);
+  const kept = store.buckets[bucket].filter((s) => s.setId !== setId);
+  const firstAt = store.buckets[bucket].findIndex((s) => s.setId === setId);
+  const merged = kept.slice();
+  const insertAt = firstAt < 0 ? merged.length : Math.min(firstAt, merged.length);
+  merged.splice(insertAt, 0, ...stories.map((s) => ({
+    ...s,
+    ...s.lines && s.lines.length ? { lines: s.lines } : { lines: void 0 }
+  })));
+  store.buckets[bucket] = merged;
+  return writeStore(floor, store);
+}
+function removeSet(floor, bucket, setId) {
+  const msg = getMessage(floor);
+  if (!(msg == null ? void 0 : msg.extra)) return false;
+  const extra = msg.extra;
+  const store = readStore$1(extra[THEATER_KEY]);
+  const before = store.buckets[bucket].length;
+  store.buckets[bucket] = store.buckets[bucket].filter((s) => s.setId !== setId);
+  if (store.buckets[bucket].length === before) return false;
+  return writeStore(floor, store);
+}
+function dedupe(list) {
+  const out = [];
+  for (const item of list) {
+    const v = String(item ?? "").trim();
+    if (!v || out.includes(v)) continue;
+    out.push(v);
+  }
+  return out;
+}
 const FIELD_LABELS = [
   ["fandom", "同人身份"],
   ["sex", "性别"],
@@ -5889,1036 +6999,6 @@ ${roles}`
     return null;
   }
 }
-const ALL_BUBBLE_STYLES = [
-  "classic",
-  "bubble-vertical",
-  "bubble-glow",
-  "bubble-ink",
-  "bubble-subtitle",
-  "blend",
-  "blend-vertical",
-  "blend-glow",
-  "blend-ink",
-  "blend-subtitle"
-];
-function normalizeBubbleStyle(v) {
-  return ALL_BUBBLE_STYLES.includes(v) ? v : "classic";
-}
-function bubbleShellOf(s) {
-  return String(s).startsWith("blend") ? "blend" : "bubble";
-}
-function isBlendStyle(s) {
-  return bubbleShellOf(s) === "blend";
-}
-function bubbleVariantOf(s) {
-  const n = normalizeBubbleStyle(s);
-  if (n === "classic" || n === "blend") return "normal";
-  return n.slice(n.indexOf("-") + 1);
-}
-function normalizeBubbleFont(v) {
-  return v === "serif" || v === "kai" || v === "round" ? v : "sans";
-}
-const BUBBLE_FONT_STACKS = {
-  sans: "sans-serif",
-  serif: '"Noto Serif SC", "SimSun", "Songti SC", "MS Song", serif',
-  kai: '"KaiTi", "STKaiti", "Kaiti SC", "DFKai-SB", serif',
-  round: '"Yuanti SC", "HYQiHei", "Microsoft YaHei", "PingFang SC", sans-serif'
-};
-const GAP = 0.024;
-function panelSlots(layout, count, pageType = "auto") {
-  const n = Math.min(4, Math.max(0, Math.round(Number(count) || 0)));
-  if (layout === "regular") {
-    if (n <= 1) return [{ x: 0, y: 0, width: 1, height: 1 }];
-    if (n === 2) {
-      const h2 = (1 - GAP) / 2;
-      return [
-        { x: 0, y: 0, width: 1, height: h2 },
-        { x: 0, y: h2 + GAP, width: 1, height: h2 }
-      ];
-    }
-    if (n === 3) {
-      const top = 0.378;
-      const botY = top + GAP;
-      const botH = 1 - botY;
-      const w2 = (1 - GAP) / 2;
-      return [
-        { x: 0, y: 0, width: 1, height: top },
-        { x: 0, y: botY, width: w2, height: botH },
-        { x: w2 + GAP, y: botY, width: w2, height: botH }
-      ];
-    }
-    const w = (1 - GAP) / 2;
-    const h = (1 - GAP) / 2;
-    return [
-      { x: 0, y: 0, width: w, height: h },
-      { x: w + GAP, y: 0, width: w, height: h },
-      { x: 0, y: h + GAP, width: w, height: h },
-      { x: w + GAP, y: h + GAP, width: w, height: h }
-    ];
-  }
-  if (layout === "irregular") return [];
-  if (layout === "inset") {
-    return [{ x: 0.02, y: 0.19, width: 0.96, height: 0.78 }];
-  }
-  switch (pageType) {
-    case "c":
-      return [{ x: 0.02, y: 0.02, width: 0.65, height: 0.96 }];
-    case "d":
-      return [{ x: 0.02, y: 0.02, width: 0.96, height: 0.96 }];
-    case "a":
-    case "b":
-    default:
-      return [{ x: 0.02, y: 0.21, width: 0.96, height: 0.77 }];
-  }
-}
-function layoutNoGoZones(layout, pageType = "auto") {
-  if (layout === "inset") {
-    return [
-      { x: 0, y: 0, width: 1, height: 0.19, weight: 3 },
-      { x: 0.6, y: 0.66, width: 0.4, height: 0.34, weight: 3 }
-    ];
-  }
-  if (layout === "unframed") {
-    if (pageType === "d") {
-      return [{ x: 0.66, y: 0.74, width: 0.34, height: 0.26, weight: 3 }];
-    }
-    if (pageType === "c") {
-      return [{ x: 0.66, y: 0, width: 0.34, height: 1, weight: 3 }];
-    }
-    return [{ x: 0.33, y: 0.71, width: 0.65, height: 0.27, weight: 3 }];
-  }
-  return [];
-}
-function slotIndexAt(slots, px, py) {
-  if (!slots.length) return 0;
-  let inside = -1;
-  slots.forEach((s, i) => {
-    if (px >= s.x && px <= s.x + s.width && py >= s.y && py <= s.y + s.height) inside = i;
-  });
-  if (inside >= 0) return inside;
-  let best = 0;
-  let bestDist = Infinity;
-  slots.forEach((s, i) => {
-    const dx = s.x + s.width / 2 - px;
-    const dy = s.y + s.height / 2 - py;
-    const dist = dx * dx + dy * dy;
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = i;
-    }
-  });
-  return best;
-}
-const PANEL_DIALOGUE_MAX = 4;
-const BUBBLE_ANCHORS = {
-  tl: { x: 0.24, y: 0.15 },
-  tc: { x: 0.5, y: 0.13 },
-  tr: { x: 0.76, y: 0.15 },
-  ml: { x: 0.17, y: 0.44 },
-  mr: { x: 0.83, y: 0.44 },
-  bl: { x: 0.24, y: 0.79 },
-  bc: { x: 0.5, y: 0.84 },
-  br: { x: 0.76, y: 0.79 }
-};
-const SLOT_X = [0.16, 0.5, 0.84];
-const SLOT_Y = [0.1, 0.3, 0.62, 0.84];
-const FACE_AVOID_ZONES = [
-  { x: 0.33, y: 0.14, width: 0.34, height: 0.4, weight: 4 },
-  { x: 0.28, y: 0.42, width: 0.44, height: 0.38, weight: 1.2 }
-];
-function wrapText(text, maxWidth, measure) {
-  const clean = text.replace(/\s+/g, " ").trim();
-  if (!clean) return [];
-  if (measure(clean) <= maxWidth) return [clean];
-  const lines = [];
-  let current = "";
-  for (const char of clean) {
-    const candidate = current + char;
-    if (current && measure(candidate) > maxWidth) {
-      lines.push(current);
-      current = char === " " ? "" : char;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current.trim()) lines.push(current.trim());
-  return lines;
-}
-function bubbleFontSize(page) {
-  return Math.max(15, Math.min(44, Math.round(Math.min(page.width, page.height) * 0.034)));
-}
-function blendFontSize(page) {
-  return Math.max(13, Math.min(36, Math.round(Math.min(page.width, page.height) * 0.028)));
-}
-function blendSpacing(fontSize) {
-  return fontSize * 0.26;
-}
-function layoutBlendH(text, maxWidth, fontSize, measure) {
-  const spacing = blendSpacing(fontSize);
-  const widthOf = (s) => [...s].reduce((sum, ch) => sum + measure(ch), 0) + spacing * Math.max(0, [...s].length - 1);
-  const lines = wrapText(text, maxWidth, widthOf);
-  return {
-    lines,
-    width: Math.ceil(Math.max(0, ...lines.map(widthOf))),
-    height: Math.ceil(lines.length * fontSize * 1.35)
-  };
-}
-function layoutBlendV(text, maxHeight, fontSize) {
-  var _a;
-  const spacing = blendSpacing(fontSize);
-  const step = fontSize * 1.15;
-  const perCol = Math.max(4, Math.floor(maxHeight / step));
-  const chars = [...text];
-  const cols = [];
-  for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
-  return {
-    cols,
-    width: Math.ceil(cols.length * fontSize + (cols.length - 1) * spacing),
-    height: Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step)
-  };
-}
-function deriveTextColor(avg) {
-  const lin = (v) => {
-    const s = v / 255;
-    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-  };
-  const lum = (c) => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
-  const L = lum(avg);
-  const text = L > 0.42 ? { r: Math.round(avg.r * 0.3), g: Math.round(avg.g * 0.28), b: Math.round(avg.b * 0.28) } : { r: Math.round(avg.r + (255 - avg.r) * 0.82), g: Math.round(avg.g + (255 - avg.g) * 0.82), b: Math.round(avg.b + (255 - avg.b) * 0.82) };
-  const contrast = (Math.max(lum(text), L) + 0.05) / (Math.min(lum(text), L) + 0.05);
-  const halo = L > 0.35 && L < 0.55 || contrast < 2.2 ? L > 0.42 ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.5)" : null;
-  return { color: `rgb(${text.r},${text.g},${text.b})`, halo };
-}
-function blendInkFor(style, avg) {
-  if (style === "blend-glow") return { color: "#fffaf2", halo: "rgba(0,0,0,0.38)", glow: "rgba(255,246,228,0.85)", band: null };
-  if (style === "blend-ink") return { color: "#2a2320", halo: "rgba(255,255,255,0.92)", glow: null, band: null };
-  if (style === "blend-subtitle") return { color: "#f7f4ef", halo: "rgba(0,0,0,0.45)", glow: null, band: "rgba(18,16,15,0.55)" };
-  const { color, halo } = deriveTextColor(avg);
-  return { color, halo, glow: null, band: null };
-}
-function boxInkFor(style) {
-  const variant = bubbleVariantOf(style);
-  if (variant === "glow") return { color: "#fffaf2", glow: "rgba(255,244,214,0.9)" };
-  if (variant === "ink") return { color: "#2a2320", glow: null };
-  return { color: "#111111", glow: null };
-}
-function overlapArea(a, b) {
-  const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
-  const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
-  return w > 0 && h > 0 ? w * h : 0;
-}
-function atCenter(rect, cx, cy, page, margin) {
-  return {
-    x: Math.min(Math.max(margin, cx - rect.width / 2), Math.max(margin, page.width - rect.width - margin)),
-    y: Math.min(Math.max(margin, cy - rect.height / 2), Math.max(margin, page.height - rect.height - margin))
-  };
-}
-function candidatesFor(rect, item, page, margin) {
-  const out = [];
-  for (const ay of SLOT_Y) {
-    for (const ax of SLOT_X) out.push(atCenter(rect, ax * page.width, ay * page.height, page, margin));
-  }
-  if (item.area && BUBBLE_ANCHORS[item.area]) {
-    const a = BUBBLE_ANCHORS[item.area];
-    out.push(atCenter(rect, a.x * page.width, a.y * page.height, page, margin));
-  }
-  return out;
-}
-const THUMB = 1;
-const W_PLACED = 240;
-const W_FACE = 130;
-const W_CROSS = 14;
-const W_EDGE = 26;
-function scoreAt(rect, point, item, page, placed, zones) {
-  const probe2 = { ...rect, x: point.x, y: point.y };
-  const area = Math.max(THUMB, rect.width * rect.height);
-  let score = 0;
-  for (const zone of zones) {
-    const box = {
-      x: zone.x * page.width,
-      y: zone.y * page.height,
-      width: zone.width * page.width,
-      height: zone.height * page.height
-    };
-    const ratio = overlapArea(probe2, box) / area;
-    if (ratio <= 0) continue;
-    score += ratio * W_FACE * (zone.weight ?? 1);
-  }
-  for (const other of placed) {
-    const ratio = overlapArea(probe2, other) / area;
-    if (ratio > 0) score += ratio * W_PLACED;
-  }
-  const mid = page.width * 0.5;
-  if (probe2.x < mid && probe2.x + probe2.width > mid) score += W_CROSS;
-  const edge = Math.min(
-    probe2.x,
-    probe2.y,
-    page.width - probe2.x - probe2.width,
-    page.height - probe2.y - probe2.height
-  );
-  score += Math.max(0, edge) / Math.max(1, page.width) * W_EDGE;
-  if (item.area && BUBBLE_ANCHORS[item.area]) {
-    const a = BUBBLE_ANCHORS[item.area];
-    const ax = a.x * page.width;
-    const ay = a.y * page.height;
-    const dist = Math.hypot(probe2.x + probe2.width / 2 - ax, probe2.y + probe2.height / 2 - ay);
-    score += dist / Math.max(1, page.width) * 6;
-  }
-  return score;
-}
-function bestPoint(rect, item, page, margin, placed, zones) {
-  let best = null;
-  for (const point of candidatesFor(rect, item, page, margin)) {
-    const score = scoreAt(rect, point, item, page, placed, zones);
-    if (!best || score < best.score) best = { point, score };
-  }
-  return best ?? { point: { x: margin, y: margin }, score: 0 };
-}
-function faceCoverRatio(rect, page, zones = FACE_AVOID_ZONES) {
-  const face = zones[0];
-  if (!face) return 0;
-  const box = {
-    x: face.x * page.width,
-    y: face.y * page.height,
-    width: face.width * page.width,
-    height: face.height * page.height
-  };
-  const area = Math.max(1, rect.width * rect.height);
-  return overlapArea(rect, box) / area;
-}
-function placeRect(rect, item, index2, page, margin, zones, placed, withTail) {
-  if (typeof item.x === "number" && typeof item.y === "number") {
-    rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
-    rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
-    placed.push(rect);
-    return;
-  }
-  const { point } = bestPoint(rect, item, page, margin, placed, zones);
-  rect.x = point.x;
-  rect.y = point.y;
-  placed.push(rect);
-}
-function pageBox(zone, page) {
-  return {
-    x: zone.x * page.width,
-    y: zone.y * page.height,
-    width: zone.width * page.width,
-    height: zone.height * page.height
-  };
-}
-function innerOf(slot, page, pad) {
-  return {
-    x: slot.x * page.width + pad,
-    y: slot.y * page.height + pad,
-    width: Math.max(24, slot.width * page.width - pad * 2),
-    height: Math.max(24, slot.height * page.height - pad * 2)
-  };
-}
-function faceZoneInSlot(slot, page) {
-  return {
-    x: (slot.x + slot.width * 0.3) * page.width,
-    y: (slot.y + slot.height * 0.14) * page.height,
-    width: slot.width * 0.4 * page.width,
-    height: slot.height * 0.32 * page.height
-  };
-}
-function outsideRatio(rect, inner) {
-  const area = Math.max(1, rect.width * rect.height);
-  const inside = overlapArea(rect, inner);
-  return Math.max(0, area - inside) / area;
-}
-function candidatesInSlot(rect, inner, placed) {
-  const freeW = Math.max(0, inner.width - rect.width);
-  const freeH = Math.max(0, inner.height - rect.height);
-  const out = [];
-  for (const fy of [0, 0.18, 0.42, 0.68, 0.94]) {
-    for (const fx of [0, 0.5, 1]) {
-      out.push({ x: inner.x + fx * freeW, y: inner.y + fy * freeH });
-    }
-  }
-  for (const p of placed) {
-    const gap = Math.max(4, rect.height * 0.14);
-    const below = p.y + p.height + gap;
-    const above = p.y - rect.height - gap;
-    for (const x of [p.x, inner.x, inner.x + freeW]) {
-      if (below <= inner.y + freeH) out.push({ x, y: below });
-      if (above >= inner.y) out.push({ x, y: above });
-    }
-  }
-  return out;
-}
-function scoreInSlot(rect, point, inner, slot, item, page, placed, noGo) {
-  const probe2 = { ...rect, x: point.x, y: point.y };
-  const area = Math.max(1, rect.width * rect.height);
-  let score = 0;
-  for (const other of placed) {
-    score += overlapArea(probe2, other) / area * 400;
-    if (probe2.y + probe2.height <= other.y + 1) score += 34;
-  }
-  score += overlapArea(probe2, faceZoneInSlot(slot, page)) / area * 95;
-  for (const zone of noGo) {
-    score += overlapArea(probe2, pageBox(zone, page)) / area * 120 * (zone.weight ?? 1);
-  }
-  score += (probe2.y - inner.y) / Math.max(1, inner.height) * 7;
-  score += outsideRatio(probe2, inner) * 300;
-  if (item.area) {
-    const left = item.area.endsWith("l");
-    const right = item.area.endsWith("r");
-    const centerX = probe2.x + probe2.width / 2;
-    const slotMid = (slot.x + slot.width / 2) * page.width;
-    if (left && centerX > slotMid) score += 5;
-    if (right && centerX < slotMid) score += 5;
-  }
-  return score;
-}
-function nameKey(v) {
-  return String(v ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～\-—_]/g, "").toLowerCase();
-}
-function slotBySpeaker(item, casts) {
-  const speaker = nameKey(item.speaker ?? "");
-  if (!speaker || !(casts == null ? void 0 : casts.length)) return -1;
-  const hits = [];
-  casts.forEach((names, i) => {
-    if ((names ?? []).some((name) => {
-      const key = nameKey(name);
-      return key.length > 0 && (key === speaker || key.includes(speaker) || speaker.includes(key));
-    })) hits.push(i);
-  });
-  return hits.length === 1 ? hits[0] : -1;
-}
-function assignDialogueToSlots(items, slots, casts) {
-  const n = slots.length;
-  if (!n) return items.map(() => 0);
-  const zeroBased = items.some((item) => Number(item.panel) === 0);
-  const explicit = (item) => {
-    const raw = Number(item.panel);
-    if (!Number.isFinite(raw)) return -1;
-    const p = Math.round(zeroBased ? raw + 1 : raw);
-    return p >= 1 && p <= n ? p - 1 : -1;
-  };
-  const hasHint = items.some((item) => explicit(item) >= 0 || !!item.area || slotBySpeaker(item, casts) >= 0);
-  if (!hasHint) {
-    return items.map((_, i) => Math.min(n - 1, Math.floor(i * n / Math.max(1, items.length))));
-  }
-  let prev = 0;
-  return items.map((item) => {
-    const p = explicit(item);
-    if (p >= 0) {
-      prev = p;
-      return p;
-    }
-    const bySpeaker = slotBySpeaker(item, casts);
-    if (bySpeaker >= 0) {
-      prev = bySpeaker;
-      return bySpeaker;
-    }
-    if (item.area && BUBBLE_ANCHORS[item.area]) {
-      const a = BUBBLE_ANCHORS[item.area];
-      prev = slotIndexAt(slots, a.x, a.y);
-      return prev;
-    }
-    return prev;
-  });
-}
-function setTailInSlot(rect, slot, page) {
-  const midY = (slot.y + slot.height / 2) * page.height;
-  const midX = (slot.x + slot.width / 2) * page.width;
-  rect.tail = rect.y + rect.height / 2 < midY ? "down" : "up";
-  rect.tailX = rect.x + rect.width / 2 < midX ? rect.x + rect.width * 0.74 : rect.x + rect.width * 0.26;
-}
-function planBubbles(items, page, measure, opts = {}) {
-  if (!page.width || !page.height) return [];
-  const style = normalizeBubbleStyle(opts.style);
-  const slots = opts.panels && opts.panels.length ? opts.panels : [];
-  const zones = opts.avoidFace === false ? [] : opts.avoid ?? (slots.length ? [] : FACE_AVOID_ZONES);
-  if (isBlendStyle(style)) {
-    return planBlend(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
-  }
-  return planBubbleBox(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
-}
-const MAX_BUBBLE_RATIO = 0.34;
-function measureBox(item, page, measure, fontSize, variant, maxWidth, maxHeight) {
-  var _a;
-  const padX = fontSize * 0.7;
-  const padY = fontSize * 0.55;
-  if (variant === "vertical") {
-    const step = fontSize * 1.15;
-    const perCol = Math.max(3, Math.floor((maxHeight ?? page.height * 0.5) / step));
-    const chars = [...item.text];
-    const cols = [];
-    for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
-    return {
-      lines: cols,
-      width: Math.ceil(cols.length * fontSize + (cols.length - 1) * fontSize * 0.26 + padX * 2),
-      height: Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step + padY * 2),
-      vertical: true
-    };
-  }
-  const wrapWidth = Math.max(fontSize * 2, (maxWidth ?? page.width * MAX_BUBBLE_RATIO) - padX * 2);
-  const lines = wrapText(item.text, wrapWidth, measure);
-  if (!lines.length) return null;
-  return {
-    lines,
-    width: Math.ceil(Math.max(...lines.map(measure)) + padX * 2),
-    height: Math.ceil(lines.length * fontSize * 1.4 + padY * 2),
-    vertical: false
-  };
-}
-const PANEL_TEXT_RATIO = 0.88;
-function planBubbleBoxPanel(items, page, measure, variant, slots, noGo, paddingRatio, casts) {
-  const baseFont = bubbleFontSize(page);
-  const pad = Math.max(3, Math.round(page.width * (paddingRatio ?? 0.012)));
-  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((item) => item.text.trim());
-  const groups = assignDialogueToSlots(capped, slots, casts);
-  const out = capped.map(() => null);
-  const placedAll = [];
-  slots.forEach((slot, si) => {
-    const inner = innerOf(slot, page, pad);
-    const placedHere = [];
-    const fontCap = Math.max(12, Math.round(Math.min(inner.width, inner.height) * 0.13));
-    const startFont = Math.min(baseFont, fontCap);
-    capped.forEach((item, idx) => {
-      if (groups[idx] !== si) return;
-      let best = null;
-      for (const scale of [1, 0.88, 0.76, 0.64]) {
-        const fontSize = Math.max(11, Math.round(startFont * scale));
-        const metrics = measureBox(
-          item,
-          page,
-          measure,
-          fontSize,
-          variant,
-          inner.width * PANEL_TEXT_RATIO,
-          inner.height * 0.8
-        );
-        if (!metrics) continue;
-        if (metrics.width > inner.width || metrics.height > inner.height * 0.85) continue;
-        const rect = {
-          x: 0,
-          y: 0,
-          width: metrics.width,
-          height: metrics.height,
-          lines: metrics.lines,
-          ...metrics.vertical ? { vertical: true } : {}
-        };
-        let point = { x: inner.x, y: inner.y };
-        let score = Infinity;
-        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
-          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedHere, noGo);
-          if (s < score) {
-            score = s;
-            point = candidate;
-          }
-        }
-        const total = score + (1 - scale) * 5;
-        if (!best || total < best.score) {
-          best = { rect: { ...rect, x: point.x, y: point.y, fontSize }, score: total };
-        }
-      }
-      if (!best) return;
-      setTailInSlot(best.rect, slot, page);
-      best.rect.itemIndex = idx;
-      placedHere.push(best.rect);
-      placedAll.push(best.rect);
-      out[idx] = best.rect;
-    });
-  });
-  return out.filter((r) => !!r);
-}
-function planBubbleBox(items, page, measure, style, zones, slots = [], panelPadding, panelCasts) {
-  const variant = bubbleVariantOf(style);
-  const baseFont = bubbleFontSize(page);
-  const margin = Math.round(page.width * 0.02);
-  const placed = [];
-  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((item) => item.text.trim());
-  if (slots.length && variant !== "subtitle") {
-    const casts = panelCasts;
-    const pinned = capped.filter((item) => typeof item.x === "number" && typeof item.y === "number");
-    const flowed = capped.filter((item) => !(typeof item.x === "number" && typeof item.y === "number"));
-    const byPanel = planBubbleBoxPanel(flowed, page, measure, variant, slots, zones, panelPadding, casts);
-    const manual = [];
-    for (const item of pinned) {
-      const metrics = measureBox(item, page, measure, baseFont, variant);
-      if (!metrics) continue;
-      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...metrics.vertical ? { vertical: true } : {} };
-      rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
-      rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
-      rect.tail = item.y < 0.5 ? "down" : "up";
-      rect.itemIndex = capped.indexOf(item);
-      manual.push(rect);
-    }
-    const merged = capped.map(() => null);
-    let i = 0;
-    let j = 0;
-    capped.forEach((item, idx) => {
-      const isPinned = typeof item.x === "number" && typeof item.y === "number";
-      merged[idx] = isPinned ? manual[j++] ?? null : byPanel[i++] ?? null;
-    });
-    return merged.filter((r) => !!r);
-  }
-  capped.forEach((item) => {
-    if (typeof item.x === "number" && typeof item.y === "number") {
-      const metrics = measureBox(item, page, measure, baseFont, variant === "subtitle" ? "normal" : variant);
-      if (!metrics) return;
-      const rect = {
-        x: 0,
-        y: 0,
-        width: metrics.width,
-        height: metrics.height,
-        lines: metrics.lines,
-        ...metrics.vertical ? { vertical: true } : {}
-      };
-      rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
-      rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
-      rect.tail = item.y < 0.5 ? "down" : "up";
-      placed.push(rect);
-      return;
-    }
-    if (variant === "subtitle") {
-      const fontSize = baseFont;
-      const metrics = measureBox(item, page, measure, fontSize, "normal");
-      if (!metrics) return;
-      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines };
-      rect.x = Math.min(Math.max(margin, page.width * 0.5 - rect.width / 2), page.width - rect.width - margin);
-      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
-      for (let guard = 0; guard < 8; guard += 1) {
-        const hit = placed.find((o) => overlapArea(rect, o) > 0);
-        if (!hit) break;
-        rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.3);
-      }
-      placed.push(rect);
-      return;
-    }
-    let chosen = null;
-    for (const scale of [1, 0.86, 0.74]) {
-      const fontSize = Math.max(12, Math.round(baseFont * scale));
-      const metrics = measureBox(item, page, measure, fontSize, variant);
-      if (!metrics) continue;
-      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...metrics.vertical ? { vertical: true } : {} };
-      const { point, score } = bestPoint(rect, item, page, margin, placed, zones);
-      rect.x = point.x;
-      rect.y = point.y;
-      rect.fontSize = fontSize;
-      const cover = faceCoverRatio(rect, page, zones);
-      if (!chosen || cover < 0.02 || score < chosen.score) {
-        chosen = { rect, score };
-        if (cover <= 1e-3 && score < W_PLACED) break;
-      }
-    }
-    if (!chosen) return;
-    chosen.rect.tail = chosen.rect.y + chosen.rect.height / 2 < page.height / 2 ? "down" : "up";
-    placed.push(chosen.rect);
-  });
-  return placed;
-}
-function planBlend(items, page, measure, style, zones, slots = [], panelPadding, casts) {
-  const baseFont = blendFontSize(page);
-  const margin = Math.round(page.width * 0.02);
-  const forceVertical = style === "blend-vertical";
-  const subtitle = style === "blend-subtitle";
-  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((item) => item.text.trim());
-  if (slots.length && !subtitle) {
-    const pad = Math.max(3, Math.round(page.width * (panelPadding ?? 0.012)));
-    const groups = assignDialogueToSlots(capped, slots, casts);
-    const out = capped.map(() => null);
-    const placedAll = [];
-    slots.forEach((slot, si) => {
-      const inner = innerOf(slot, page, pad);
-      const placedHere = [];
-      const fontSize = Math.max(11, Math.min(baseFont, Math.round(Math.min(inner.width, inner.height) * 0.09)));
-      capped.forEach((item, idx) => {
-        if (groups[idx] !== si) return;
-        if (typeof item.x === "number" && typeof item.y === "number") return;
-        const vertical = forceVertical || item.dir === "v";
-        let rect;
-        if (vertical) {
-          const { cols, width, height } = layoutBlendV(item.text, inner.height * 0.85, fontSize);
-          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
-        } else {
-          const { lines, width, height } = layoutBlendH(item.text, inner.width * 0.9, fontSize, measure);
-          if (!lines.length) return;
-          rect = { x: 0, y: 0, width, height, lines };
-        }
-        if (rect.width > inner.width || rect.height > inner.height * 0.9) return;
-        let point = { x: inner.x, y: inner.y };
-        let score = Infinity;
-        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
-          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedAll, zones);
-          if (s < score) {
-            score = s;
-            point = candidate;
-          }
-        }
-        rect.x = point.x;
-        rect.y = point.y;
-        rect.fontSize = fontSize;
-        rect.itemIndex = idx;
-        placedHere.push(rect);
-        placedAll.push(rect);
-        out[idx] = rect;
-      });
-    });
-    const pinned = capped.filter((item) => typeof item.x === "number" && typeof item.y === "number");
-    if (pinned.length) {
-      const manual = [];
-      for (const item of pinned) {
-        const vertical = forceVertical || item.dir === "v";
-        let rect;
-        if (vertical) {
-          const { cols, width, height } = layoutBlendV(item.text, page.height * 0.42, baseFont);
-          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
-        } else {
-          const { lines, width, height } = layoutBlendH(item.text, page.width * 0.42, baseFont, measure);
-          if (!lines.length) continue;
-          rect = { x: 0, y: 0, width, height, lines };
-        }
-        rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
-        rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
-        manual.push(rect);
-      }
-      let j = 0;
-      capped.forEach((item, idx) => {
-        if (typeof item.x === "number" && typeof item.y === "number") out[idx] = manual[j++] ?? null;
-      });
-    }
-    return out.filter((r) => !!r);
-  }
-  const maxW = page.width * (subtitle ? 0.86 : 0.42);
-  const maxH = page.height * 0.42;
-  const placed = [];
-  items.slice(0, PANEL_DIALOGUE_MAX).forEach((item, index2) => {
-    if (!item.text.trim()) return;
-    const vertical = forceVertical || !subtitle && item.dir === "v";
-    let rect;
-    if (vertical) {
-      const { cols, width, height } = layoutBlendV(item.text, maxH, baseFont);
-      rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
-    } else {
-      const { lines, width, height } = layoutBlendH(item.text, maxW, baseFont, measure);
-      if (!lines.length) return;
-      rect = { x: 0, y: 0, width, height, lines };
-    }
-    if (subtitle) {
-      rect.x = Math.min(Math.max(margin, page.width * 0.5 - rect.width / 2), page.width - rect.width - margin);
-      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
-      for (let guard = 0; guard < 8; guard += 1) {
-        const hit = placed.find((o) => overlapArea(rect, o) > 0);
-        if (!hit) break;
-        rect.y = Math.max(margin, hit.y - rect.height - baseFont * 0.25);
-      }
-      placed.push(rect);
-      return;
-    }
-    placeRect(rect, item, index2, page, margin, zones, placed);
-  });
-  return placed;
-}
-function perColOf(cols) {
-  return Math.max(0, ...cols.map((c) => [...c].length));
-}
-function roundRectPath(ctx, rect, radius) {
-  const { x, y, width, height } = rect;
-  const r = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + width, y, x + width, y + height, r);
-  ctx.arcTo(x + width, y + height, x, y + height, r);
-  ctx.arcTo(x, y + height, x, y, r);
-  ctx.arcTo(x, y, x + width, y, r);
-  ctx.closePath();
-}
-function drawHeart(ctx, x, y, size, color) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(size / 24, size / 24);
-  ctx.beginPath();
-  ctx.moveTo(0, 9);
-  ctx.bezierCurveTo(-11, -3, -5, -12, 0, -5);
-  ctx.bezierCurveTo(5, -12, 11, -3, 0, 9);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.restore();
-}
-function drawBubbles(image, items, opts = {}) {
-  var _a;
-  const width = image.naturalWidth;
-  const height = image.naturalHeight;
-  if (!width || !height) return null;
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-  ctx.drawImage(image, 0, 0, width, height);
-  const style = normalizeBubbleStyle(opts.style);
-  const fontStack = BUBBLE_FONT_STACKS[normalizeBubbleFont(opts.font)];
-  if (isBlendStyle(style)) {
-    drawBlend(ctx, items, fontStack, width, height, style, opts);
-    return canvas;
-  }
-  const fontSize = bubbleFontSize({ width, height });
-  ctx.font = `400 ${fontSize}px ${fontStack}`;
-  const bubbles = planBubbles(items, { width, height }, (s) => ctx.measureText(s).width, opts);
-  const ink = boxInkFor(style);
-  for (const bubble of bubbles) {
-    const fs = bubble.fontSize ?? fontSize;
-    const font = (w) => `${w} ${fs}px ${fontStack}`;
-    const lineWidth = Math.max(2, Math.round(fs * 0.09));
-    const tailSize = fs * 0.5;
-    if (bubble.tail) {
-      const baseY = bubble.tail === "down" ? bubble.y + bubble.height : bubble.y;
-      const tipY = bubble.tail === "down" ? baseY + tailSize : baseY - tailSize;
-      const towardCenter = bubble.x + bubble.width / 2 < width / 2 ? 0.72 : 0.28;
-      const baseX = typeof bubble.tailX === "number" ? bubble.tailX : bubble.x + bubble.width * towardCenter;
-      const inner = lineWidth / 2;
-      ctx.beginPath();
-      ctx.moveTo(baseX - tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
-      ctx.lineTo(baseX, tipY);
-      ctx.lineTo(baseX + tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
-      ctx.fillStyle = "#ffffff";
-      ctx.strokeStyle = "#1a1a1a";
-      ctx.lineWidth = lineWidth;
-      ctx.lineJoin = "round";
-      ctx.stroke();
-      ctx.fill();
-      roundRectPath(ctx, bubble, fs * 0.45);
-      ctx.fillStyle = "#ffffff";
-      ctx.fill();
-      ctx.strokeStyle = "#1a1a1a";
-      ctx.stroke();
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(baseX - tailSize * 0.5, bubble.tail === "down" ? bubble.y + bubble.height - lineWidth : bubble.y, tailSize, lineWidth + 1);
-    } else {
-      roundRectPath(ctx, bubble, fs * 0.35);
-      ctx.fillStyle = "rgba(18,16,15,0.82)";
-      ctx.fill();
-      ctx.strokeStyle = "#e8e4dc";
-      ctx.lineWidth = Math.max(1.5, fs * 0.06);
-      ctx.stroke();
-    }
-    ctx.fillStyle = ink.color;
-    ctx.font = font("400");
-    if (ink.glow) {
-      ctx.shadowColor = ink.glow;
-      ctx.shadowBlur = fs * 0.7;
-    }
-    ctx.textBaseline = "top";
-    if (bubble.vertical) {
-      const step = fs * 1.15;
-      const colSpacing = fs * 0.26;
-      const colX = (ci) => bubble.x + bubble.width - fs * 0.7 - (ci + 1) * fs - ci * colSpacing;
-      const totalH = Math.min(perColOf(bubble.lines), ((_a = bubble.lines[0]) == null ? void 0 : _a.length) ?? 0) * step;
-      bubble.lines.forEach((col, ci) => [...col].forEach((ch, ri) => ctx.fillText(ch, colX(ci), bubble.y + (bubble.height - totalH) / 2 + ri * step)));
-    } else {
-      const textHeight = bubble.lines.length * fs * 1.4;
-      let cursorY = bubble.y + (bubble.height - textHeight) / 2 + fs * 0.08;
-      for (const line of bubble.lines) {
-        ctx.fillText(line, bubble.x + fs * 0.7, cursorY);
-        cursorY += fs * 1.4;
-      }
-    }
-    ctx.shadowBlur = 0;
-  }
-  return canvas;
-}
-function drawBlend(ctx, items, fontStack, width, height, style, opts = {}) {
-  const baseFont = blendFontSize({ width, height });
-  ctx.textBaseline = "top";
-  ctx.font = `400 ${baseFont}px ${fontStack}`;
-  ctx.lineJoin = "round";
-  const measure = (s) => ctx.measureText(s).width;
-  const rects = planBubbles(items, { width, height }, measure, { ...opts, style });
-  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((i) => i.text.trim());
-  const needsSampling = style === "blend" || style === "blend-vertical";
-  rects.forEach((rect, index2) => {
-    const item = capped[typeof rect.itemIndex === "number" ? rect.itemIndex : index2];
-    if (!item) return;
-    const fontSize = rect.fontSize ?? baseFont;
-    const spacing = style === "blend-subtitle" ? fontSize * 0.1 : blendSpacing(fontSize);
-    ctx.font = `400 ${fontSize}px ${fontStack}`;
-    let avg = { r: 246, g: 238, b: 236 };
-    if (needsSampling) {
-      try {
-        const sx = Math.max(0, Math.floor(rect.x - 8));
-        const sy = Math.max(0, Math.floor(rect.y - 8));
-        const sw = Math.min(width - sx, Math.ceil(rect.width + 16));
-        const sh = Math.min(height - sy, Math.ceil(rect.height + 16));
-        if (sw > 0 && sh > 0) {
-          const data = ctx.getImageData(sx, sy, sw, sh).data;
-          let r = 0, g = 0, b = 0, n = 0;
-          for (let i = 0; i < data.length; i += 16) {
-            if (data[i + 3] < 8) continue;
-            r += data[i];
-            g += data[i + 1];
-            b += data[i + 2];
-            n += 1;
-          }
-          if (n > 0) avg = { r: r / n, g: g / n, b: b / n };
-        }
-      } catch {
-      }
-    }
-    const ink = blendInkFor(style, avg);
-    if (ink.band) {
-      const padX = fontSize * 0.5;
-      const padY = fontSize * 0.3;
-      roundRectPath(ctx, { x: rect.x - padX, y: rect.y - padY, width: rect.width + padX * 2, height: rect.height + padY * 2 }, fontSize * 0.28);
-      ctx.fillStyle = ink.band;
-      ctx.fill();
-    }
-    ctx.fillStyle = ink.color;
-    if (ink.halo) {
-      ctx.strokeStyle = ink.halo;
-      ctx.lineWidth = Math.max(1.5, fontSize * 0.08);
-    }
-    if (ink.glow) {
-      ctx.shadowColor = ink.glow;
-      ctx.shadowBlur = fontSize * 0.6;
-    }
-    const drawChar = (ch, x, y) => {
-      if (ink.halo) ctx.strokeText(ch, x, y);
-      ctx.fillText(ch, x, y);
-    };
-    if (rect.vertical) {
-      const step = fontSize * 1.15;
-      rect.lines.forEach((col, ci) => {
-        const colX = rect.x + rect.width - (ci + 1) * fontSize - ci * spacing;
-        [...col].forEach((ch, ri) => drawChar(ch, colX, rect.y + ri * step));
-      });
-      ctx.shadowBlur = 0;
-      if (item.mood === "whisper" && style !== "blend-subtitle") {
-        const hx = Math.max(4, Math.min(width - fontSize * 3, rect.x + rect.width / 2));
-        const hy = Math.min(height - fontSize * 2, rect.y + rect.height + fontSize * 0.4);
-        drawHeart(ctx, hx, hy, fontSize * 0.9, "#D47F8E");
-        drawHeart(ctx, hx + fontSize * 1.3, hy + fontSize * 0.4, fontSize * 0.6, "#D47F8E");
-      }
-    } else {
-      let cursorY = rect.y + fontSize * 0.15;
-      for (const line of rect.lines) {
-        let x = rect.x;
-        for (const ch of [...line]) {
-          drawChar(ch, x, cursorY);
-          x += measure(ch) + spacing;
-        }
-        cursorY += fontSize * 1.35;
-      }
-      ctx.shadowBlur = 0;
-      if (item.mood === "whisper" && style !== "blend-subtitle") {
-        const hx = Math.min(width - fontSize * 3, rect.x + rect.width + spacing * 0.6);
-        const hy = Math.max(4, Math.min(height - fontSize * 2, rect.y + rect.height - fontSize * 0.2));
-        drawHeart(ctx, hx, hy, fontSize * 0.9, "#D47F8E");
-        drawHeart(ctx, hx + fontSize * 1.3, hy + fontSize * 0.4, fontSize * 0.6, "#D47F8E");
-      }
-    }
-  });
-}
-function loadImage(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("图片加载失败"));
-    img.src = src;
-  });
-}
-async function loadDrawableImage(src) {
-  if (/^(blob|data):/i.test(src)) {
-    return { image: await loadImage(src), cleanup: () => {
-    } };
-  }
-  const response = await fetch(src, { mode: "cors" });
-  if (!response.ok) throw new Error(`fetch 失败: ${response.status}`);
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    return { image: await loadImage(url), cleanup: () => URL.revokeObjectURL(url) };
-  } catch (e) {
-    URL.revokeObjectURL(url);
-    throw e;
-  }
-}
-async function compositeDialogue(imageUrl, items, opts = {}) {
-  try {
-    if (!items.length) return null;
-    const { image, cleanup } = await loadDrawableImage(imageUrl);
-    try {
-      const canvas = drawBubbles(image, items, opts);
-      if (!canvas) return null;
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-      if (!blob) return null;
-      const url = URL.createObjectURL(blob);
-      return { url, filename: "dialogue.png", revoke: () => URL.revokeObjectURL(url) };
-    } finally {
-      cleanup();
-    }
-  } catch {
-    return null;
-  }
-}
-const COMPOSITE_FOLDER = "ST创作_带字";
-async function blobUrlToBase64(url) {
-  try {
-    const response = await fetch(url);
-    const blob = await response.blob();
-    return await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = String(reader.result ?? "");
-        const comma = result.indexOf(",");
-        resolve(comma >= 0 ? result.slice(comma + 1) : null);
-      };
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
-  } catch {
-    return null;
-  }
-}
-async function uploadComposite(base64, filename) {
-  const ctx = getContext();
-  const headers = typeof ctx.getRequestHeaders === "function" ? ctx.getRequestHeaders() : {};
-  try {
-    const response = await fetch("/api/images/upload", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        image: base64,
-        format: "png",
-        ch_name: COMPOSITE_FOLDER,
-        filename
-      })
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
-    return typeof data.path === "string" && data.path ? data.path : null;
-  } catch {
-    return null;
-  }
-}
-async function bakeDialogueIntoImage(input) {
-  const items = input.dialogue.filter((item) => {
-    var _a;
-    return (_a = item.text) == null ? void 0 : _a.trim();
-  });
-  if (!items.length || !input.imagePath) return null;
-  const composite = await compositeDialogue(input.imagePath, items, {
-    ...input.style ? { style: input.style } : {},
-    ...input.font ? { font: input.font } : {},
-    ...input.slots && input.slots.length ? { panels: input.slots } : {},
-    ...input.noGo && input.noGo.length ? { avoid: input.noGo } : {},
-    ...input.panelCast && input.panelCast.length ? { panelCast: input.panelCast } : {}
-  });
-  if (!composite) return null;
-  try {
-    const base64 = await blobUrlToBase64(composite.url);
-    if (!base64) return null;
-    const stamp = Date.now().toString(36);
-    const filename = `sti_bubble_${stamp}_${Math.random().toString(36).slice(2, 6)}.png`;
-    return await uploadComposite(base64, filename);
-  } finally {
-    composite.revoke();
-  }
-}
 function kindOfMode(mode) {
   if (mode === "chibi-status") return "status";
   if (mode === "chibi-bonus") return "bonus";
@@ -7126,6 +7206,295 @@ ${user}`
     ...result.error ? { error: result.error } : {},
     ...((_a = result.missingLooks) == null ? void 0 : _a.length) ? { missingLooks: result.missingLooks } : {}
   };
+}
+function randomSeed$1() {
+  return Math.floor(Math.random() * 4294967295);
+}
+function asLayout(v) {
+  return v === "irregular" || v === "inset" || v === "unframed" ? v : "regular";
+}
+async function rerollComicPage(floor, artifactId) {
+  var _a;
+  const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
+  if (!artifact) return { ok: false, message: "找不到这一页。" };
+  if (artifact.mode !== "comic") return { ok: false, message: "这张不是漫画页。" };
+  if (!artifact.prompt.trim()) return { ok: false, message: "这一页没存下当时的出图词，请重新选段生成。" };
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const comic = resolveModeSettings(settings2, "comic");
+  const meta = artifact.metadata ?? {};
+  const characters = Array.isArray(meta.characters) ? meta.characters : [];
+  const layout = asLayout(meta.layout);
+  const panelCount = typeof meta.panelCount === "number" ? meta.panelCount : 0;
+  const pageType = comic.comicPageType ?? "auto";
+  const style = comic.comicBubbleStyle ?? settings2.bubbleStyle;
+  const font = comic.comicBubbleFont ?? settings2.bubbleFont;
+  const showComposite = comic.comicShowComposite !== false;
+  const seed = randomSeed$1();
+  const startedAt = Date.now();
+  acquirePlanGuard();
+  try {
+    await ensureModeOutPlan("comic", settings2);
+    const result = await baiBaiAdapter.generate(
+      {
+        prompt: artifact.prompt,
+        ...artifact.nl ? { nl: artifact.nl } : {},
+        ...characters.length ? { characters } : {},
+        ...typeof meta.characterName === "string" && meta.characterName ? { character: meta.characterName } : {},
+        seed,
+        size: "portrait",
+        save: true
+      },
+      pickProfile(settings2.profiles ?? [], "comic") ?? fallbackProfile("comic")
+    );
+    const rawPath = result.path ?? result.dataUrl;
+    if (!rawPath) {
+      recordImageLog({
+        mode: "comic",
+        floor,
+        source: "api",
+        plan: readOutConfig().activePlanName,
+        prompt: artifact.prompt,
+        size: "portrait",
+        seed,
+        status: "error",
+        error: "出图没有返回图片。",
+        durationMs: Date.now() - startedAt
+      });
+      return { ok: false, message: "出图没有返回图片。" };
+    }
+    let imagePath = rawPath;
+    let bakedPath = "";
+    if (showComposite && ((_a = artifact.dialogue) == null ? void 0 : _a.length)) {
+      const slots = panelSlots(layout, panelCount, pageType);
+      const noGo = layoutNoGoZones(layout, pageType);
+      const baked = await bakeDialogueIntoImage({
+        imagePath: rawPath,
+        dialogue: artifact.dialogue,
+        ...style ? { style } : {},
+        ...font ? { font } : {},
+        ...slots.length ? { slots } : {},
+        ...noGo.length ? { noGo } : {}
+      });
+      if (baked) {
+        bakedPath = baked;
+        imagePath = baked;
+      }
+    }
+    updateArtifact(floor, artifactId, {
+      imagePath,
+      ...bakedPath ? { originalImagePath: rawPath } : {},
+      metadata: {
+        ...meta,
+        rawImagePath: rawPath,
+        ...bakedPath ? { bubbleBakedPath: bakedPath } : {},
+        ...typeof result.seed === "number" ? { seed: result.seed } : { seed }
+      }
+    });
+    recordImageLog({
+      mode: "comic",
+      floor,
+      source: "api",
+      plan: readOutConfig().activePlanName,
+      prompt: artifact.prompt,
+      ...artifact.nl ? { nl: artifact.nl } : {},
+      ...characters.length ? { characters } : {},
+      size: "portrait",
+      ...typeof result.seed === "number" ? { seed: result.seed } : { seed },
+      status: "ok",
+      durationMs: Date.now() - startedAt
+    });
+    await saveChatSafe();
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    recordImageLog({
+      mode: "comic",
+      floor,
+      source: "api",
+      plan: readOutConfig().activePlanName,
+      prompt: artifact.prompt,
+      size: "portrait",
+      seed,
+      status: "error",
+      error: message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: false, message };
+  } finally {
+    await releasePlanGuard(settings2);
+  }
+}
+const INLINE_CLASS = "sti-inline-card";
+const TRAILING_AREA_CLASS = "sti-trailing-area";
+const TRAILING_AREA_ID = "sti-trailing-area-";
+const MOUNTED_ATTR$1 = "data-sti-mounted";
+const MODE_LABELS = {
+  "illustration": "插画",
+  "comic": "漫画分镜",
+  "chibi-status": "QQ人状态",
+  "chibi-bonus": "QQ人彩蛋",
+  "bw-manga": "黑白漫"
+};
+function mountFloor(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  unmountFloor(floor);
+  const artifacts = getArtifacts(floor);
+  const visible = artifacts.filter((a) => {
+    var _a;
+    return ((_a = a.metadata) == null ? void 0 : _a.embeddedInBody) !== true;
+  });
+  const inline = visible.filter((a) => a.mountMode === "inline");
+  const trailing = visible.filter((a) => a.mountMode !== "inline");
+  for (const artifact of inline) mountInline(mes, floor, artifact);
+  if (trailing.length > 0) mountTrailing(mes, floor, trailing);
+}
+function unmountFloor(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  const cards = mes.querySelectorAll(`[${MOUNTED_ATTR$1}="${floor}"]`);
+  for (const card of Array.from(cards)) card.remove();
+}
+function remountAll() {
+  const nodes = document.querySelectorAll(".mes[mesid]");
+  for (const node of Array.from(nodes)) {
+    const floor = parseInt(node.getAttribute("mesid") ?? "", 10);
+    if (Number.isFinite(floor)) mountFloor(floor);
+  }
+}
+function mountInline(mes, floor, artifact) {
+  const mesText = mes.querySelector(".mes_text");
+  if (!mesText) return;
+  const card = buildCard$1(artifact, floor, true);
+  let inserted = false;
+  if (artifact.textAnchor) {
+    const block = locateAnchorBlock(mesText, artifact.textAnchor.selectedText);
+    if (block) {
+      insertAfterBlock(mesText, block, card);
+      inserted = true;
+    }
+  }
+  if (!inserted) mesText.appendChild(card);
+}
+const BLOCK_TAGS = /* @__PURE__ */ new Set(["P", "DIV", "LI", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6", "TR", "PRE"]);
+function pickTextSegment(segments, selectedText) {
+  const text = String(selectedText ?? "").trim();
+  if (!text || !segments.length) return -1;
+  let joined = "";
+  const spans = [];
+  for (const seg of segments) {
+    spans.push({ start: joined.length, end: joined.length + seg.length });
+    joined += seg;
+  }
+  const range = findAnchorRange(joined, text);
+  if (!range) return -1;
+  const hit = spans.findIndex((s) => range.end > s.start && range.end <= s.end);
+  return hit >= 0 ? hit : spans.length - 1;
+}
+function locateAnchorBlock(root, selectedText) {
+  const text = String(selectedText ?? "").trim();
+  if (!text) return null;
+  const nodes = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node;
+  while (node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest(`[${MOUNTED_ATTR$1}]`) || parent.closest("bbi_image")) continue;
+    const value = node.textContent ?? "";
+    if (!value) continue;
+    nodes.push({ node, text: value });
+  }
+  if (!nodes.length) return null;
+  const index2 = pickTextSegment(nodes.map((n) => n.text), text);
+  if (index2 < 0) return null;
+  let block = nodes[index2].node.parentElement ?? root;
+  while (block.parentElement && block.parentElement !== root && !BLOCK_TAGS.has(block.tagName)) {
+    block = block.parentElement;
+  }
+  return block;
+}
+function insertAfterBlock(root, block, card) {
+  var _a;
+  let anchor = block;
+  while ((_a = anchor.nextElementSibling) == null ? void 0 : _a.matches(`[${MOUNTED_ATTR$1}]`)) {
+    anchor = anchor.nextElementSibling;
+  }
+  if (anchor === root.lastElementChild) root.appendChild(card);
+  else root.insertBefore(card, anchor.nextSibling);
+}
+function mountTrailing(mes, floor, artifacts) {
+  const mesBlock = mes.querySelector(".mes_block") ?? mes;
+  let area = mesBlock.querySelector(`#${TRAILING_AREA_ID}${floor}`);
+  if (!area) {
+    area = document.createElement("div");
+    area.id = `${TRAILING_AREA_ID}${floor}`;
+    area.className = TRAILING_AREA_CLASS;
+    area.setAttribute(MOUNTED_ATTR$1, String(floor));
+    const header = document.createElement("div");
+    header.className = "sti-trailing-header";
+    header.textContent = "ST 创作";
+    area.appendChild(header);
+    mesBlock.appendChild(area);
+  }
+  for (const artifact of artifacts) {
+    area.appendChild(buildCard$1(artifact, floor, false));
+  }
+}
+function buildCard$1(artifact, floor, inline) {
+  const card = document.createElement("div");
+  card.className = inline ? INLINE_CLASS : "sti-floor-card";
+  card.setAttribute(MOUNTED_ATTR$1, String(floor));
+  card.setAttribute("data-sti-artifact-id", artifact.id);
+  const img = document.createElement("img");
+  img.className = "sti-card-image";
+  img.src = artifact.imagePath;
+  img.alt = `${MODE_LABELS[artifact.mode] || artifact.mode} 作品`;
+  img.loading = "lazy";
+  img.addEventListener("click", () => openLightbox(artifact.imagePath, img.alt));
+  card.appendChild(img);
+  const caption = document.createElement("div");
+  caption.className = "sti-card-caption";
+  caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ""));
+  if (caption.textContent) card.appendChild(caption);
+  if (artifact.mode === "comic") card.appendChild(buildComicActions(artifact, floor));
+  return card;
+}
+function buildComicActions(artifact, floor) {
+  const row = document.createElement("div");
+  row.className = "sti-card-actions";
+  const status = document.createElement("span");
+  status.className = "sti-card-status";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "sti-card-btn";
+  button.textContent = "重画";
+  button.title = "同一套提示词、换一个种子重画这一页（台词气泡会重新合成）";
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (button.disabled) return;
+    button.disabled = true;
+    button.textContent = "重画中…";
+    status.textContent = "";
+    void (async () => {
+      try {
+        const result = await rerollComicPage(floor, artifact.id);
+        if (!result.ok) {
+          status.textContent = result.message ?? "重画失败。";
+          button.disabled = false;
+          button.textContent = "重画";
+          return;
+        }
+        mountFloor(floor);
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+        button.disabled = false;
+        button.textContent = "重画";
+      }
+    })();
+  });
+  row.appendChild(button);
+  row.appendChild(status);
+  return row;
 }
 function randomSeed() {
   return Math.floor(Math.random() * 4294967295);
@@ -8454,26 +8823,6 @@ async function waitForEntry(floor, swipeId, hash, seq2, timeoutMs = 9e4) {
   }
   return { ok: false, reason: "timeout" };
 }
-async function replaceEntryPath(floor, swipeId, hash, generationId, nextPath) {
-  var _a, _b;
-  const ctx = getContext();
-  const msg = (_a = ctx.chat) == null ? void 0 : _a[floor];
-  const extra = msg == null ? void 0 : msg.extra;
-  const store = extra == null ? void 0 : extra[BBI_IMAGE_EXTRA_KEY];
-  const list = (_b = store == null ? void 0 : store[String(swipeId)]) == null ? void 0 : _b[hash];
-  if (!Array.isArray(list)) return false;
-  const index2 = list.findIndex((e) => e.generationId === generationId);
-  if (index2 < 0) return false;
-  if (list[index2].path === nextPath) return true;
-  list[index2] = { ...list[index2], path: nextPath };
-  try {
-    if (typeof ctx.saveChat === "function") await ctx.saveChat();
-  } catch {
-    return false;
-  }
-  await refreshFloor(ctx, floor, msg);
-  return true;
-}
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -8632,14 +8981,13 @@ function cardFailureMessage(result) {
   return "正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。";
 }
 async function runComic(task, ctx, deps) {
-  var _a, _b, _c;
+  var _a, _b;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
   const modeSettings = resolveModeSettings(deps.fullSettings, "comic");
-  const swipeId = ((_a = segment.messages[0]) == null ? void 0 : _a.swipeId) ?? 0;
-  const sendDate = (_b = segment.messages[0]) == null ? void 0 : _b.sendDate;
-  const layout = modeSettings.comicLayout ?? "regular";
+  const characterName = ((_a = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _a.speaker) ?? "";
+  const layout = modeSettings.comicLayout ?? "auto";
   const dialoguePolicy = modeSettings.comicDialoguePolicy ?? deps.fullSettings.dialoguePolicy ?? "auto";
   const bubbleStyle = modeSettings.comicBubbleStyle ?? deps.fullSettings.bubbleStyle;
   const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
@@ -8650,7 +8998,7 @@ async function runComic(task, ctx, deps) {
   const comicNativeCharacters = (await readBackendState()).supportsCharacters !== false;
   const comicBook = readBookRoles(floor, segment.text, readPersonaName());
   const comicLibrary = buildLibraryBlock(characters.characters);
-  const comicCast = buildCastBlock(readCastContext(((_c = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _c.speaker) ?? ""));
+  const comicCast = buildCastBlock(readCastContext(((_b = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _b.speaker) ?? ""));
   const comicBlocks = {
     ...comicBook ? { bookBlock: comicBook.text } : {},
     ...comicLibrary ? { libraryBlock: comicLibrary } : {},
@@ -8705,68 +9053,92 @@ async function runComic(task, ctx, deps) {
     }
   }
   await ensureModeOutPlan("comic", deps.fullSettings);
+  const pinnedLayout = layout === "auto" ? void 0 : layout;
+  const mesTextEl = document.querySelector(`.mes[mesid="${floor}"] .mes_text`);
+  const inlineAnchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : void 0;
+  if (!inlineAnchor) {
+    recordNotice({
+      mode: "comic",
+      floor,
+      text: "这一楼的正文结构读不到，漫画卡片会挂在楼层末尾（不是插在你划线的地方）。"
+    });
+  }
   let done = 0;
   const totalPages = plan.data.length;
   for (const page of plan.data) {
     if (ctx.signal.aborted) return;
+    const pageLayout = pinnedLayout ?? page.layout;
     ctx.report({ stage: "generating", page: page.pageIndex + 1, totalPages });
-    const composed = composePagePrompt(page, characters.characters, {
+    const pageForCompose = { ...page, layout: pageLayout };
+    const composed = composePagePrompt(pageForCompose, characters.characters, {
       nativeCharacters: comicNativeCharacters,
       selectedText: segment.text
     });
     const enforced = enforceForGeneration({
       prompt: composed.prompt,
       nl: composed.nl,
-      panelLayout: page.layout,
+      panelLayout: pageLayout,
       chibiOn: false,
-      panelsPerPage: resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage)
+      panelsPerPage: resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage)
     });
-    const tag = buildBbiTag({
-      prompt: enforced.prompt,
-      ...wantComicNl && enforced.nl ? { nl: enforced.nl } : {},
-      ...composed.characters.length ? { characters: composed.characters } : {},
-      size: "portrait"
-    });
-    const hash = promptHash(tag);
-    const inserted = await insertImageTag({
-      floor,
-      chatId: task.chatId,
-      swipeId,
-      ...sendDate ? { sendDate } : {},
-      tag,
-      anchorText: segment.text.slice(0, 120)
-    });
-    if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
-    const triggered = await triggerCardGenerate(floor, inserted.seq);
-    if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
     const pageStartedAt = Date.now();
-    const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
+    let result;
+    try {
+      result = await baiBaiAdapter.generate(
+        {
+          prompt: enforced.prompt,
+          ...wantComicNl && enforced.nl ? { nl: enforced.nl } : {},
+          ...composed.characters.length ? { characters: composed.characters } : {},
+          ...characterName ? { character: characterName } : {},
+          size: "portrait",
+          // 图必须进图库：用户是在柏宝绘的图库里找图、复用、看提示词的
+          save: true
+        },
+        pickProfile(deps.settings, "comic") ?? fallbackProfile("comic")
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      recordImageLog({
+        mode: "comic",
+        floor,
+        source: "api",
+        plan: readOutConfig().activePlanName,
+        prompt: enforced.prompt,
+        ...enforced.nl ? { nl: enforced.nl } : {},
+        size: "portrait",
+        status: "error",
+        error: message,
+        durationMs: Date.now() - pageStartedAt
+      });
+      console.warn("[ST-Story-Illustrator] 漫画页出图失败：", message);
+      continue;
+    }
+    const rawPath = result.path ?? result.dataUrl ?? "";
     recordImageLog({
       mode: "comic",
       floor,
-      source: "card",
+      source: "api",
       plan: readOutConfig().activePlanName,
       model: activePlanModel(),
       prompt: enforced.prompt,
       ...enforced.nl ? { nl: enforced.nl } : {},
+      ...composed.characters.length ? { characters: composed.characters } : {},
       size: "portrait",
-      ...waited.ok && typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {},
-      status: waited.ok ? "ok" : "error",
-      ...waited.ok ? {} : { error: waited.message ?? waited.reason },
+      ...typeof result.seed === "number" ? { seed: result.seed } : {},
+      status: rawPath ? "ok" : "error",
+      ...rawPath ? {} : { error: "出图没有返回图片。" },
       durationMs: Date.now() - pageStartedAt
     });
-    if (!waited.ok) {
-      console.warn("[ST-Story-Illustrator] 漫画页结果未取到：", waited.reason, waited.message);
-      continue;
-    }
-    let imagePath = waited.entry.path;
+    if (!rawPath) continue;
+    let imagePath = rawPath;
     let bakedPath = "";
-    if (showComposite && composed.dialogue.length) {
-      const panelCount = resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage) || page.panels.length;
-      const slots = panelSlots(page.layout, panelCount, modeSettings.comicPageType ?? "auto");
-      const noGo = layoutNoGoZones(page.layout, modeSettings.comicPageType ?? "auto");
+    const pageBubble = showComposite && composed.dialogue.length;
+    if (pageBubble) {
+      const panelCount = resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage) || page.panels.length;
+      const slots = panelSlots(pageLayout, panelCount, modeSettings.comicPageType ?? "auto");
+      const noGo = layoutNoGoZones(pageLayout, modeSettings.comicPageType ?? "auto");
       const baked = await bakeDialogueIntoImage({
-        imagePath,
+        imagePath: rawPath,
         dialogue: composed.dialogue,
         style: bubbleStyle,
         font: bubbleFont,
@@ -8776,7 +9148,7 @@ async function runComic(task, ctx, deps) {
           panelCast: page.panels.map((panel) => (panel.characters ?? []).map((c) => c.name).filter(Boolean))
         } : {}
       });
-      if (baked && await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked)) {
+      if (baked) {
         bakedPath = baked;
         imagePath = baked;
       }
@@ -8788,24 +9160,27 @@ async function runComic(task, ctx, deps) {
       chatId: task.chatId,
       sourceFloors: segment.floorIds,
       anchorFloor: floor,
-      mountMode: "trailing",
+      // 插在划线处（本插件卡片），不再借柏宝绘的楼层卡片
+      mountMode: "inline",
+      ...inlineAnchor ? { textAnchor: inlineAnchor } : {},
       pageIndex: page.pageIndex,
       imagePath,
+      ...bakedPath ? { originalImagePath: rawPath } : {},
       prompt: enforced.prompt,
       ...enforced.nl ? { nl: enforced.nl } : {},
       ...composed.dialogue.length ? { dialogue: composed.dialogue } : {},
       metadata: {
-        embeddedInBody: true,
+        // 重画要靠它还原「当时画的是谁」：没有角色块，重画一次就换人
+        ...composed.characters.length ? { characters: composed.characters } : {},
+        // 无字原图（带字版由本地合成）：重画/改台词时都从它重来
+        rawImagePath: rawPath,
+        ...characterName ? { characterName } : {},
         pageTitle: page.title,
-        layout: page.layout,
+        layout: pageLayout,
         panelTitles: composed.panelTitles,
         panelCount: page.panels.length,
-        bbiTag: tag,
-        bbiHash: hash,
-        bbiSlotSeq: inserted.seq,
-        bbiGenerationId: waited.entry.generationId,
         ...bakedPath ? { bubbleBakedPath: bakedPath } : {},
-        ...typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {}
+        ...typeof result.seed === "number" ? { seed: result.seed } : {}
       },
       createdAt: Date.now()
     };

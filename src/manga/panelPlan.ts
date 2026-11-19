@@ -15,6 +15,7 @@
 
 import type {
   PanelLayout,
+  PanelLayoutChoice,
   PanelPageType,
   DialoguePolicy,
   PanelBubbleArea,
@@ -72,10 +73,12 @@ function compositionTags(layout: PanelLayout): string {
  *
  * 用户设了 2/3/4 就用它；设 0（自动）时只有「规整」档能确定（2 格），
  * 其余三档由页型自己决定，返回 0 表示「不要用数字去约束模型」。
+ * 「自动档」同理：模型自己挑版面也自己定格数，代码不插一个数字进去。
  */
-export function resolvePanelsPerPage(layout: PanelLayout, value?: number): number {
+export function resolvePanelsPerPage(layout: PanelLayoutChoice, value?: number): number {
   const v = Number(value);
   if (Number.isFinite(v) && v >= 2 && v <= 4) return Math.round(v);
+  if (normalizeLayoutChoice(layout) === 'auto') return 0;
   return normalizePanelLayout(layout) === 'regular' ? 2 : 0;
 }
 
@@ -99,6 +102,11 @@ export function panelTagsForCount(layout: PanelLayout, count: number): readonly 
 
 export function normalizePanelLayout(v: unknown): PanelLayout {
   return v === 'irregular' || v === 'inset' || v === 'unframed' ? v : 'regular';
+}
+
+/** 档位或「自动」。脏值一律当自动——它不会写错构图词，只是把选择权交给模型。 */
+export function normalizeLayoutChoice(v: unknown): PanelLayoutChoice {
+  return v === 'regular' || v === 'irregular' || v === 'inset' || v === 'unframed' ? v : 'auto';
 }
 
 export function normalizePanelPageType(v: unknown): PanelPageType {
@@ -195,8 +203,8 @@ export const PANEL_NL_SENTENCE: Record<PanelLayout, { portrait: string; landscap
     landscape: 'The canvas is divided into panels of unequal size — one large main panel with narrower panels beside it — separated by thin black gutters.',
   },
   inset: {
-    portrait: 'A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one in the bottom right corner — show close-up details of the same moment.',
-    landscape: 'A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one along the right edge — show close-up details of the same moment.',
+    portrait: 'A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one in the bottom right corner — show close-up details of the same moment, each small panel floating on the white page with a wide clean white gap between it and the main illustration, never touching the characters.',
+    landscape: 'A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one along the right edge — show close-up details of the same moment, each small panel floating on the white page with a wide clean white gap between it and the main illustration, never touching the characters.',
   },
   unframed: {
     portrait: UNFRAMED_NL_PORTRAIT,
@@ -372,9 +380,11 @@ function insetRule(nlOn: boolean): string {
       ' 不要写任何场景 tag（indoors、bed、classroom、window、street 一类全不要）；不要写 split screen、2koma/3koma/4koma、panel layout、comic panel、manga、comic。',
     '2. 版面：白底为主、以人物为主。绝不允许把画布均分成上下或左右两三块。',
     '3. 画面里只有人物，几乎没有场景：环境最多一两件小道具。tag 与 nl 都只写人物。',
-    '4. 特写小格 1～2 个，带细黑边框浮在白边上：顶部横条（宽约全宽、高约 15~20%）装脸部特写；贴边小格（右侧或右下角、宽约三分之一）装手/接触点。小格来自主画面同一瞬间、同一套外观词。',
+    '4. 特写小格 1～2 个，带细黑边框浮在白边上：顶部横条（宽约全宽、高约 15~20%）装脸部特写；贴边小格（右侧或右下角、宽约三分之一）装手/接触点。' +
+      '**小格与主画之间必须留出宽白边**（至少约页高 5%、页宽 4% 的纯白），小格绝不贴着人物或主画边缘——挤在一起会糊成一坨，读者分不清哪格是哪格。' +
+      '小格来自主画面同一瞬间、同一套外观词。',
     '5. 景别 tag 仍然只写一个（cowboy shot 或 full body）；小格特写写在 nl 里。',
-    '6. 画幅写 portrait：白底竖页，人物居中占主要位置；顶部横条贴上边缘，贴边小格在右下角。',
+    '6. 画幅写 portrait：白底竖页，人物居中占主要位置；顶部横条贴上边缘、与主画之间留白；贴边小格在右下角、与主画之间留白。',
     '7. focus tag 全图最多 1~2 个。',
     PANEL_FORBIDDEN_CLAUSE,
     ninth,
@@ -410,6 +420,49 @@ function unframedRule(nlOn: boolean, pageType: PanelPageType): string {
   ].join('\n');
 }
 
+/**
+ * 自动档：版面由模型按剧情挑。
+ *
+ * 为什么要有这一档：四档各自的语言（等分/不等/白底/无框）对不懂分镜的人是黑话。
+ * 写 tag 的模型刚读完这一段剧情，它比用户更清楚这一页该是「一问一答」还是
+ * 「白底特写」。所以把选择权交给它，代码只负责在每一页上读回它选的档位，
+ * 再用那一档的既定规则去纠正（enforce）与排气泡。
+ *
+ * 这一档最容易出的错是「四档混着写」：说了 regular 却在 nl 里写白底无框。
+ * 所以规则里把四档的构图词逐字列出来，并要求 layout / panels / nl 三者一致。
+ */
+function autoRule(nlOn: boolean, panels: number): string {
+  const table = [
+    `- "regular"（规整等分）：构图词 ${compositionTags('regular')}。2 格上下等分；3 格是上方一条宽格 + 下方左右两格。适合「同一个动作的上下两拍」「一问一答」「递进（上格动作、下格结果）」，最稳、最容易画对，拿不准就用它。`,
+    `- "irregular"（大小不等拼版）：构图词 ${compositionTags('irregular')}。2～4 格，至少一格面积是另一格两倍以上。适合有主次的场面：一个大格交代全景，一到两个小格给反应或细节。禁止上下各一半这种等分。`,
+    `- "inset"（白底人物页 + 带框特写格）：构图词 ${compositionTags('inset')}。白底、只有人物，几乎没有场景；1～2 个带细黑框的小格浮在白边上。适合对话、独白、心情、身体接触这类「只有人」的瞬间。`,
+    `- "unframed"（白底无框大字插画 + 带框特写格）：构图词 ${compositionTags('unframed')}。主插画无边框、人物占画面八成以上、手臂伸到页外；只有特写格带框。最像日系漫画的跨页感，适合名场面、情绪爆点。`,
+  ].join('\n');
+  const ninth = nlOn
+    ? '9. 先按你选的档位写 nl 的第一句版面句（regular/irregular 说清怎么分格、inset/unframed 说清白底主画与特写格的位置），再逐格/逐区写内容。不要用 Panel 1 / Panel 2 编号，不要写对白。'
+    : '9. 本次没有 nl 通道：各格内容只能靠 tag 表达，让人物动作在格与格之间发生变化。';
+  return [
+    '[漫画分镜｜版面自选]',
+    '',
+    '这一张是一页漫画：一页 = 一张图，整页由 NovelAI 一次画成多格版面，不是一格一张图。',
+    '',
+    '1. **版面由你按剧情挑**，并在这一页的 `layout` 字段里写出你选的那一档（只能是下面四个值之一）：',
+    table,
+    '2. 挑法：先问「这一段的重点是动作还是情绪」。有明确动作与场景 → regular 或 irregular；只有人、只有情绪 → inset 或 unframed。**拿不准就用 regular。**',
+    '3. 有台词的一页优先给气泡留地方：选 inset / unframed 这类白底档，或让人物偏下、画面上方留出安静空白。人物头顶顶到页边时，气泡只能盖在脸上。',
+    '3a. 无论哪一档，格与格之间只留细黑 gutter（约页宽 3%）；白底档里特写小格与主画之间必须留出宽白边（至少约页高 5%），小格绝不贴在主画上——挤在一起会糊成一坨。',
+    panels >= 2
+      ? `4. **每页固定 ${panels} 格**：不管选哪一档，版面都必须真的切出 ${panels} 格，panels 条数与 nl 分区句数也必须是 ${panels}。`
+      : '4. 格数 2～4。**同一页的 layout、panels 条数、nl 里的分区句数必须三者一致**：说 3 格就真的画 3 格，不能拿两格模板套三段内容。',
+    '5. 构图词只照抄你选的那一档那几行，原样保留 1.4:: 这类权重写法；**不要把两档的构图词混着写**（混写必然画出四不像的版面）。',
+    '6. 多页时相邻两页不要用同一档，同一档也别连续画同样的格数，节奏会平。',
+    '7. 景别 tag 整页只写一个；各格远近写在 nl 里。',
+    '8. 同一批人在每一格保持同一套外观词；focus tag 全图最多 1~2 个。',
+    PANEL_FORBIDDEN_CLAUSE,
+    ninth,
+  ].join('\n');
+}
+
 // ============================================================
 // buildPanelRule（§4.1 / §6.12）
 // ============================================================
@@ -421,7 +474,7 @@ export interface PanelRuleOptions {
   charPrompts?: boolean;
   nl?: boolean;
   lockedSize?: 'portrait' | 'landscape' | 'square' | string;
-  layout?: PanelLayout;
+  layout?: PanelLayoutChoice;
   pageType?: PanelPageType;
   dialogue?: boolean;
   dialogueMode?: 'json' | 'tag';
@@ -434,20 +487,26 @@ export interface PanelRuleOptions {
  */
 export function buildPanelRule(enabled: boolean, options: PanelRuleOptions): string {
   if (!enabled) return '';
-  const layout = normalizePanelLayout(options.layout);
+  const choice = normalizeLayoutChoice(options.layout);
   const nlOn = options.nl !== false;
   const pageType = normalizePanelPageType(options.pageType);
 
-  const panels = resolvePanelsPerPage(layout, options.panelsPerPage);
   let body: string;
-  switch (layout) {
-    case 'irregular': body = irregularRule(nlOn); break;
-    case 'inset': body = insetRule(nlOn); break;
-    case 'unframed': body = unframedRule(nlOn, pageType); break;
-    case 'regular':
-    default:
-      body = panels >= 3 ? regularMultiRule(nlOn, panels) : regularRule(nlOn);
-      break;
+  if (choice === 'auto') {
+    // 自动档不钉版面；格数只有用户显式设了才钉（模型挑版面、用户定格数，两者不冲突）
+    body = autoRule(nlOn, resolvePanelsPerPage('auto', options.panelsPerPage));
+  } else {
+    const layout = normalizePanelLayout(choice);
+    const panels = resolvePanelsPerPage(layout, options.panelsPerPage);
+    switch (layout) {
+      case 'irregular': body = irregularRule(nlOn); break;
+      case 'inset': body = insetRule(nlOn); break;
+      case 'unframed': body = unframedRule(nlOn, pageType); break;
+      case 'regular':
+      default:
+        body = panels >= 3 ? regularMultiRule(nlOn, panels) : regularRule(nlOn);
+        break;
+    }
   }
 
   const parts: string[] = [body, PANEL_SELF_CHECK];
@@ -483,6 +542,24 @@ function normalizeCharacters(raw: unknown): Array<{ name: string; act: string }>
   return out;
 }
 
+/**
+ * 这一页的档位。
+ *
+ * 模型在 `layout` 字段里给的可信就用它；没给（或写脏）时不能一律当 regular：
+ * 4 段内容套 2koma 的等分几何，气泡会被排进根本不存在的格子里。
+ * 用户钉死了档位就跟随用户；自动档则按格数推：≥3 格当拼版（几何未知 → 整页排气泡，
+ * 交给像素空白的打分去落位），2 格当规整双格（几何确定，格内排气泡）。
+ */
+function normalizePageLayout(
+  raw: unknown,
+  panelCount: number,
+  fallback?: PanelLayout,
+): PanelLayout {
+  if (raw === 'regular' || raw === 'irregular' || raw === 'inset' || raw === 'unframed') return raw;
+  if (fallback) return fallback;
+  return panelCount >= 3 ? 'irregular' : 'regular';
+}
+
 function normalizePanel(raw: unknown, index: number): ComicPanelPlan | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
@@ -502,7 +579,12 @@ function normalizePanel(raw: unknown, index: number): ComicPanelPlan | null {
   };
 }
 
-function normalizePage(raw: unknown, pageIndex: number, warnings: string[]): ComicPagePlan | null {
+function normalizePage(
+  raw: unknown,
+  pageIndex: number,
+  warnings: string[],
+  fallbackLayout?: PanelLayout,
+): ComicPagePlan | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     warnings.push(`第 ${pageIndex + 1} 页不是对象，已跳过`);
     return null;
@@ -532,7 +614,7 @@ function normalizePage(raw: unknown, pageIndex: number, warnings: string[]): Com
     pageIndex: typeof o.pageIndex === 'number' && Number.isFinite(o.pageIndex)
       ? Math.max(0, Math.floor(o.pageIndex)) : pageIndex,
     title: typeof o.title === 'string' ? o.title.trim().slice(0, 120) : `第 ${pageIndex + 1} 页`,
-    layout: normalizePanelLayout(o.layout),
+    layout: normalizePageLayout(o.layout, panels.length, fallbackLayout),
     ...(pageTags ? { tags: pageTags } : {}),
     ...(pageNl ? { nl: pageNl } : {}),
     ...(pageDialogue.length ? { dialogue: pageDialogue } : {}),
@@ -540,12 +622,23 @@ function normalizePage(raw: unknown, pageIndex: number, warnings: string[]): Com
   };
 }
 
+export interface ParseComicOptions {
+  /**
+   * 用户钉死的版面档位。给了就覆盖模型的 `layout` 缺失情形——
+   * 用户选了「规整四格」，模型漏写 layout 时不能按格数猜成拼版。
+   */
+  fallbackLayout?: PanelLayout;
+}
+
 /**
  * 容错解析 LLM 结构化输出 → ComicPagePlan[]。
  * 接受：{pages:[...]} / 单页对象 / 页数组 / 带 markdown 代码围栏的 JSON 字符串。
  * 坏 JSON 返回空 pages + warning，不抛异常。
  */
-export function parseComicPagePlan(input: unknown): ParseComicPagePlanResult {
+export function parseComicPagePlan(
+  input: unknown,
+  options: ParseComicOptions = {},
+): ParseComicPagePlanResult {
   const warnings: string[] = [];
   let data: unknown = input;
 
@@ -580,7 +673,7 @@ export function parseComicPagePlan(input: unknown): ParseComicPagePlanResult {
 
   const pages: ComicPagePlan[] = [];
   for (let i = 0; i < Math.min(rawPages.length, 8); i += 1) {
-    const page = normalizePage(rawPages[i], i, warnings);
+    const page = normalizePage(rawPages[i], i, warnings, options.fallbackLayout);
     if (page) pages.push(page);
   }
   return { pages, warnings };

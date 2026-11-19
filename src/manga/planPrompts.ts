@@ -17,7 +17,7 @@ import type {
   PromptSegment,
   GeneratePromptResponse,
   BaiBaiCharacter,
-  PanelLayout,
+  PanelLayoutChoice,
   PanelPageType,
   DialoguePolicy,
 } from '../types';
@@ -26,6 +26,7 @@ import { renderPromptDoc, type PromptOverrideMap } from '../prompt/presets';
 import { characterTagOf } from './tagSplit';
 import {
   buildPanelRule,
+  normalizeLayoutChoice,
   normalizePanelLayout,
   normalizePanelPageType,
   normalizeDialoguePolicy,
@@ -308,7 +309,8 @@ export interface ComicPlanOptions {
   panelMode: boolean;
   /** 每页固定格数（0 = 跟随版面档位） */
   panelsPerPage?: number;
-  panelLayout: PanelLayout;
+  /** 版面档位；'auto' = 由模型按每页剧情自己挑 */
+  panelLayout: PanelLayoutChoice;
   pageType: PanelPageType;
   dialogue: boolean;
   dialoguePolicy: DialoguePolicy;
@@ -333,14 +335,16 @@ export function buildComicSystemPrompt(
     charPrompts: options.charPrompts,
     nl: options.nl,
     lockedSize: options.lockedSize,
-    layout: normalizePanelLayout(options.panelLayout),
+    layout: normalizeLayoutChoice(options.panelLayout),
     pageType: normalizePanelPageType(options.pageType),
     dialogue: options.dialogue,
     dialogueMode: options.dialogueMode,
     dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy),
   };
   const rule = buildPanelRule(options.panelMode, ruleOptions);
-  const fixedPanels = resolvePanelsPerPage(normalizePanelLayout(options.panelLayout), options.panelsPerPage);
+  // 自动档不钉格数：提示词里说「每页固定 N 格」会和「版面你挑」直接打架
+  const choice = normalizeLayoutChoice(options.panelLayout);
+  const fixedPanels = choice === 'auto' ? 0 : resolvePanelsPerPage(normalizePanelLayout(choice), options.panelsPerPage);
   return renderPromptDoc('comic', 'single', {
     // 方案没有自然语言通道时，整页 nl 分区描述就无从谈起
     nl: options.nl !== false,

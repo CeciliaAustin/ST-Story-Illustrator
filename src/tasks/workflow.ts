@@ -20,14 +20,14 @@ import type {
   StoryIllustratorSettings,
 } from '../types';
 import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from './modePlan';
-import { runTheaterTask, bakeTheaterLines } from './theaterRun';
+import { runTheaterTask, bakeTheaterLines, pickProfile, fallbackProfile } from './theaterRun';
 import { readOutConfig, activePlanModel, nlForMode } from '../baibai/planConfig';
 import { resolveModeSettings, MODE_LABEL } from '../types';
 import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment';
 import { buildAnchor } from '../selection/anchor';
 import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
-import { readBackendState } from '../baibai/imageAdapter';
+import { readBackendState, baiBaiAdapter } from '../baibai/imageAdapter';
 import { readBookRoles } from '../baibai/bookMemory';
 import { saveChatSafe, readPersonaName } from '../host/sillytavern';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
@@ -273,14 +273,15 @@ async function runComic(
   if (floor === null) throw new Error('无法确定挂载楼层。');
 
   const modeSettings = resolveModeSettings(deps.fullSettings, 'comic');
-  const swipeId = segment.messages[0]?.swipeId ?? 0;
-  const sendDate = segment.messages[0]?.sendDate;
-  const layout = modeSettings.comicLayout ?? 'regular';
+  // 出图落盘的分组名（柏宝绘图库里按角色分文件夹）；取本楼说话的角色
+  const characterName = segment.messages.find(m => !m.isUser)?.speaker ?? '';
+  // 版面档位：默认「自动」，由模型按每页剧情挑（用户钉死则以用户为准）
+  const layout = modeSettings.comicLayout ?? 'auto';
   const dialoguePolicy = modeSettings.comicDialoguePolicy ?? deps.fullSettings.dialoguePolicy ?? 'auto';
   const bubbleStyle = modeSettings.comicBubbleStyle ?? deps.fullSettings.bubbleStyle;
   const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
   const showComposite = modeSettings.comicShowComposite !== false;
-  // 这套漫画方案要不要写自然语言（读剧情与写 <bbi_image> 必须同一个答案）
+  // 这套漫画方案要不要写自然语言（读剧情与出图必须是同一个答案）
   const wantComicNl = nlForMode(deps.fullSettings, 'comic');
 
   ctx.report({ stage: 'reading' });
@@ -355,16 +356,40 @@ async function runComic(
   // 整本漫画用同一套出图方案，只在开始前切一次
   await ensureModeOutPlan('comic', deps.fullSettings);
 
+  // 用户钉死的档位优先：自动档才让每页自己的 layout 说了算。
+  // （模型偶尔会无视规则写别的档，硬钉是唯一可靠的做法）
+  const pinnedLayout = layout === 'auto' ? undefined : layout;
+
+  // 划线锚点：**每页都挂在同一处**，多页自然按顺序叠在选段后面
+  const mesTextEl = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
+  const inlineAnchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : undefined;
+  if (!inlineAnchor) {
+    // 读不到正文结构就只能挂楼末：不说一句，用户会以为「又跑到最下面了」
+    recordNotice({
+      mode: 'comic',
+      floor,
+      text: '这一楼的正文结构读不到，漫画卡片会挂在楼层末尾（不是插在你划线的地方）。',
+    });
+  }
+
   let done = 0;
   const totalPages = plan.data.length;
 
   // **一页 = 一张图**：构图词让 NAI 一次画出多格版面，各格内容只靠 nl 分区描述。
-  // 按格各出一张图只会得到一堆单幅插画，永远不是漫画。
+  //
+  // 这里**不再往正文写 <bbi_image>**：正文插图与漫画都写同一种 tag 时，两张卡会互相
+  // 抢同一个槽位（用户看到的就是「前一个被后一个顶掉」）。漫画改成直连柏宝绘的
+  // 公开 generate(save:true)——图照样进柏宝绘图库、能按角色分组翻到，显示则由本插件
+  // 的正文卡片负责，插在划线处。两条链路从此各走各的，谁也不会顶掉谁。
   for (const page of plan.data) {
     if (ctx.signal.aborted) return;
+    const pageLayout = pinnedLayout ?? page.layout;
     ctx.report({ stage: 'generating', page: page.pageIndex + 1, totalPages });
 
-    const composed = composePagePrompt(page, characters.characters, {
+    // 钉死档位时，连 nl 的版面句也按钉死的那一档生成：
+    // 否则 nl 说「白底特写」、tag 却是 2koma，模型只能二选一，图必然拧巴。
+    const pageForCompose: ComicPagePlan = { ...page, layout: pageLayout };
+    const composed = composePagePrompt(pageForCompose, characters.characters, {
       nativeCharacters: comicNativeCharacters,
       selectedText: segment.text,
     });
@@ -372,63 +397,73 @@ async function runComic(
       prompt: composed.prompt,
       nl: composed.nl,
       panelMode: true,
-      panelLayout: page.layout,
+      panelLayout: pageLayout,
       chibiOn: false,
       storyImage: false,
-      panelsPerPage: resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage),
+      panelsPerPage: resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage),
     });
-
-    const tag = buildBbiTag({
-      prompt: enforced.prompt,
-      ...(wantComicNl && enforced.nl ? { nl: enforced.nl } : {}),
-      ...(composed.characters.length ? { characters: composed.characters } : {}),
-      size: 'portrait',
-    });
-    const hash = promptHash(tag);
-    const inserted = await insertImageTag({
-      floor,
-      chatId: task.chatId,
-      swipeId,
-      ...(sendDate ? { sendDate } : {}),
-      tag,
-      anchorText: segment.text.slice(0, 120),
-    });
-    if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
-
-    const triggered = await triggerCardGenerate(floor, inserted.seq);
-    if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
 
     const pageStartedAt = Date.now();
-    const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
+    let result;
+    try {
+      result = await baiBaiAdapter.generate(
+        {
+          prompt: enforced.prompt,
+          ...(wantComicNl && enforced.nl ? { nl: enforced.nl } : {}),
+          ...(composed.characters.length ? { characters: composed.characters } : {}),
+          ...(characterName ? { character: characterName } : {}),
+          size: 'portrait',
+          // 图必须进图库：用户是在柏宝绘的图库里找图、复用、看提示词的
+          save: true,
+        },
+        pickProfile(deps.settings, 'comic') ?? fallbackProfile('comic'),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      recordImageLog({
+        mode: 'comic', floor, source: 'api',
+        plan: readOutConfig().activePlanName,
+        prompt: enforced.prompt,
+        ...(enforced.nl ? { nl: enforced.nl } : {}),
+        size: 'portrait',
+        status: 'error',
+        error: message,
+        durationMs: Date.now() - pageStartedAt,
+      });
+      // 一页失败不该让整本失败：记日志、继续下一页（最后 done===0 才报错）
+      console.warn('[ST-Story-Illustrator] 漫画页出图失败：', message);
+      continue;
+    }
+
+    const rawPath = result.path ?? result.dataUrl ?? '';
     recordImageLog({
       mode: 'comic',
       floor,
-      source: 'card',
+      source: 'api',
       plan: readOutConfig().activePlanName,
       model: activePlanModel(),
       prompt: enforced.prompt,
       ...(enforced.nl ? { nl: enforced.nl } : {}),
+      ...(composed.characters.length ? { characters: composed.characters } : {}),
       size: 'portrait',
-      ...(waited.ok && typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
-      status: waited.ok ? 'ok' : 'error',
-      ...(waited.ok ? {} : { error: waited.message ?? waited.reason }),
+      ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
+      status: rawPath ? 'ok' : 'error',
+      ...(rawPath ? {} : { error: '出图没有返回图片。' }),
       durationMs: Date.now() - pageStartedAt,
     });
-    if (!waited.ok) {
-      console.warn('[ST-Story-Illustrator] 漫画页结果未取到：', waited.reason, waited.message);
-      continue;
-    }
+    if (!rawPath) continue;
 
-    // 对白气泡：卡片只认一条图片路径，所以合成一次、把卡片指向带字版（原图留库）
-    let imagePath = waited.entry.path;
+    // 对白气泡：落盘无字原图，本地合成一张带字版给卡片显示（原图留在图库里）
+    let imagePath = rawPath;
     let bakedPath = '';
-    if (showComposite && composed.dialogue.length) {
+    const pageBubble = showComposite && composed.dialogue.length;
+    if (pageBubble) {
       // 气泡要落进「自己那一格」：格位由我们自己下发的版面反推（真漫画的第一条排版语法）
-      const panelCount = resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage) || page.panels.length;
-      const slots = panelSlots(page.layout, panelCount, modeSettings.comicPageType ?? 'auto');
-      const noGo = layoutNoGoZones(page.layout, modeSettings.comicPageType ?? 'auto');
+      const panelCount = resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage) || page.panels.length;
+      const slots = panelSlots(pageLayout, panelCount, modeSettings.comicPageType ?? 'auto');
+      const noGo = layoutNoGoZones(pageLayout, modeSettings.comicPageType ?? 'auto');
       const baked = await bakeDialogueIntoImage({
-        imagePath,
+        imagePath: rawPath,
         dialogue: composed.dialogue,
         style: bubbleStyle,
         font: bubbleFont,
@@ -438,7 +473,7 @@ async function runComic(
           panelCast: page.panels.map(panel => (panel.characters ?? []).map(c => c.name).filter(Boolean)),
         } : {}),
       });
-      if (baked && (await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked))) {
+      if (baked) {
         bakedPath = baked;
         imagePath = baked;
       }
@@ -451,24 +486,27 @@ async function runComic(
       chatId: task.chatId,
       sourceFloors: segment.floorIds,
       anchorFloor: floor,
-      mountMode: 'trailing',
+      // 插在划线处（本插件卡片），不再借柏宝绘的楼层卡片
+      mountMode: 'inline',
+      ...(inlineAnchor ? { textAnchor: inlineAnchor } : {}),
       pageIndex: page.pageIndex,
       imagePath,
+      ...(bakedPath ? { originalImagePath: rawPath } : {}),
       prompt: enforced.prompt,
       ...(enforced.nl ? { nl: enforced.nl } : {}),
       ...(composed.dialogue.length ? { dialogue: composed.dialogue } : {}),
       metadata: {
-        embeddedInBody: true,
+        // 重画要靠它还原「当时画的是谁」：没有角色块，重画一次就换人
+        ...(composed.characters.length ? { characters: composed.characters } : {}),
+        // 无字原图（带字版由本地合成）：重画/改台词时都从它重来
+        rawImagePath: rawPath,
+        ...(characterName ? { characterName } : {}),
         pageTitle: page.title,
-        layout: page.layout,
+        layout: pageLayout,
         panelTitles: composed.panelTitles,
         panelCount: page.panels.length,
-        bbiTag: tag,
-        bbiHash: hash,
-        bbiSlotSeq: inserted.seq,
-        bbiGenerationId: waited.entry.generationId,
         ...(bakedPath ? { bubbleBakedPath: bakedPath } : {}),
-        ...(typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
+        ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
       },
       createdAt: Date.now(),
     };

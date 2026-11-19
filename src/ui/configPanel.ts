@@ -645,12 +645,15 @@ function renderComicSettings(): HTMLElement {
   const box = section('正文插图切成漫画格', '与三套小剧场并列；勾选「正文漫画分镜」时生效，图会按分镜插进正文。');
   box.appendChild(selectRow(
     '版面',
-    comic?.comicLayout ?? 'regular',
-    [['regular', '规整四格'], ['irregular', '斜切分镜'], ['inset', '主图 + 嵌入格'], ['unframed', '无边框融白']],
+    comic?.comicLayout ?? 'auto',
+    [['auto', '自动（按剧情挑，推荐）'], ['regular', '规整分格'], ['irregular', '斜切分镜'], ['inset', '主图 + 嵌入格'], ['unframed', '无边框融白']],
     v => patchSettings(st => {
       st.modes['comic'].comicLayout = v as StoryIllustratorSettings['modes']['comic']['comicLayout'];
-      st.panelLayout = v as StoryIllustratorSettings['panelLayout'];
+      // panelLayout 是旧字段（老设置页/兼容读），自动档落成 regular 免得别处读到脏值
+      st.panelLayout = (v === 'auto' ? 'regular' : v) as StoryIllustratorSettings['panelLayout'];
     }),
+    '自动：写 tag 的模型读过这一段剧情，由它逐页决定用哪一档（动作戏给拼版、只有人的独白给白底特写）。'
+    + '看不懂这几档就留着自动。',
   ));
   box.appendChild(selectRow(
     '每页格数',

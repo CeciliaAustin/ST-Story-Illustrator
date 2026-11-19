@@ -266,6 +266,14 @@ export interface StoryIllustration {
 // ============================================================
 
 export type PanelLayout = 'regular' | 'irregular' | 'inset' | 'unframed';
+/**
+ * 版面档位或「自动」。
+ *
+ * auto 不是第五种版面，而是「让模型每页自己挑一档」：写 tag 的模型读过整段剧情，
+ * 比用户更清楚这一页该是「一问一答」还是「白底特写」。用户不懂分镜时也不该被迫选。
+ * 落到具体某一页时永远是 PanelLayout 里的四档之一。
+ */
+export type PanelLayoutChoice = PanelLayout | 'auto';
 export type PanelPageType = 'auto' | 'a' | 'b' | 'c' | 'd';
 export type DialoguePolicy = 'auto' | 'always' | 'eager';
 export type PanelBubbleArea = 'tl' | 'tc' | 'tr' | 'ml' | 'mr' | 'bl' | 'bc' | 'br';
@@ -516,6 +524,8 @@ export interface NormalizedGenerationInput {
   size?: string;
   seed?: number;
   save?: boolean;
+  /** 落盘分组名（柏宝绘图库里按角色分文件夹）。省略 = 柏宝绘按当前聊天角色名归。 */
+  character?: string;
 }
 
 export interface GenerationResult {
@@ -617,7 +627,7 @@ export interface ModeSettings {
   shots: number;
   // 模式特定选项
   illustrationMultiImage?: boolean;
-  comicLayout?: PanelLayout;
+  comicLayout?: PanelLayoutChoice;
   comicPageType?: PanelPageType;
   comicMaxPages?: number;
   /**
@@ -724,7 +734,8 @@ function defaultModeSettings(mode: CreationMode): ModeSettings {
     case 'illustration':
       return { ...base, enabled: true, illustrationMultiImage: false };
     case 'comic':
-      return { ...base, comicLayout: 'regular', comicPageType: 'auto', comicMaxPages: 1,
+      // 默认「自动」：分镜怎么排交给读过剧情的模型，用户不必懂版面也能出好看的页
+      return { ...base, comicLayout: 'auto', comicPageType: 'auto', comicMaxPages: 1,
         comicPanelsPerPage: 0,
         comicDialoguePolicy: 'auto', comicBubbleStyle: 'classic', comicBubbleFont: 'sans', comicShowComposite: true };
     case 'chibi-status':

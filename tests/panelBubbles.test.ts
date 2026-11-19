@@ -120,6 +120,20 @@ describe('台词分格', () => {
     expect(assignDialogueToSlots(items, slots)).toEqual([0, 1]);
   });
 
+  it('panel 与「说话人只画在某格」矛盾时，信画面（模型常把格号数错）', () => {
+    const items: PanelDialogueItem[] = [
+      { text: '这句其实在下格', speaker: '小雪', panel: 1 },
+    ];
+    // 小雪只出现在第 2 格（下标 1）
+    expect(assignDialogueToSlots(items, slots, [['小明'], ['小雪']])).toEqual([1]);
+  });
+
+  it('说话人出现在多格时不拿来否定 panel（同框时他不定位）', () => {
+    const items: PanelDialogueItem[] = [{ text: 'x', speaker: '小雪', panel: 1 }];
+    const casts = [['小雪'], ['小雪']];
+    expect(assignDialogueToSlots(items, slots, casts)).toEqual([0]);
+  });
+
   it('分不清的跟着上一句走，不会把一句话拆到两格', () => {
     const items: PanelDialogueItem[] = [
       { text: '第一句', panel: 2 },

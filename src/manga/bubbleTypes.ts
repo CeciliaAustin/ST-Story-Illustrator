@@ -99,6 +99,13 @@ export interface PlanOptions {
    * 用来做「说话人只出现在某一格」的反查——比 area 可靠，比均分准确。
    */
   panelCast?: readonly (readonly string[])[];
+  /**
+   * 成图的画面密度网格（busyMap）：每小块「有多花」。
+   *
+   * 「脸在 0.33~0.67」是猜的；这张图哪里真的是脸、哪里是留白，只有它知道。
+   * 给了就参与打分：密度高的位置罚分，白底/留白不罚。
+   */
+  busy?: import('./busyMap').BusyGrid;
 }
 
 export interface BubbleCompositeResult {

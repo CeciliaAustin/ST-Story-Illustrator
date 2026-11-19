@@ -31,7 +31,7 @@ import {
   type ComicPlanOptions,
   type SceneInput,
 } from './planPrompts';
-import { parseComicPagePlan } from './panelPlan';
+import { parseComicPagePlan, normalizePanelLayout } from './panelPlan';
 import type { PromptOverrideMap } from '../prompt/presets';
 import { withSpecPreamble } from '../baibai/specPrompt';
 import { nlForMode } from '../baibai/planConfig';
@@ -185,7 +185,10 @@ export async function generateComicPlan(
   );
   try {
     const raw = await caller(system, user);
-    const parsed = parseComicPagePlan(raw);
+    // 用户钉死了档位就跟随用户：模型漏写 layout 时，不能按格数猜成别的档
+    const parsed = parseComicPagePlan(raw, input.options.panelLayout === 'auto' || !input.options.panelLayout
+      ? {}
+      : { fallbackLayout: normalizePanelLayout(input.options.panelLayout) });
     if (parsed.pages.length === 0) {
       return {
         ok: false,

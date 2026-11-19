@@ -17,6 +17,9 @@ import { generateImage, getBackendStatus, getCharacters } from './bridge';
 /** 从规范化输入组装柏宝绘 generate() 请求。size 归一到 portrait/landscape。 */
 export function toBaiBaiRequest(input: NormalizedGenerationInput, character?: string) {
   const size: 'portrait' | 'landscape' = input.size === 'landscape' ? 'landscape' : 'portrait';
+  // 图库分组名：显式指定的角色名优先（漫画按本楼说话的角色归档），
+  // 其次才是调用方传进来的 profile id（旧行为，保持兼容）。
+  const group = input.character || character;
   return {
     prompt: input.prompt,
     ...(input.nl ? { nl: input.nl } : {}),
@@ -25,7 +28,7 @@ export function toBaiBaiRequest(input: NormalizedGenerationInput, character?: st
     size,
     ...(typeof input.seed === 'number' ? { seed: input.seed } : {}),
     save: input.save !== false,
-    ...(character ? { character } : {}),
+    ...(group ? { character: group } : {}),
   };
 }
 

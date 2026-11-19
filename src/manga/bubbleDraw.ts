@@ -23,6 +23,7 @@ import {
   boxInkFor,
   PANEL_DIALOGUE_MAX,
 } from './bubblePlan';
+import { readBusyGrid } from './busyMap';
 
 function perColOf(cols: string[]): number {
   return Math.max(0, ...cols.map(c => [...c].length));
@@ -72,14 +73,18 @@ export function drawBubbles(
 
   const style = normalizeBubbleStyle(opts.style);
   const fontStack = BUBBLE_FONT_STACKS[normalizeBubbleFont(opts.font)];
+  // 先量一遍这张图「哪里花」：后面所有落点都靠它避脸。
+  // 拿不到（canvas 被污染 / 尺寸为 0）就退回几何避让，不影响出图。
+  const busy = opts.busy ?? readBusyGrid(image) ?? undefined;
+  const planOpts: PlanOptions = busy ? { ...opts, busy } : opts;
   if (isBlendStyle(style)) {
-    drawBlend(ctx, items, fontStack, width, height, style, opts);
+    drawBlend(ctx, items, fontStack, width, height, style, planOpts);
     return canvas;
   }
 
   const fontSize = bubbleFontSize({ width, height });
   ctx.font = `400 ${fontSize}px ${fontStack}`;
-  const bubbles = planBubbles(items, { width, height }, s => ctx.measureText(s).width, opts);
+  const bubbles = planBubbles(items, { width, height }, s => ctx.measureText(s).width, planOpts);
   const ink = boxInkFor(style);
 
   for (const bubble of bubbles) {

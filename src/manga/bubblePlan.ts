@@ -22,6 +22,7 @@ import {
   type PlanOptions,
 } from './bubbleTypes';
 import { slotIndexAt, type PanelSlot } from './panelSlots';
+import { busyInRect, type BusyGrid } from './busyMap';
 
 export type { AvoidZone } from './bubbleTypes';
 
@@ -195,6 +196,36 @@ const W_PLACED = 240;
 const W_FACE = 130;
 const W_CROSS = 14;
 const W_EDGE = 26;
+/**
+ * 压在「画面内容密集区」的权重。
+ *
+ * 图上一块地方越花（线稿、头发、脸、花纹、深色块），压上去越难看。这个权重比
+ * 猜出来的脸框还高一点：它是从**这张图**读出来的，可信度高于任何固定矩形。
+ */
+const W_BUSY = 150;
+/** 密度低于这个值当「留白」处理，不奖不罚（白底页到处都在阈值附近，奖会乱跳）。 */
+const BUSY_FLOOR = 0.12;
+
+/** 归一化矩形（0~1）：密度图是按整页坐标算的。 */
+function normRect(rect: { x: number; y: number; width: number; height: number }, page: { width: number; height: number }) {
+  return {
+    x: rect.x / Math.max(1, page.width),
+    y: rect.y / Math.max(1, page.height),
+    width: rect.width / Math.max(1, page.width),
+    height: rect.height / Math.max(1, page.height),
+  };
+}
+
+/** 这一块有多「忙」的罚分：留白处为 0，最花处约等于 W_BUSY。 */
+function busyPenalty(
+  busy: BusyGrid | undefined,
+  rect: { x: number; y: number; width: number; height: number },
+  page: { width: number; height: number },
+): number {
+  if (!busy) return 0;
+  const ratio = busyInRect(busy, normRect(rect, page));
+  return Math.max(0, ratio - BUSY_FLOOR) * W_BUSY;
+}
 
 function scoreAt(
   rect: BubbleRect,
@@ -203,10 +234,14 @@ function scoreAt(
   page: { width: number; height: number },
   placed: BubbleRect[],
   zones: readonly AvoidZone[],
+  busy?: BusyGrid,
 ): number {
   const probe = { ...rect, x: point.x, y: point.y };
   const area = Math.max(THUMB, rect.width * rect.height);
   let score = 0;
+
+  // 先看这张图本身：哪块是脸、哪块是留白，比任何固定矩形都准
+  score += busyPenalty(busy, probe, page);
 
   for (const zone of zones) {
     const box = {
@@ -257,10 +292,11 @@ function bestPoint(
   margin: number,
   placed: BubbleRect[],
   zones: readonly AvoidZone[],
+  busy?: BusyGrid,
 ): { point: Point; score: number } {
   let best: { point: Point; score: number } | null = null;
   for (const point of candidatesFor(rect, item, page, margin)) {
-    const score = scoreAt(rect, point, item, page, placed, zones);
+    const score = scoreAt(rect, point, item, page, placed, zones, busy);
     if (!best || score < best.score) best = { point, score };
   }
   return best ?? { point: { x: margin, y: margin }, score: 0 };
@@ -299,6 +335,7 @@ function placeRect(
   zones: readonly AvoidZone[],
   placed: BubbleRect[],
   withTail: boolean,
+  busy?: BusyGrid,
 ): void {
   if (typeof item.x === 'number' && typeof item.y === 'number') {
     rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
@@ -308,7 +345,7 @@ function placeRect(
     return;
   }
 
-  const { point } = bestPoint(rect, item, page, margin, placed, zones);
+  const { point } = bestPoint(rect, item, page, margin, placed, zones, busy);
   rect.x = point.x;
   rect.y = point.y;
 
@@ -398,10 +435,15 @@ function scoreInSlot(
   page: { width: number; height: number },
   placed: BubbleRect[],
   noGo: readonly AvoidZone[],
+  busy?: BusyGrid,
 ): number {
   const probe: BubbleRect = { ...rect, x: point.x, y: point.y };
   const area = Math.max(1, rect.width * rect.height);
   let score = 0;
+
+  // 格位是「我们下发版面时以为的格」，成图未必真长这样；
+  // 密度图看的是真实像素——压在这张图的花处就罚，哪怕它在我们以为的空白里。
+  score += busyPenalty(busy, probe, page);
 
   // 压别的气泡最难看，权最高
   for (const other of placed) {
@@ -485,11 +527,14 @@ export function assignDialogueToSlots(
   let prev = 0;
   return items.map(item => {
     const p = explicit(item);
-    if (p >= 0) {
-      prev = p;
-      return p;
-    }
     const bySpeaker = slotBySpeaker(item, casts);
+    if (p >= 0) {
+      // 模型写的格号与「这个人只画在某格」矛盾时，信画面：人画在哪儿是确定的，
+      // 模型数格子（0 起/1 起、跨页接着数）经常数错——那就是「台词跑到上一格」。
+      const chosen = bySpeaker >= 0 && bySpeaker !== p ? bySpeaker : p;
+      prev = chosen;
+      return chosen;
+    }
     if (bySpeaker >= 0) {
       prev = bySpeaker;
       return bySpeaker;
@@ -531,9 +576,9 @@ export function planBubbles(
     ? []
     : (opts.avoid ?? (slots.length ? [] : FACE_AVOID_ZONES));
   if (isBlendStyle(style)) {
-    return planBlend(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
+    return planBlend(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast, opts.busy);
   }
-  return planBubbleBox(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
+  return planBubbleBox(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast, opts.busy);
 }
 
 /** 有框气泡的正文最大宽度：0.34 页宽。再宽就会伸到中轴的人脸上。 */
@@ -601,6 +646,7 @@ function planBubbleBoxPanel(
   noGo: readonly AvoidZone[],
   paddingRatio?: number,
   casts?: readonly (readonly string[])[],
+  busy?: BusyGrid,
 ): BubbleRect[] {
   const baseFont = bubbleFontSize(page);
   const pad = Math.max(3, Math.round(page.width * (paddingRatio ?? 0.012)));
@@ -636,7 +682,7 @@ function planBubbleBoxPanel(
         let point: Point = { x: inner.x, y: inner.y };
         let score = Infinity;
         for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
-          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedHere, noGo);
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedHere, noGo, busy);
           if (s < score) {
             score = s;
             point = candidate;
@@ -669,6 +715,7 @@ function planBubbleBox(
   slots: readonly PanelSlot[] = [],
   panelPadding?: number,
   panelCasts?: readonly (readonly string[])[],
+  busy?: BusyGrid,
 ): BubbleRect[] {
   const variant = bubbleVariantOf(style as Parameters<typeof bubbleVariantOf>[0]);
   const baseFont = bubbleFontSize(page);
@@ -681,7 +728,7 @@ function planBubbleBox(
     const casts = panelCasts;
     const pinned = capped.filter(item => typeof item.x === 'number' && typeof item.y === 'number');
     const flowed = capped.filter(item => !(typeof item.x === 'number' && typeof item.y === 'number'));
-    const byPanel = planBubbleBoxPanel(flowed, page, measure, variant, slots, zones, panelPadding, casts);
+    const byPanel = planBubbleBoxPanel(flowed, page, measure, variant, slots, zones, panelPadding, casts, busy);
     // 手动钉的位置照旧原地不动（用户说放哪就放哪），只是画在最上层
     const manual: BubbleRect[] = [];
     for (const item of pinned) {
@@ -745,7 +792,7 @@ function planBubbleBox(
       const metrics = measureBox(item, page, measure, fontSize, variant);
       if (!metrics) continue;
       const rect: BubbleRect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...(metrics.vertical ? { vertical: true } : {}) };
-      const { point, score } = bestPoint(rect, item, page, margin, placed, zones);
+      const { point, score } = bestPoint(rect, item, page, margin, placed, zones, busy);
       rect.x = point.x;
       rect.y = point.y;
       rect.fontSize = fontSize;
@@ -773,6 +820,7 @@ function planBlend(
   slots: readonly PanelSlot[] = [],
   panelPadding?: number,
   casts?: readonly (readonly string[])[],
+  busy?: BusyGrid,
 ): BubbleRect[] {
   const baseFont = blendFontSize(page);
   const margin = Math.round(page.width * 0.02);
@@ -807,7 +855,7 @@ function planBlend(
         let point: Point = { x: inner.x, y: inner.y };
         let score = Infinity;
         for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
-          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedAll, zones);
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedAll, zones, busy);
           if (s < score) {
             score = s;
             point = candidate;
@@ -876,7 +924,7 @@ function planBlend(
       placed.push(rect);
       return;
     }
-    placeRect(rect, item, index, page, margin, zones, placed, false);
+    placeRect(rect, item, index, page, margin, zones, placed, false, busy);
   });
   return placed;
 }
