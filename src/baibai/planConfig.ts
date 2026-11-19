@@ -136,6 +136,16 @@ export function readOutConfig(): OutConfigSnapshot {
   return parseOutConfig(ctx.extensionSettings?.[IMAGE_SETTINGS_KEY]);
 }
 
+/** 快照里「当前方案」那一条（读模型/画师串等细节用）。 */
+export function activePlanOf(snap: OutConfigSnapshot): PlanInfo | undefined {
+  return snap.plans.find(p => p.id === snap.activePlanId);
+}
+
+/** 当前方案的模型名，写进日志用：`NAI5` 与 `NAI4.5` 的账单差一倍，必须留证据。 */
+export function activePlanModel(): string {
+  return activePlanOf(readOutConfig())?.model ?? '';
+}
+
 /** 计算当前配置的省钱提示：是否有比当前方案更便宜的模型族可选。 */
 export function moneySavingHint(snap: OutConfigSnapshot): string {
   const active = snap.plans.find(p => p.id === snap.activePlanId);

@@ -599,9 +599,9 @@ function buildLogRow(entry: ImageLogEntry): HTMLElement {
   summary.className = 'sti-log-summary';
   summary.textContent = [
     formatTime(entry.at),
-    entry.kind === 'llm' ? '读剧情' : '出图',
+    entry.kind === 'llm' ? '读剧情' : entry.kind === 'plan' ? '切方案' : '出图',
     MODE_LABEL[entry.mode] ?? entry.mode,
-    `#${entry.floor}`,
+    entry.kind === 'plan' ? '' : `#${entry.floor}`,
     entry.status === 'error' ? '失败' : '成功',
     entry.durationMs !== undefined ? `${(entry.durationMs / 1000).toFixed(1)}s` : '',
     entry.plan ? `方案 ${entry.plan}` : '',
@@ -618,10 +618,17 @@ function buildLogRow(entry: ImageLogEntry): HTMLElement {
     err.textContent = entry.error;
     body.appendChild(err);
   }
+  if (entry.kind === 'plan') {
+    if (entry.prompt) body.appendChild(logField('说明', entry.prompt));
+    if (entry.plan) body.appendChild(logField('出图方案', entry.plan));
+    row.appendChild(body);
+    return row;
+  }
   body.appendChild(logField('正向', entry.prompt));
   if (entry.nl) body.appendChild(logField('nl', entry.nl));
   if (entry.negative) body.appendChild(logField('负面', entry.negative));
   if (entry.plan) body.appendChild(logField('出图方案', entry.plan));
+  if (entry.model) body.appendChild(logField('模型', entry.model));
   if (entry.source) body.appendChild(logField('来源', entry.source === 'card' ? '柏宝绘卡片' : '公开出图接口'));
 
   row.appendChild(body);

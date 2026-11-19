@@ -11,7 +11,7 @@
  * 内存级（刷新即清），与柏宝绘的定位一致，不写进聊天或 settings。
  */
 
-export type ImageLogKind = 'image' | 'llm';
+export type ImageLogKind = 'image' | 'llm' | 'plan';
 export type ImageLogStatus = 'ok' | 'error';
 
 export interface ImageLogEntry {
@@ -28,6 +28,8 @@ export interface ImageLogEntry {
   size?: string;
   /** 这次出图实际用的柏宝绘方案名（排查「明明分了方案却用旧的」的关键证据） */
   plan?: string;
+  /** 该方案的模型名（NAI5 与 NAI4.5 账单差一倍，光看方案名有时不够） */
+  model?: string;
   seed?: number;
   status: ImageLogStatus;
   durationMs?: number;
@@ -72,6 +74,8 @@ export function recordImageLog(input: {
   size?: string;
   /** 这次出图实际用的柏宝绘方案名（排查「明明分了方案却用旧的」的关键证据） */
   plan?: string;
+  /** 该方案的模型名（NAI5 与 NAI4.5 账单差一倍，光看方案名有时不够） */
+  model?: string;
   seed?: number;
   status: ImageLogStatus;
   durationMs?: number;
@@ -94,6 +98,30 @@ export function recordLlmError(input: {
     prompt: input.prompt ?? '',
     status: 'error',
     error: input.error,
+  });
+}
+
+/**
+ * 记一次「按模式切出图方案」。
+ *
+ * 为什么值得单独记：方案（模型 + 画师串）切没切，从成图上很难一眼看出来，
+ * 而它又是花钱与画风的总开关。记一条「QQ 人状态栏 → NAI4.5 · 成功 / 失败原因」，
+ * 事后翻日志就能确定是"没切"还是"切了但效果不对"。
+ */
+export function recordPlanSwitch(input: {
+  mode: string;
+  plan: string;
+  status: ImageLogStatus;
+  /** 成功时是「已切到 X」，失败时是完整原因 */
+  detail?: string;
+}): ImageLogEntry {
+  return push({
+    kind: 'plan',
+    mode: input.mode,
+    floor: 0,
+    prompt: input.detail ?? '',
+    plan: input.plan,
+    status: input.status,
   });
 }
 

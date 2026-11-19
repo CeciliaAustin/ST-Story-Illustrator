@@ -20,7 +20,7 @@ import type {
 } from '../types';
 import { ensureModeOutPlan } from './modePlan';
 import { makeLookReader } from './theaterRun';
-import { readOutConfig } from '../baibai/planConfig';
+import { readOutConfig, activePlanModel } from '../baibai/planConfig';
 import { resolveModeSettings, MODE_LABEL } from '../types';
 import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment';
 import { buildAnchor } from '../selection/anchor';
@@ -147,6 +147,7 @@ async function runIllustration(
     floor,
     source: 'card',
     plan: readOutConfig().activePlanName,
+    model: activePlanModel(),
     prompt,
     ...(plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
@@ -338,6 +339,7 @@ async function runComic(
       floor,
       source: 'card',
       plan: readOutConfig().activePlanName,
+      model: activePlanModel(),
       prompt: enforced.prompt,
       ...(enforced.nl ? { nl: enforced.nl } : {}),
       size: 'portrait',
@@ -450,6 +452,10 @@ async function runTheaterMode(
     generate: async (input, profile) => {
       const startedAt = Date.now();
       try {
+        // 每张图前复核一次方案：读剧情那几十秒里，用户可能手动切了方案，
+        // 或上一轮任务留下的方案不是这一套。已经是目标方案时只读一次配置（几乎零成本），
+        // 不一致就重新切；切不动会抛错中止，绝不用错方案出图。
+        await ensureModeOutPlan(mode, deps.fullSettings);
         const r = await baiBaiAdapter.generate({
           prompt: input.prompt,
           ...(input.negative ? { negative: input.negative } : {}),
@@ -460,6 +466,7 @@ async function runTheaterMode(
         recordImageLog({
           mode, floor, source: 'api',
           plan: readOutConfig().activePlanName,
+          model: activePlanModel(),
           prompt: input.prompt,
           ...(input.negative ? { negative: input.negative } : {}),
           ...(input.size ? { size: input.size } : {}),
@@ -472,6 +479,7 @@ async function runTheaterMode(
         recordImageLog({
           mode, floor, source: 'api',
           plan: readOutConfig().activePlanName,
+          model: activePlanModel(),
           prompt: input.prompt,
           ...(input.negative ? { negative: input.negative } : {}),
           ...(input.size ? { size: input.size } : {}),

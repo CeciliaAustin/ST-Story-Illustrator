@@ -1213,6 +1213,13 @@ function readOutConfig() {
   const ctx = getContext();
   return parseOutConfig((_a = ctx.extensionSettings) == null ? void 0 : _a[IMAGE_SETTINGS_KEY]);
 }
+function activePlanOf(snap) {
+  return snap.plans.find((p) => p.id === snap.activePlanId);
+}
+function activePlanModel() {
+  var _a;
+  return ((_a = activePlanOf(readOutConfig())) == null ? void 0 : _a.model) ?? "";
+}
 function moneySavingHint(snap) {
   const active = snap.plans.find((p) => p.id === snap.activePlanId);
   if (!active) return "";
@@ -2024,11 +2031,15 @@ function destroyLightbox() {
   galleryItems = [];
 }
 const HOST_ID = "bbi-app-host";
-const PANEL_TITLE = "渠道";
+const NAV_LABEL = "渠道";
 const TAB_LABEL = "NAI";
 function shadowRoot() {
   const host = document.getElementById(HOST_ID);
   return (host == null ? void 0 : host.shadowRoot) ?? null;
+}
+function panelWindow() {
+  var _a;
+  return ((_a = shadowRoot()) == null ? void 0 : _a.querySelector(".bbi-window")) ?? null;
 }
 function sleep$1(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -2042,58 +2053,124 @@ async function waitFor(fn, timeoutMs) {
     await sleep$1(120);
   }
 }
-function openPanelIfNeeded() {
-  if (shadowRoot()) return;
-  const menuItem = document.getElementById("bbi-menu-item");
-  if (menuItem) {
-    menuItem.click();
-    return;
+function clickOpenEntry() {
+  var _a;
+  const menu = document.getElementById("bbi-menu-item");
+  if (menu) {
+    menu.click();
+    return true;
   }
-  const orb = document.querySelector('.bbi-orb, [class*="bbi-floating-orb"]');
-  orb == null ? void 0 : orb.click();
+  const topbar = document.querySelector("#bbi-topbar-button .drawer-toggle");
+  if (topbar) {
+    topbar.click();
+    return true;
+  }
+  const orb = (_a = shadowRoot()) == null ? void 0 : _a.querySelector(".bbi-orb");
+  if (orb) {
+    orb.click();
+    return true;
+  }
+  return false;
+}
+async function ensurePanelOpen(timeoutMs) {
+  if (panelWindow()) return shadowRoot();
+  const root = shadowRoot();
+  if (!root) return null;
+  if (!clickOpenEntry()) return null;
+  return await waitFor(() => panelWindow() ? shadowRoot() : null, timeoutMs);
+}
+function navLabelOf(btn) {
+  var _a;
+  const label = (_a = btn.querySelector(".bbi-nav-label")) == null ? void 0 : _a.textContent;
+  return (btn.getAttribute("title") ?? btn.getAttribute("aria-label") ?? label ?? btn.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+function pickNavButton(buttons, label) {
+  const exact = buttons.filter((btn) => navLabelOf(btn) === label);
+  return exact.length === 1 ? exact[0] : null;
+}
+function tabLabelOf(btn) {
+  return (btn.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+function pickTab(tabs, label) {
+  const exact = tabs.filter((btn) => tabLabelOf(btn) === label);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  const prefix = tabs.filter((btn) => tabLabelOf(btn).startsWith(label));
+  return prefix.length === 1 ? prefix[0] : null;
+}
+function planNameOf(btn) {
+  var _a;
+  return (((_a = btn.querySelector(".item-name")) == null ? void 0 : _a.textContent) ?? btn.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+function pickPlanRadio(radios, planName) {
+  const exact = radios.filter((btn) => planNameOf(btn) === planName);
+  if (exact.length === 1) return { radio: exact[0], ambiguous: false };
+  if (exact.length > 1) return { radio: null, ambiguous: true };
+  const fuzzy = planName ? radios.filter((btn) => planNameOf(btn).includes(planName)) : [];
+  if (fuzzy.length === 1) return { radio: fuzzy[0], ambiguous: false };
+  return { radio: null, ambiguous: fuzzy.length > 1 };
+}
+function isRadioChecked(radio) {
+  return (radio == null ? void 0 : radio.getAttribute("aria-checked")) === "true";
+}
+function navButtons(root) {
+  return Array.from(root.querySelectorAll("button.bbi-nav-item"));
+}
+function tabButtons(root) {
+  return Array.from(root.querySelectorAll('button[role="tab"]'));
 }
 function planRadios(root) {
   return Array.from(root.querySelectorAll('.plan-item button.item-main[role="radio"]'));
 }
-function pickPlanRadio(radios, planName) {
-  const nameOf = (btn) => {
-    var _a;
-    return (((_a = btn.querySelector(".item-name")) == null ? void 0 : _a.textContent) ?? btn.textContent ?? "").trim();
+function probe(root) {
+  if (!root) return { hasHost: false, open: false, navs: [], tabs: [], plans: [] };
+  return {
+    hasHost: true,
+    open: !!panelWindow(),
+    navs: navButtons(root).map(navLabelOf).filter(Boolean),
+    tabs: tabButtons(root).map(tabLabelOf).filter(Boolean),
+    plans: planRadios(root).map(planNameOf).filter(Boolean)
   };
-  const exact = radios.filter((btn) => nameOf(btn) === planName);
-  if (exact.length === 1) return { radio: exact[0], ambiguous: false };
-  if (exact.length > 1) return { radio: null, ambiguous: true };
-  const fuzzy = planName ? radios.filter((btn) => nameOf(btn).includes(planName)) : [];
-  if (fuzzy.length === 1) return { radio: fuzzy[0], ambiguous: false };
-  return { radio: null, ambiguous: fuzzy.length > 1 };
 }
-function clickNavToBackend(root) {
-  if (planRadios(root).length > 0) return true;
-  const navs = Array.from(root.querySelectorAll("button.bbi-nav-item"));
-  const target = navs.find((btn) => {
-    const label = (btn.getAttribute("title") ?? btn.getAttribute("aria-label") ?? btn.textContent ?? "").trim();
-    return label === PANEL_TITLE;
-  });
-  if (!target) return false;
-  target.click();
-  return true;
+function describe(root) {
+  const p = probe(root);
+  if (!p.hasHost) return "柏宝绘未加载（找不到 #bbi-app-host）";
+  const parts = [
+    `面板${p.open ? "已开" : "未开"}`,
+    `导航[${p.navs.join("/") || "空"}]`,
+    `页签[${p.tabs.join("/") || "空"}]`,
+    `方案行 ${p.plans.length} 个`
+  ];
+  return parts.join(" · ");
 }
-function clickNaiTab(root) {
-  if (planRadios(root).length > 0) return true;
-  const tabs = Array.from(root.querySelectorAll('button[role="tab"]'));
-  const target = tabs.find((btn) => (btn.textContent ?? "").trim() === TAB_LABEL);
-  if (!target) return false;
-  target.click();
-  return true;
+async function gotoNai(root) {
+  const nav = pickNavButton(navButtons(root), NAV_LABEL);
+  const tabs = tabButtons(root);
+  if (nav && !nav.classList.contains("is-active")) {
+    nav.click();
+    await sleep$1(240);
+    return "pending";
+  }
+  if (!nav && tabs.length === 0) return "pending";
+  const tab = pickTab(tabButtons(shadowRoot() ?? root), TAB_LABEL);
+  if (!tab) return "stuck";
+  if (!tab.classList.contains("is-on")) {
+    tab.click();
+    await sleep$1(240);
+    return "pending";
+  }
+  return "ready";
 }
-function closePanelIfWeOpened(root, weOpened) {
+function closePanelIfWeOpened(weOpened) {
   if (!weOpened) return;
+  const root = shadowRoot();
+  if (!root) return;
   const close = Array.from(root.querySelectorAll("button.bbi-icon-btn")).find(
     (btn) => (btn.getAttribute("title") ?? "") === "关闭"
   );
   close == null ? void 0 : close.click();
 }
-async function switchBaiBaiPlan(planId, timeoutMs = 12e3) {
+async function switchBaiBaiPlan(planId, timeoutMs = 15e3) {
   const snap = readOutConfig();
   const target = snap.plans.find((p) => p.id === planId);
   if (!target) {
@@ -2109,25 +2186,25 @@ async function switchBaiBaiPlan(planId, timeoutMs = 12e3) {
   if (snap.activePlanId === planId) {
     return { ok: true, reason: "already", message: `「${target.name}」已经是当前方案。` };
   }
-  const hadPanel = !!shadowRoot();
-  openPanelIfNeeded();
-  const root = await waitFor(() => shadowRoot(), 4e3);
+  const weOpened = !panelWindow();
+  let root = await ensurePanelOpen(5e3);
   if (!root) {
     return {
       ok: false,
       reason: "no-ui",
-      message: "打不开柏宝绘面板，无法切换出图方案（请确认柏宝绘已启用）。"
+      message: `打不开柏宝绘面板，无法切换出图方案（${describe(shadowRoot())}）。请确认柏宝绘已启用。`
     };
   }
   const deadline = Date.now() + timeoutMs;
-  let radio = null;
   let ambiguous = false;
+  let radio = null;
   while (Date.now() < deadline) {
-    if (planRadios(root).length === 0) {
-      clickNavToBackend(root);
-      await sleep$1(150);
-      clickNaiTab(root);
-      await sleep$1(150);
+    root = panelWindow() ? shadowRoot() : await ensurePanelOpen(3e3);
+    if (!root) break;
+    const navState = await gotoNai(root);
+    if (navState !== "ready") {
+      if (navState === "stuck") await sleep$1(200);
+      continue;
     }
     const picked = pickPlanRadio(planRadios(root), target.name);
     if (picked.radio) {
@@ -2138,10 +2215,10 @@ async function switchBaiBaiPlan(planId, timeoutMs = 12e3) {
       ambiguous = true;
       break;
     }
-    await sleep$1(150);
+    await sleep$1(200);
   }
   if (ambiguous) {
-    closePanelIfWeOpened(root, !hadPanel);
+    closePanelIfWeOpened(weOpened);
     return {
       ok: false,
       reason: "ambiguous",
@@ -2149,26 +2226,52 @@ async function switchBaiBaiPlan(planId, timeoutMs = 12e3) {
     };
   }
   if (!radio) {
-    closePanelIfWeOpened(root, !hadPanel);
+    const scene = describe(shadowRoot());
+    closePanelIfWeOpened(weOpened);
     return {
       ok: false,
       reason: "no-ui",
-      message: `没能在柏宝绘「渠道 → NAI」里找到方案「${target.name}」。请确认它在方案列表里（不是接入点），或打开柏宝绘手动选一次。`
+      message: `没能在柏宝绘「渠道 → NAI」里找到方案「${target.name}」（${scene}）。请确认它是"出图方案"里的一行，而不是接入点。`
     };
   }
   if (radio.hasAttribute("disabled")) {
-    closePanelIfWeOpened(root, !hadPanel);
+    closePanelIfWeOpened(weOpened);
     return { ok: false, reason: "no-ui", message: `方案「${target.name}」被禁用，无法选中。` };
   }
-  radio.click();
-  const confirmed = await waitFor(() => readOutConfig().activePlanId === planId ? true : null, 4e3);
-  closePanelIfWeOpened(root, !hadPanel);
-  if (!confirmed) {
-    return {
-      ok: false,
-      reason: "no-ui",
-      message: `已点击方案「${target.name}」，但柏宝绘没有真的切过去（当前仍是「${readOutConfig().activePlanName}」）。`
-    };
+  if (!isRadioChecked(radio)) {
+    radio.click();
+    let confirmed = await waitFor(() => {
+      const now = pickPlanRadio(planRadios(shadowRoot() ?? root), target.name).radio;
+      return isRadioChecked(now) ? true : null;
+    }, 2500);
+    if (!confirmed) {
+      const row = radio.closest(".plan-item");
+      row == null ? void 0 : row.click();
+      confirmed = await waitFor(() => {
+        const now = pickPlanRadio(planRadios(shadowRoot() ?? root), target.name).radio;
+        return isRadioChecked(now) ? true : null;
+      }, 2500);
+    }
+    if (!confirmed) {
+      const now = describe(shadowRoot());
+      closePanelIfWeOpened(weOpened);
+      return {
+        ok: false,
+        reason: "no-ui",
+        message: `已点击方案「${target.name}」，但柏宝绘没有真的切过去（${now}）。`
+      };
+    }
+  }
+  closePanelIfWeOpened(weOpened);
+  const agreed = await waitFor(
+    () => readOutConfig().activePlanId === planId ? true : null,
+    1200
+  );
+  if (!agreed) {
+    const after = readOutConfig();
+    console.warn(
+      `[配图] 方案已在面板上切到「${target.name}」，但设置副本仍显示「${after.activePlanName || "未知"}」，以其自身落盘延迟处理，不影响本次出图。`
+    );
   }
   return { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
 }
@@ -2274,6 +2377,16 @@ function recordLlmError(input) {
     prompt: input.prompt ?? "",
     status: "error",
     error: input.error
+  });
+}
+function recordPlanSwitch(input) {
+  return push({
+    kind: "plan",
+    mode: input.mode,
+    floor: 0,
+    prompt: input.detail ?? "",
+    plan: input.plan,
+    status: input.status
   });
 }
 function getImageLog() {
@@ -2782,9 +2895,9 @@ function buildLogRow(entry) {
   summary.className = "sti-log-summary";
   summary.textContent = [
     formatTime(entry.at),
-    entry.kind === "llm" ? "读剧情" : "出图",
+    entry.kind === "llm" ? "读剧情" : entry.kind === "plan" ? "切方案" : "出图",
     MODE_LABEL[entry.mode] ?? entry.mode,
-    `#${entry.floor}`,
+    entry.kind === "plan" ? "" : `#${entry.floor}`,
     entry.status === "error" ? "失败" : "成功",
     entry.durationMs !== void 0 ? `${(entry.durationMs / 1e3).toFixed(1)}s` : "",
     entry.plan ? `方案 ${entry.plan}` : "",
@@ -2799,10 +2912,17 @@ function buildLogRow(entry) {
     err.textContent = entry.error;
     body.appendChild(err);
   }
+  if (entry.kind === "plan") {
+    if (entry.prompt) body.appendChild(logField("说明", entry.prompt));
+    if (entry.plan) body.appendChild(logField("出图方案", entry.plan));
+    row.appendChild(body);
+    return row;
+  }
   body.appendChild(logField("正向", entry.prompt));
   if (entry.nl) body.appendChild(logField("nl", entry.nl));
   if (entry.negative) body.appendChild(logField("负面", entry.negative));
   if (entry.plan) body.appendChild(logField("出图方案", entry.plan));
+  if (entry.model) body.appendChild(logField("模型", entry.model));
   if (entry.source) body.appendChild(logField("来源", entry.source === "card" ? "柏宝绘卡片" : "公开出图接口"));
   row.appendChild(body);
   return row;
@@ -3176,28 +3296,25 @@ async function ensureModeOutPlan(mode, settings2) {
   const snap = readOutConfig();
   const target = snap.plans.find((p) => p.id === planId);
   if (!target) {
-    throw new Error(
-      `${MODE_LABEL$1[mode]} 指定的出图方案已不存在（可能已被删除）。请到「配图设置」重新指定。`
-    );
+    const message = `${MODE_LABEL$1[mode]} 指定的出图方案已不存在（可能已在柏宝绘里删除）。请到「配图设置 → 小剧场 → 出图方案」重新指定。`;
+    recordPlanSwitch({ mode, plan: planId.slice(0, 8), status: "error", detail: message });
+    throw new Error(message);
   }
   if (snap.activePlanId === planId) return;
   let result;
   try {
     result = await switchBaiBaiPlan(planId);
   } catch (e) {
-    throw new Error(
-      `${MODE_LABEL$1[mode]} 切换出图方案「${target.name}」时出错：${e instanceof Error ? e.message : String(e)}`
-    );
+    const detail = `${MODE_LABEL$1[mode]} 切换出图方案「${target.name}」时出错：${e instanceof Error ? e.message : String(e)}`;
+    recordPlanSwitch({ mode, plan: target.name, status: "error", detail });
+    throw new Error(detail);
   }
   if (!result.ok) {
-    throw new Error(`${MODE_LABEL$1[mode]} 无法切到出图方案「${target.name}」：${result.message}`);
+    const detail = `${MODE_LABEL$1[mode]} 无法切到出图方案「${target.name}」：${result.message}`;
+    recordPlanSwitch({ mode, plan: target.name, status: "error", detail });
+    throw new Error(detail);
   }
-  const after = readOutConfig();
-  if (after.activePlanId !== planId) {
-    throw new Error(
-      `${MODE_LABEL$1[mode]} 切换出图方案失败：当前仍是「${after.activePlanName || "未知"}」，没有按指定的「${target.name}」出图。`
-    );
-  }
+  recordPlanSwitch({ mode, plan: target.name, status: "ok", detail: result.message });
 }
 const PANEL_BUBBLE_AREAS = [
   "tl",
@@ -6166,6 +6283,7 @@ async function runIllustration(task, ctx, deps) {
     floor,
     source: "card",
     plan: readOutConfig().activePlanName,
+    model: activePlanModel(),
     prompt,
     ...plan.data.nl ? { nl: plan.data.nl } : {},
     ...plan.data.negative ? { negative: plan.data.negative } : {},
@@ -6331,6 +6449,7 @@ async function runComic(task, ctx, deps) {
       floor,
       source: "card",
       plan: readOutConfig().activePlanName,
+      model: activePlanModel(),
       prompt: enforced.prompt,
       ...enforced.nl ? { nl: enforced.nl } : {},
       size: "portrait",
@@ -6429,6 +6548,7 @@ async function runTheaterMode(task, ctx, deps) {
     generate: async (input, profile) => {
       const startedAt = Date.now();
       try {
+        await ensureModeOutPlan(mode, deps.fullSettings);
         const r = await baiBaiAdapter.generate({
           prompt: input.prompt,
           ...input.negative ? { negative: input.negative } : {},
@@ -6441,6 +6561,7 @@ async function runTheaterMode(task, ctx, deps) {
           floor,
           source: "api",
           plan: readOutConfig().activePlanName,
+          model: activePlanModel(),
           prompt: input.prompt,
           ...input.negative ? { negative: input.negative } : {},
           ...input.size ? { size: input.size } : {},
@@ -6455,6 +6576,7 @@ async function runTheaterMode(task, ctx, deps) {
           floor,
           source: "api",
           plan: readOutConfig().activePlanName,
+          model: activePlanModel(),
           prompt: input.prompt,
           ...input.negative ? { negative: input.negative } : {},
           ...input.size ? { size: input.size } : {},
