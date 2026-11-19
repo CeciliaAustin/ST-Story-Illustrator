@@ -6,16 +6,19 @@
  */
 
 import type {
+  BaiBaiCharacter,
   BbiStatusInfo,
   CreationMode,
   StoryIllustratorSettings,
   StoryKind,
   VisualProfile,
 } from '../types';
+import { resolveModeSettings } from '../types';
+import { readOutConfig } from '../baibai/planConfig';
 import { getCharacters } from '../baibai/bridge';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { makeModeLlmCaller } from '../manga/planGenerator';
-import { runTheaterOne } from '../theater/runtime';
+import { runTheaterOne, type LookReader } from '../theater/runtime';
 import { recordImageLog, recordLlmError } from '../log/imageLog';
 
 export function kindOfMode(mode: CreationMode): StoryKind {
@@ -41,6 +44,45 @@ export function fallbackProfile(mode: CreationMode): VisualProfile {
   };
 }
 
+/** 名字比对用的归一：去掉空白、括号、标点，忽略大小写。 */
+function normalizeName(name: string): string {
+  return String(name ?? '')
+    .replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, '')
+    .toLowerCase();
+}
+
+/**
+ * 角色外貌读取器。
+ *
+ * 为什么不能只做 name 精确匹配：正文里的称呼与柏宝绘角色库里的条目名经常差一点
+ * （带括号注、繁简、昵称）。匹配不上就等于**没有外貌 tag**，出图会变成一张
+ * 「随便哪个人」——用户看到的就是「跟剧情毫无关系」。所以退让两级：
+ * 归一后比对 → 场上只有唯一角色时直接用它。
+ */
+export function makeLookReader(
+  characters: BaiBaiCharacter[],
+  primaryName = '',
+): LookReader {
+  const byNorm = new Map<string, BaiBaiCharacter>();
+  for (const c of characters) {
+    byNorm.set(normalizeName(c.name), c);
+    // 库里的条目常写成「小红（我）」「Alice (AI)」：把括号前的主名也登记一份，
+    // 否则正文里的「小红」永远匹配不上，等于没有外貌 tag。
+    const base = normalizeName(String(c.name ?? '').split(/[（(【\[]/)[0]);
+    if (base && !byNorm.has(base)) byNorm.set(base, c);
+  }
+  const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : undefined;
+  const onlyOne = characters.length === 1 ? characters[0] : undefined;
+
+  return names =>
+    names.map(name => {
+      const key = normalizeName(name);
+      const base = normalizeName(String(name ?? '').split(/[（(【\[]/)[0]);
+      const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : undefined) ?? primary ?? onlyOne;
+      return hit ? { name, tag: hit.tag, ...(hit.nl ? { nl: hit.nl } : {}) } : { name, tag: '' };
+    });
+}
+
 export interface TheaterTaskInput {
   mode: CreationMode;
   settings: StoryIllustratorSettings;
@@ -61,7 +103,7 @@ export interface TheaterTaskResult {
 export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTaskResult> {
   const { mode, settings, floor } = input;
   const kind = kindOfMode(mode);
-  const modeSettings = settings.modes[mode];
+  const modeSettings = resolveModeSettings(settings, mode);
   const characters = await getCharacters(floor);
   const profile = pickProfile(settings.profiles ?? [], mode);
 
@@ -72,9 +114,9 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     swipe: input.swipe,
     characterName: input.characterName,
     body: input.body,
-    shots: modeSettings?.shots,
-    chibi: kind !== 'manga' && (modeSettings?.chibiStyle !== 'thumb'),
-    mangaSafe: modeSettings?.bwMangaSafeMode ?? true,
+    shots: modeSettings.shots,
+    chibi: kind !== 'manga' && modeSettings.chibiStyle !== 'thumb',
+    mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     backend: 'nai',
     ...(profile ? { profile } : {}),
     // 副 API 报错即停，不回退主 API（并把原文记进日志）
@@ -98,6 +140,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
         }, genProfile ?? fallbackProfile(mode));
         recordImageLog({
           mode, floor, source: 'api',
+          plan: readOutConfig().activePlanName,
           prompt: genInput.prompt,
           ...(genInput.negative ? { negative: genInput.negative } : {}),
           ...(genInput.size ? { size: genInput.size } : {}),
@@ -109,6 +152,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
       } catch (err) {
         recordImageLog({
           mode, floor, source: 'api',
+          plan: readOutConfig().activePlanName,
           prompt: genInput.prompt,
           ...(genInput.negative ? { negative: genInput.negative } : {}),
           ...(genInput.size ? { size: genInput.size } : {}),
@@ -119,13 +163,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
         throw err;
       }
     },
-    readLooks: (names) => {
-      const lookup = new Map(characters.characters.map(c => [c.name, c]));
-      return names.map(name => {
-        const c = lookup.get(name);
-        return c ? { name, tag: c.tag, ...(c.nl ? { nl: c.nl } : {}) } : { name, tag: '' };
-      });
-    },
+    readLooks: makeLookReader(characters.characters, input.characterName),
   });
 
   return { ok: result.ok, stories: result.stories, ...(result.error ? { error: result.error } : {}) };

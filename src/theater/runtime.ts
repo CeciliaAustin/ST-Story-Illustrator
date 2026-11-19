@@ -7,7 +7,7 @@
  * 三套（status/bonus/manga）共用一份运行时，差异在 kinds.ts 的参数表。
  */
 
-import type { StoryKind, StatusReading, BbiStatusInfo, VisualProfile } from '../types';
+import type { StoryKind, StatusReading, StatusFrame, BbiStatusInfo, VisualProfile } from '../types';
 import { buildTheaterPrompt, buildTheaterImagePrompt } from './prompts';
 import { parseStatusReply, clampMangaShots } from './parseReply';
 import { scrubMangaReading, MANGA_SAFE_NEGATIVE } from './safeFilter';
@@ -72,8 +72,83 @@ export interface RunOneResult {
 // 主链路
 // ============================================================
 
+/**
+ * 把「这一格真正在发生什么」拼成出图 tag。
+ *
+ * 模型的 JSON 里，动作写在 characters[].act（英文 danbooru 短语），tags 只是补充。
+ * 上一版只取了 tags、把 act 整段丢掉——最具体的画面信息（谁在做什么）就这么没了，
+ * 出图自然只能靠几个泛词瞎猜。这里把 act 合进 tags（去重、保留原顺序）。
+ */
+export function combinedPanelTags(panel: StatusFrame): string {
+  const pieces: string[] = [];
+  for (const role of panel.roles ?? []) {
+    if (role.act) pieces.push(role.act);
+  }
+  pieces.push(panel.tags);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const piece of pieces.join(',').split(',')) {
+    const tag = piece.trim();
+    if (!tag) continue;
+    // act 是模型自由写的，可能混中文；NAI 只认英文 tag，带中文的整条丢掉
+    if (/[\u3400-\u9fff\uf900-\ufaff]/.test(tag)) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out.join(', ');
+}
+
+export interface ReadingCheck {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * 出图前的「对得上剧情吗」体检。
+ *
+ * 不合格就别出图：一张与剧情无关的 NAI5 图比一次重问贵得多，而且用户看不出来
+ * 那是模型偷懒还是插件坏了。检查三条：
+ * 1. 至少一格有足够的 tag（太少必然是空景）；
+ * 2. 非彩蛋：格子里要有出场角色；
+ * 3. 非彩蛋：这些角色至少有一个真的在正文里出现过（防止模型自己编人）。
+ *
+ * 彩蛋按设计就是架空，所以只查第 1 条。
+ */
+export function checkReading(reading: StatusReading, body: string, kind: StoryKind): ReadingCheck {
+  if (!reading.panels.length) return { ok: false, reason: '没有解析出任何分格' };
+
+  // 数的是「合进 act 之后」的 tag：模型常把动作全写在 act 里、tags 只留几个泛词
+  const rich = reading.panels.some(
+    panel => combinedPanelTags(panel).split(',').filter(t => t.trim()).length >= 5,
+  );
+  if (!rich) return { ok: false, reason: '每格的 tag 都太少，画面信息不足' };
+
+  if (kind === 'bonus') return { ok: true };
+
+  const names = new Set<string>();
+  for (const panel of reading.panels) {
+    for (const name of panel.characters) if (name) names.add(name.trim());
+  }
+  if (names.size === 0) return { ok: false, reason: '格子里没有任何出场角色' };
+
+  const text = String(body ?? '');
+  const hit = [...names].some(name => name.length >= 2 && text.includes(name));
+  if (!hit) {
+    return {
+      ok: false,
+      reason: `格子里写的角色（${[...names].slice(0, 3).join('、')}）在正文里没有出现`,
+    };
+  }
+  return { ok: true };
+}
+
 /** 读剧情并容错解析（纯装配 + 一次 LLM 调用）。 */
-export async function readTheater(input: RunOneInput): Promise<{ reading: StatusReading; hits: string[] }> {
+export async function readTheater(
+  input: RunOneInput,
+  extraInstruction = '',
+): Promise<{ reading: StatusReading; hits: string[] }> {
   const { system, user } = buildTheaterPrompt({
     kind: input.kind,
     characterName: input.characterName,
@@ -81,7 +156,8 @@ export async function readTheater(input: RunOneInput): Promise<{ reading: Status
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe,
   });
-  const raw = await input.llm(`${system}\n\n---\n\n${user}`);
+  const finalSystem = extraInstruction ? `${system}\n\n【追加要求】${extraInstruction}` : system;
+  const raw = await input.llm(`${finalSystem}\n\n---\n\n${user}`);
   let reading = parseStatusReply(raw);
 
   const hits: string[] = [];
@@ -96,7 +172,32 @@ export async function readTheater(input: RunOneInput): Promise<{ reading: Status
 /** 一次完整运行：读剧情 → 逐格出图 → 返回故事条目（落盘由调用方做）。 */
 export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
   try {
-    const { reading, hits } = await readTheater(input);
+    let { reading, hits } = await readTheater(input);
+    let check = checkReading(reading, input.body, input.kind);
+
+    // 不合格就重问一次：读剧情是文本调用，便宜；出图贵，而且废图看不出是坏在哪。
+    if (!check.ok) {
+      console.warn(`[ST-Story-Illustrator] ${input.kind} 读剧情不合格（${check.reason}），重问一次。`);
+      const retried = await readTheater(
+        input,
+        `上一次的输出不合格：${check.reason}。` +
+          '这次必须做到：tags 与 characters[].act 写的都是**正文里真的发生的事**，' +
+          '动作具体到能画出来（例如 holding sword, sitting on bed, crying, looking away），' +
+          '不许只给 1girl / solo / standing 这类空景词；角色名照抄正文里的叫法。',
+      );
+      reading = retried.reading;
+      hits = [...hits, ...retried.hits];
+      check = checkReading(reading, input.body, input.kind);
+    }
+
+    if (!check.ok) {
+      return {
+        ok: false,
+        stories: [],
+        error: `读剧情这一步没通过（${check.reason}），已放弃出图以免白花钱。请换一个更会写 tag 的副 API 模型。`,
+        hits,
+      };
+    }
     if (reading.panels.length === 0) {
       return { ok: false, stories: [], error: '读剧情未返回可解析的分镜。', hits };
     }
@@ -114,10 +215,11 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
     const stories: BbiStatusInfo[] = [];
     for (let i = 0; i < reading.panels.length; i += 1) {
       const panel = reading.panels[i];
+      // tags + characters[].act 一起拼：act 才是「这个人在做什么」，上一版丢掉了它
       const prompt = buildTheaterImagePrompt(
         input.kind,
         appearances,
-        panel.tags,
+        combinedPanelTags(panel),
         input.chibi,
       );
       const negative = input.kind === 'manga' && input.mangaSafe ? MANGA_SAFE_NEGATIVE : undefined;

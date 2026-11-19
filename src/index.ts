@@ -28,12 +28,13 @@ import { hasStory } from './theater/store';
 import { buildSingleSegment } from './selection/storySegment';
 import {
   DEFAULT_SETTINGS,
+  resolveModeSettings,
   type StoryIllustratorSettings,
   type CreationMode,
   type StorySegment,
 } from './types';
 import { TaskQueue } from './tasks/taskQueue';
-import { createTaskRunner, createVisualTask } from './tasks/workflow';
+import { createTaskRunner, createVisualTask, MODE_LABEL } from './tasks/workflow';
 
 // ============================================================
 // 模块状态
@@ -100,7 +101,8 @@ function initQueue(): void {
     },
     onError: (task, error) => {
       console.error(`[ST-Story-Illustrator] 任务 ${task.id} 失败:`, error);
-      showToast(`生成失败：${error.message}`, 'error');
+      // 带上模式名：多选一起生成时，只报「生成失败」根本分不清是哪一份
+      showToast(`${MODE_LABEL[task.mode]} 生成失败：${error.message}`, 'error');
     },
   });
 }
@@ -285,8 +287,6 @@ const autoRunning = new Set<string>();
 /** 按设置决定这一层要不要自动出小剧场；只出一次，失败不重试。 */
 function maybeAutoTrigger(floor: number): void {
   if (!isAvailable()) return;
-  const modes = settings.modes ?? ({} as StoryIllustratorSettings['modes']);
-
   const orders: Array<{ mode: CreationMode; kind: 'status' | 'bonus' | 'manga' }> = [
     { mode: 'chibi-status', kind: 'status' },
     { mode: 'chibi-bonus', kind: 'bonus' },
@@ -295,8 +295,8 @@ function maybeAutoTrigger(floor: number): void {
 
   const picks: CreationMode[] = [];
   for (const { mode, kind } of orders) {
-    const conf = modes[mode];
-    if (!conf?.autoTrigger) continue;
+    const conf = resolveModeSettings(settings, mode);
+    if (!conf.autoTrigger) continue;
     if (hasStory(floor, kind)) continue;
     if (kind === 'bonus') {
       const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);

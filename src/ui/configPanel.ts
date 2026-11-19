@@ -467,7 +467,9 @@ function planSelectRow(mode: CreationMode): HTMLElement {
     }),
     snap.plans.length === 0
       ? '柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。'
-      : '出图前会临时切到这套方案（串行执行，互不打断）。',
+      : snap.backend !== 'nai'
+        ? `柏宝绘当前出图渠道是「${snap.backend}」，按模式分配方案只对 NAI 生效——这样选会在生成时直接报错，不会白花钱。`
+        : '出图前会自动切到这套方案；切不过去就停下报错（不会偷偷用旧方案烧钱）。',
   );
 }
 
@@ -602,6 +604,7 @@ function buildLogRow(entry: ImageLogEntry): HTMLElement {
     `#${entry.floor}`,
     entry.status === 'error' ? '失败' : '成功',
     entry.durationMs !== undefined ? `${(entry.durationMs / 1000).toFixed(1)}s` : '',
+    entry.plan ? `方案 ${entry.plan}` : '',
     entry.seed !== undefined ? `seed ${entry.seed}` : '',
   ].filter(Boolean).join(' · ');
   row.appendChild(summary);
@@ -618,6 +621,7 @@ function buildLogRow(entry: ImageLogEntry): HTMLElement {
   body.appendChild(logField('正向', entry.prompt));
   if (entry.nl) body.appendChild(logField('nl', entry.nl));
   if (entry.negative) body.appendChild(logField('负面', entry.negative));
+  if (entry.plan) body.appendChild(logField('出图方案', entry.plan));
   if (entry.source) body.appendChild(logField('来源', entry.source === 'card' ? '柏宝绘卡片' : '公开出图接口'));
 
   row.appendChild(body);

@@ -15,6 +15,7 @@ import { ensureModeOutPlan } from '../tasks/modePlan';
 import { fallbackProfile, modeOfKind, pickProfile, runTheaterTask } from '../tasks/theaterRun';
 import { getSets, replaceSet, updatePanel } from './store';
 import { recordImageLog } from '../log/imageLog';
+import { readOutConfig } from '../baibai/planConfig';
 
 export interface RerollResult {
   ok: boolean;
@@ -62,6 +63,7 @@ export async function rerollPanel(
 
     recordImageLog({
       mode, floor, source: 'api',
+      plan: readOutConfig().activePlanName,
       prompt: panel.prompt,
       ...(panel.negative ? { negative: panel.negative } : {}),
       size: 'portrait',

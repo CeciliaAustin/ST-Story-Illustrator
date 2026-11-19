@@ -24,7 +24,9 @@ const JSON_FIELDS =
 
 const COMMON_RULES = [
   '画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。',
-  'characters 最多 2 项；每一项的 act 用英文写这个角色自己在做什么。两人互动时主动方和被动方 act 必须分开写。',
+  'characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other\'s sleeve, leaning against the door, holding a broken cup）。',
+  '只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。',
+  'characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。',
   'nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。',
   'tags 只写四类：① 人数与互动；② 表情；③ 动作或姿态；④ 手里/身上的道具、与场景的互动。',
   'nl 用英文自然语言写同一件事，不要分点、不要换行。',

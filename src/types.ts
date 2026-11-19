@@ -684,6 +684,32 @@ function defaultModeSettings(mode: CreationMode): ModeSettings {
   }
 }
 
+/** 模式的中文名：报错、日志、日志列表里都要能一眼看出是哪一个。 */
+export const MODE_LABEL: Record<CreationMode, string> = {
+  illustration: '正文插画',
+  comic: '正文漫画分镜',
+  'chibi-status': 'QQ 人状态栏',
+  'chibi-bonus': 'QQ 人彩蛋',
+  'bw-manga': '黑白漫小剧场',
+};
+
+/**
+ * 取某个模式的完整设置。
+ *
+ * 存档里的 modes 是**整体替换**的：以前存的设置只有当时那几种模式，后来新增的
+ * （例如 chibi-bonus）在旧存档里就是 undefined。直接 `settings.modes[mode].shots`
+ * 会抛 TypeError，任务在「读配置」这一步就死了——用户只看到「少生成了一份」。
+ * 所以一律走这里，缺什么补什么。
+ */
+export function resolveModeSettings(
+  settings: Pick<StoryIllustratorSettings, 'modes'> | undefined | null,
+  mode: CreationMode,
+): ModeSettings {
+  const defaults = defaultModeSettings(mode);
+  const stored = settings?.modes?.[mode];
+  return stored ? { ...defaults, ...stored } : defaults;
+}
+
 export const DEFAULT_SETTINGS: StoryIllustratorSettings = {
   enabled: false,
   contextRange: 1,

@@ -18,14 +18,16 @@ import type {
   ComicPagePlan,
   StoryIllustratorSettings,
 } from '../types';
+import { ensureModeOutPlan } from './modePlan';
+import { makeLookReader } from './theaterRun';
+import { readOutConfig } from '../baibai/planConfig';
+import { resolveModeSettings, MODE_LABEL } from '../types';
 import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment';
 import { buildAnchor } from '../selection/anchor';
 import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
 import { saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
-import { readOutConfig } from '../baibai/planConfig';
-import { switchBaiBaiPlan } from '../baibai/planSwitch';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
@@ -70,34 +72,6 @@ function sceneFromSegment(segment: StorySegment) {
   };
 }
 
-/**
- * 出图前把柏宝绘切到该模式指定的方案。
- *
- * 柏宝绘公开出图接口不接受 planId，只能改它自己的「当前方案」。任务队列是串行的，
- * 所以「切一次 → 出图 → 下个任务再按需切」不会互相干扰。切换失败不中断出图，
- * 只降级为「用当前方案」并记日志。
- */
-async function ensureModeOutPlan(mode: CreationMode, deps: WorkflowDeps): Promise<void> {
-  const planId = deps.fullSettings.modeOutPlans?.[mode];
-  if (!planId) return;
-
-  const snap = readOutConfig();
-  if (!snap.plans.some(p => p.id === planId)) {
-    console.warn(`[ST-Story-Illustrator] ${mode} 指定的出图方案已不存在，改用当前方案。`);
-    return;
-  }
-  if (snap.activePlanId === planId) return;
-
-  try {
-    const result = await switchBaiBaiPlan(planId);
-    if (!result.ok && result.reason !== 'already') {
-      console.warn(`[ST-Story-Illustrator] 切换出图方案失败（继续用当前方案）：${result.message}`);
-    }
-  } catch (e) {
-    console.warn('[ST-Story-Illustrator] 切换出图方案异常（继续用当前方案）:', e);
-  }
-}
-
 // ============================================================
 // 插画模式
 // ============================================================
@@ -138,7 +112,7 @@ async function runIllustration(
   if (!prompt.trim()) throw new Error('组装后的英文 prompt 为空。');
 
   ctx.report({ stage: 'generating' });
-  await ensureModeOutPlan('illustration', deps);
+  await ensureModeOutPlan('illustration', deps.fullSettings);
 
   // 图片不再由本插件直接出、也不写 markdown：
   // 写一条柏宝绘的 <bbi_image> tag 进正文，点卡片上的「生成图片」，其余全交给柏宝绘
@@ -172,6 +146,7 @@ async function runIllustration(
     mode: 'illustration',
     floor,
     source: 'card',
+    plan: readOutConfig().activePlanName,
     prompt,
     ...(plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
@@ -256,7 +231,7 @@ async function runComic(
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error('无法确定挂载楼层。');
 
-  const modeSettings = deps.fullSettings.modes['comic'];
+  const modeSettings = resolveModeSettings(deps.fullSettings, 'comic');
   const swipeId = segment.messages[0]?.swipeId ?? 0;
   const sendDate = segment.messages[0]?.sendDate;
   const layout = modeSettings.comicLayout ?? 'regular';
@@ -316,7 +291,7 @@ async function runComic(
   }
 
   // 整本漫画用同一套出图方案，只在开始前切一次
-  await ensureModeOutPlan('comic', deps);
+  await ensureModeOutPlan('comic', deps.fullSettings);
 
   let done = 0;
   const totalPages = plan.data.length;
@@ -362,6 +337,7 @@ async function runComic(
       mode: 'comic',
       floor,
       source: 'card',
+      plan: readOutConfig().activePlanName,
       prompt: enforced.prompt,
       ...(enforced.nl ? { nl: enforced.nl } : {}),
       size: 'portrait',
@@ -444,17 +420,18 @@ async function runTheaterMode(
   if (floor === null) throw new Error('无法确定挂载楼层。');
 
   const kind = mode === 'chibi-status' ? 'status' : mode === 'chibi-bonus' ? 'bonus' : 'manga';
-  const modeSettings = deps.fullSettings.modes[mode];
+  const modeSettings = resolveModeSettings(deps.fullSettings, mode);
   const characters = await getCharacters(floor);
+  const characterName = segment.messages.find(m => !m.isUser)?.speaker ?? '';
 
   ctx.report({ stage: 'reading' });
-  await ensureModeOutPlan(mode, deps);
+  await ensureModeOutPlan(mode, deps.fullSettings);
   const result = await runTheaterOne({
     kind,
     chatId: task.chatId,
     floor,
     swipe: segment.messages[0]?.swipeId ?? 0,
-    characterName: segment.messages.find(m => !m.isUser)?.speaker ?? '',
+    characterName,
     body: segment.text,
     shots: modeSettings.shots,
     chibi: kind !== 'manga' && (modeSettings.chibiStyle !== 'thumb'),
@@ -482,6 +459,7 @@ async function runTheaterMode(
         }, profile ?? fallbackProfile(mode));
         recordImageLog({
           mode, floor, source: 'api',
+          plan: readOutConfig().activePlanName,
           prompt: input.prompt,
           ...(input.negative ? { negative: input.negative } : {}),
           ...(input.size ? { size: input.size } : {}),
@@ -493,6 +471,7 @@ async function runTheaterMode(
       } catch (err) {
         recordImageLog({
           mode, floor, source: 'api',
+          plan: readOutConfig().activePlanName,
           prompt: input.prompt,
           ...(input.negative ? { negative: input.negative } : {}),
           ...(input.size ? { size: input.size } : {}),
@@ -503,13 +482,7 @@ async function runTheaterMode(
         throw err;
       }
     },
-    readLooks: (names) => {
-      const lookup = new Map(characters.characters.map(c => [c.name, c]));
-      return names.map(name => {
-        const c = lookup.get(name);
-        return c ? { name, tag: c.tag, ...(c.nl ? { nl: c.nl } : {}) } : { name, tag: '' };
-      });
-    },
+    readLooks: makeLookReader(characters.characters, characterName),
   });
 
   if (!result.ok) throw new Error(result.error ?? '小剧场生成失败。');
@@ -517,7 +490,6 @@ async function runTheaterMode(
   // 一次生成的 N 格合成一张卡片：共用 setId，卡片头显示「黑白漫 · 4 格」+ 标题，
   // 格内可单独重画，整条可重出（都要靠这些字段还原当时的输入）。
   const setId = newSetId();
-  const characterName = segment.messages.find(m => !m.isUser)?.speaker ?? '';
   const setTitle = result.stories[0]?.title ?? '';
   const total = result.stories.length;
   const stories = result.stories.map(story => ({
@@ -564,3 +536,5 @@ export function createVisualTask(segment: StorySegment, mode: CreationMode): Vis
     updatedAt: now,
   };
 }
+
+export { MODE_LABEL };

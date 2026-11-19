@@ -251,7 +251,7 @@ async function waitForApi(maxAttempts = MAX_WAIT_ATTEMPTS) {
     if (result.status === "version_mismatch" || result.status === "error") {
       return result;
     }
-    await sleep$1(WAIT_INTERVAL_MS);
+    await sleep$2(WAIT_INTERVAL_MS);
   }
   return { status: "not_installed" };
 }
@@ -301,7 +301,7 @@ class BaiBaiApiError extends Error {
     this.availability = availability;
   }
 }
-function sleep$1(ms) {
+function sleep$2(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 const MES_SELECTOR = ".mes";
@@ -524,6 +524,19 @@ function defaultModeSettings(mode) {
     default:
       return base;
   }
+}
+const MODE_LABEL$1 = {
+  illustration: "正文插画",
+  comic: "正文漫画分镜",
+  "chibi-status": "QQ 人状态栏",
+  "chibi-bonus": "QQ 人彩蛋",
+  "bw-manga": "黑白漫小剧场"
+};
+function resolveModeSettings(settings2, mode) {
+  var _a;
+  const defaults = defaultModeSettings(mode);
+  const stored = (_a = settings2 == null ? void 0 : settings2.modes) == null ? void 0 : _a[mode];
+  return stored ? { ...defaults, ...stored } : defaults;
 }
 const DEFAULT_SETTINGS = {
   enabled: false,
@@ -2010,20 +2023,27 @@ function destroyLightbox() {
   }
   galleryItems = [];
 }
-function findPlanRadio(root, planName) {
-  const radios = Array.from(root.querySelectorAll('button.item-main[role="radio"]'));
-  for (const btn of radios) {
-    const nameEl = btn.querySelector(".item-name");
-    const label = ((nameEl == null ? void 0 : nameEl.textContent) ?? btn.textContent ?? "").trim();
-    if (label === planName || planName && label.includes(planName)) return btn;
-  }
-  return null;
-}
-function getBaiBaiShadowRoot() {
-  const host = document.getElementById("bbi-app-host");
+const HOST_ID = "bbi-app-host";
+const PANEL_TITLE = "渠道";
+const TAB_LABEL = "NAI";
+function shadowRoot() {
+  const host = document.getElementById(HOST_ID);
   return (host == null ? void 0 : host.shadowRoot) ?? null;
 }
-function openBaiBaiBackendPanel() {
+function sleep$1(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+async function waitFor(fn, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (; ; ) {
+    const value = fn();
+    if (value) return value;
+    if (Date.now() >= deadline) return null;
+    await sleep$1(120);
+  }
+}
+function openPanelIfNeeded() {
+  if (shadowRoot()) return;
   const menuItem = document.getElementById("bbi-menu-item");
   if (menuItem) {
     menuItem.click();
@@ -2032,61 +2052,125 @@ function openBaiBaiBackendPanel() {
   const orb = document.querySelector('.bbi-orb, [class*="bbi-floating-orb"]');
   orb == null ? void 0 : orb.click();
 }
-function tryClickPlanRadio(planName) {
-  const shadow = getBaiBaiShadowRoot();
-  if (!shadow) return false;
-  const radio = findPlanRadio(shadow, planName);
-  if (!radio || radio.hasAttribute("disabled")) return false;
-  radio.click();
+function planRadios(root) {
+  return Array.from(root.querySelectorAll('.plan-item button.item-main[role="radio"]'));
+}
+function pickPlanRadio(radios, planName) {
+  const nameOf = (btn) => {
+    var _a;
+    return (((_a = btn.querySelector(".item-name")) == null ? void 0 : _a.textContent) ?? btn.textContent ?? "").trim();
+  };
+  const exact = radios.filter((btn) => nameOf(btn) === planName);
+  if (exact.length === 1) return { radio: exact[0], ambiguous: false };
+  if (exact.length > 1) return { radio: null, ambiguous: true };
+  const fuzzy = planName ? radios.filter((btn) => nameOf(btn).includes(planName)) : [];
+  if (fuzzy.length === 1) return { radio: fuzzy[0], ambiguous: false };
+  return { radio: null, ambiguous: fuzzy.length > 1 };
+}
+function clickNavToBackend(root) {
+  if (planRadios(root).length > 0) return true;
+  const navs = Array.from(root.querySelectorAll("button.bbi-nav-item"));
+  const target = navs.find((btn) => {
+    const label = (btn.getAttribute("title") ?? btn.getAttribute("aria-label") ?? btn.textContent ?? "").trim();
+    return label === PANEL_TITLE;
+  });
+  if (!target) return false;
+  target.click();
   return true;
 }
-async function confirmSwitched(planId, targetName) {
-  const confirmDeadline = Date.now() + 2500;
-  while (Date.now() < confirmDeadline) {
-    if (readOutConfig().activePlanId === planId) {
-      return { ok: true, reason: "switched", message: `已切到「${targetName}」。` };
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return {
-    ok: false,
-    reason: "no-ui",
-    message: "已点击方案按钮，但未能确认切换结果。请到柏宝绘里确认当前方案是否为「" + targetName + "」。"
-  };
+function clickNaiTab(root) {
+  if (planRadios(root).length > 0) return true;
+  const tabs = Array.from(root.querySelectorAll('button[role="tab"]'));
+  const target = tabs.find((btn) => (btn.textContent ?? "").trim() === TAB_LABEL);
+  if (!target) return false;
+  target.click();
+  return true;
 }
-async function switchBaiBaiPlan(planId, timeoutMs = 8e3) {
+function closePanelIfWeOpened(root, weOpened) {
+  if (!weOpened) return;
+  const close = Array.from(root.querySelectorAll("button.bbi-icon-btn")).find(
+    (btn) => (btn.getAttribute("title") ?? "") === "关闭"
+  );
+  close == null ? void 0 : close.click();
+}
+async function switchBaiBaiPlan(planId, timeoutMs = 12e3) {
   const snap = readOutConfig();
   const target = snap.plans.find((p) => p.id === planId);
   if (!target) {
-    return { ok: false, reason: "error", message: "方案不存在（可能已被删除）。" };
+    return { ok: false, reason: "error", message: "方案不存在（可能已在柏宝绘里被删除）。" };
+  }
+  if (snap.backend !== "nai") {
+    return {
+      ok: false,
+      reason: "wrong-backend",
+      message: `柏宝绘当前出图渠道是「${snap.backend}」，不是 NAI；按模式分配方案只对 NAI 生效。请先在柏宝绘里把出图后端改成 NAI。`
+    };
   }
   if (snap.activePlanId === planId) {
-    return { ok: false, reason: "already", message: `「${target.name}」已经是当前方案。` };
+    return { ok: true, reason: "already", message: `「${target.name}」已经是当前方案。` };
   }
-  if (tryClickPlanRadio(target.name)) {
-    return await confirmSwitched(planId, target.name);
-  }
-  try {
-    openBaiBaiBackendPanel();
-  } catch {
-  }
-  const deadline = Date.now() + timeoutMs;
-  let clicked = false;
-  while (Date.now() < deadline) {
-    if (tryClickPlanRadio(target.name)) {
-      clicked = true;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  if (!clicked) {
+  const hadPanel = !!shadowRoot();
+  openPanelIfNeeded();
+  const root = await waitFor(() => shadowRoot(), 4e3);
+  if (!root) {
     return {
       ok: false,
       reason: "no-ui",
-      message: "没能定位到柏宝绘的方案按钮。请打开柏宝绘设置（魔杖菜单 → 柏宝绘 → 后端），手动选「" + target.name + "」，本面板会自动同步。"
+      message: "打不开柏宝绘面板，无法切换出图方案（请确认柏宝绘已启用）。"
     };
   }
-  return await confirmSwitched(planId, target.name);
+  const deadline = Date.now() + timeoutMs;
+  let radio = null;
+  let ambiguous = false;
+  while (Date.now() < deadline) {
+    if (planRadios(root).length === 0) {
+      clickNavToBackend(root);
+      await sleep$1(150);
+      clickNaiTab(root);
+      await sleep$1(150);
+    }
+    const picked = pickPlanRadio(planRadios(root), target.name);
+    if (picked.radio) {
+      radio = picked.radio;
+      break;
+    }
+    if (picked.ambiguous) {
+      ambiguous = true;
+      break;
+    }
+    await sleep$1(150);
+  }
+  if (ambiguous) {
+    closePanelIfWeOpened(root, !hadPanel);
+    return {
+      ok: false,
+      reason: "ambiguous",
+      message: `柏宝绘里有多个方案名含「${target.name}」，无法确定该点哪一个。请把方案名改成互不包含的写法。`
+    };
+  }
+  if (!radio) {
+    closePanelIfWeOpened(root, !hadPanel);
+    return {
+      ok: false,
+      reason: "no-ui",
+      message: `没能在柏宝绘「渠道 → NAI」里找到方案「${target.name}」。请确认它在方案列表里（不是接入点），或打开柏宝绘手动选一次。`
+    };
+  }
+  if (radio.hasAttribute("disabled")) {
+    closePanelIfWeOpened(root, !hadPanel);
+    return { ok: false, reason: "no-ui", message: `方案「${target.name}」被禁用，无法选中。` };
+  }
+  radio.click();
+  const confirmed = await waitFor(() => readOutConfig().activePlanId === planId ? true : null, 4e3);
+  closePanelIfWeOpened(root, !hadPanel);
+  if (!confirmed) {
+    return {
+      ok: false,
+      reason: "no-ui",
+      message: `已点击方案「${target.name}」，但柏宝绘没有真的切过去（当前仍是「${readOutConfig().activePlanName}」）。`
+    };
+  }
+  return { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
 }
 const ITEMS = [
   {
@@ -2581,7 +2665,7 @@ function planSelectRow(mode) {
       if (v) st.modeOutPlans[mode] = v;
       else delete st.modeOutPlans[mode];
     }),
-    snap.plans.length === 0 ? "柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。" : "出图前会临时切到这套方案（串行执行，互不打断）。"
+    snap.plans.length === 0 ? "柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。" : snap.backend !== "nai" ? `柏宝绘当前出图渠道是「${snap.backend}」，按模式分配方案只对 NAI 生效——这样选会在生成时直接报错，不会白花钱。` : "出图前会自动切到这套方案；切不过去就停下报错（不会偷偷用旧方案烧钱）。"
   );
 }
 function renderComicSettings() {
@@ -2703,6 +2787,7 @@ function buildLogRow(entry) {
     `#${entry.floor}`,
     entry.status === "error" ? "失败" : "成功",
     entry.durationMs !== void 0 ? `${(entry.durationMs / 1e3).toFixed(1)}s` : "",
+    entry.plan ? `方案 ${entry.plan}` : "",
     entry.seed !== void 0 ? `seed ${entry.seed}` : ""
   ].filter(Boolean).join(" · ");
   row.appendChild(summary);
@@ -2717,6 +2802,7 @@ function buildLogRow(entry) {
   body.appendChild(logField("正向", entry.prompt));
   if (entry.nl) body.appendChild(logField("nl", entry.nl));
   if (entry.negative) body.appendChild(logField("负面", entry.negative));
+  if (entry.plan) body.appendChild(logField("出图方案", entry.plan));
   if (entry.source) body.appendChild(logField("来源", entry.source === "card" ? "柏宝绘卡片" : "公开出图接口"));
   row.appendChild(body);
   return row;
@@ -3083,23 +3169,34 @@ const baiBaiAdapter = {
     };
   }
 };
-async function ensureModeOutPlan$1(mode, settings2) {
+async function ensureModeOutPlan(mode, settings2) {
   var _a;
   const planId = (_a = settings2.modeOutPlans) == null ? void 0 : _a[mode];
   if (!planId) return;
   const snap = readOutConfig();
-  if (!snap.plans.some((p) => p.id === planId)) {
-    console.warn(`[ST-Story-Illustrator] ${mode} 指定的出图方案已不存在，改用当前方案。`);
-    return;
+  const target = snap.plans.find((p) => p.id === planId);
+  if (!target) {
+    throw new Error(
+      `${MODE_LABEL$1[mode]} 指定的出图方案已不存在（可能已被删除）。请到「配图设置」重新指定。`
+    );
   }
   if (snap.activePlanId === planId) return;
+  let result;
   try {
-    const result = await switchBaiBaiPlan(planId);
-    if (!result.ok && result.reason !== "already") {
-      console.warn(`[ST-Story-Illustrator] 切换出图方案失败（继续用当前方案）：${result.message}`);
-    }
+    result = await switchBaiBaiPlan(planId);
   } catch (e) {
-    console.warn("[ST-Story-Illustrator] 切换出图方案异常（继续用当前方案）:", e);
+    throw new Error(
+      `${MODE_LABEL$1[mode]} 切换出图方案「${target.name}」时出错：${e instanceof Error ? e.message : String(e)}`
+    );
+  }
+  if (!result.ok) {
+    throw new Error(`${MODE_LABEL$1[mode]} 无法切到出图方案「${target.name}」：${result.message}`);
+  }
+  const after = readOutConfig();
+  if (after.activePlanId !== planId) {
+    throw new Error(
+      `${MODE_LABEL$1[mode]} 切换出图方案失败：当前仍是「${after.activePlanName || "未知"}」，没有按指定的「${target.name}」出图。`
+    );
   }
 }
 const PANEL_BUBBLE_AREAS = [
@@ -3820,7 +3917,9 @@ function clampBody(body, many) {
 const JSON_FIELDS = '{"title":"中文，14 字以内，这一楼发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}';
 const COMMON_RULES = [
   "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
-  "characters 最多 2 项；每一项的 act 用英文写这个角色自己在做什么。两人互动时主动方和被动方 act 必须分开写。",
+  "characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other's sleeve, leaning against the door, holding a broken cup）。",
+  "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
+  "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
   "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
   "tags 只写四类：① 人数与互动；② 表情；③ 动作或姿态；④ 手里/身上的道具、与场景的互动。",
   "nl 用英文自然语言写同一件事，不要分点、不要换行。",
@@ -4050,7 +4149,48 @@ function decideSeed(backend, override, fixedSeed = 0) {
   if (backend === "nai") return fixedSeed > 0 ? fixedSeed : rerollSeed("nai");
   return rerollSeed(backend);
 }
-async function readTheater(input) {
+function combinedPanelTags(panel) {
+  const pieces = [];
+  for (const role of panel.roles ?? []) {
+    if (role.act) pieces.push(role.act);
+  }
+  pieces.push(panel.tags);
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const piece of pieces.join(",").split(",")) {
+    const tag = piece.trim();
+    if (!tag) continue;
+    if (/[\u3400-\u9fff\uf900-\ufaff]/.test(tag)) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+  }
+  return out.join(", ");
+}
+function checkReading(reading, body, kind) {
+  if (!reading.panels.length) return { ok: false, reason: "没有解析出任何分格" };
+  const rich = reading.panels.some(
+    (panel) => combinedPanelTags(panel).split(",").filter((t) => t.trim()).length >= 5
+  );
+  if (!rich) return { ok: false, reason: "每格的 tag 都太少，画面信息不足" };
+  if (kind === "bonus") return { ok: true };
+  const names = /* @__PURE__ */ new Set();
+  for (const panel of reading.panels) {
+    for (const name of panel.characters) if (name) names.add(name.trim());
+  }
+  if (names.size === 0) return { ok: false, reason: "格子里没有任何出场角色" };
+  const text = String(body ?? "");
+  const hit = [...names].some((name) => name.length >= 2 && text.includes(name));
+  if (!hit) {
+    return {
+      ok: false,
+      reason: `格子里写的角色（${[...names].slice(0, 3).join("、")}）在正文里没有出现`
+    };
+  }
+  return { ok: true };
+}
+async function readTheater(input, extraInstruction = "") {
   const { system, user } = buildTheaterPrompt({
     kind: input.kind,
     characterName: input.characterName,
@@ -4058,7 +4198,10 @@ async function readTheater(input) {
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe
   });
-  const raw = await input.llm(`${system}
+  const finalSystem = extraInstruction ? `${system}
+
+【追加要求】${extraInstruction}` : system;
+  const raw = await input.llm(`${finalSystem}
 
 ---
 
@@ -4075,7 +4218,26 @@ ${user}`);
 async function runTheaterOne(input) {
   var _a;
   try {
-    const { reading, hits } = await readTheater(input);
+    let { reading, hits } = await readTheater(input);
+    let check = checkReading(reading, input.body, input.kind);
+    if (!check.ok) {
+      console.warn(`[ST-Story-Illustrator] ${input.kind} 读剧情不合格（${check.reason}），重问一次。`);
+      const retried = await readTheater(
+        input,
+        `上一次的输出不合格：${check.reason}。这次必须做到：tags 与 characters[].act 写的都是**正文里真的发生的事**，动作具体到能画出来（例如 holding sword, sitting on bed, crying, looking away），不许只给 1girl / solo / standing 这类空景词；角色名照抄正文里的叫法。`
+      );
+      reading = retried.reading;
+      hits = [...hits, ...retried.hits];
+      check = checkReading(reading, input.body, input.kind);
+    }
+    if (!check.ok) {
+      return {
+        ok: false,
+        stories: [],
+        error: `读剧情这一步没通过（${check.reason}），已放弃出图以免白花钱。请换一个更会写 tag 的副 API 模型。`,
+        hits
+      };
+    }
     if (reading.panels.length === 0) {
       return { ok: false, stories: [], error: "读剧情未返回可解析的分镜。", hits };
     }
@@ -4093,7 +4255,7 @@ async function runTheaterOne(input) {
       const prompt = buildTheaterImagePrompt(
         input.kind,
         appearances,
-        panel.tags,
+        combinedPanelTags(panel),
         input.chibi
       );
       const negative = input.kind === "manga" && input.mangaSafe ? MANGA_SAFE_NEGATIVE : void 0;
@@ -4165,10 +4327,29 @@ function fallbackProfile$1(mode) {
     options: {}
   };
 }
+function normalizeName(name) {
+  return String(name ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, "").toLowerCase();
+}
+function makeLookReader(characters, primaryName = "") {
+  const byNorm = /* @__PURE__ */ new Map();
+  for (const c of characters) {
+    byNorm.set(normalizeName(c.name), c);
+    const base = normalizeName(String(c.name ?? "").split(/[（(【\[]/)[0]);
+    if (base && !byNorm.has(base)) byNorm.set(base, c);
+  }
+  const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : void 0;
+  const onlyOne = characters.length === 1 ? characters[0] : void 0;
+  return (names) => names.map((name) => {
+    const key = normalizeName(name);
+    const base = normalizeName(String(name ?? "").split(/[（(【\[]/)[0]);
+    const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0) ?? primary ?? onlyOne;
+    return hit ? { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} } : { name, tag: "" };
+  });
+}
 async function runTheaterTask(input) {
   const { mode, settings: settings2, floor } = input;
   const kind = kindOfMode(mode);
-  const modeSettings = settings2.modes[mode];
+  const modeSettings = resolveModeSettings(settings2, mode);
   const characters = await getCharacters(floor);
   const profile = pickProfile$1(settings2.profiles ?? [], mode);
   const result = await runTheaterOne({
@@ -4178,9 +4359,9 @@ async function runTheaterTask(input) {
     swipe: input.swipe,
     characterName: input.characterName,
     body: input.body,
-    shots: modeSettings == null ? void 0 : modeSettings.shots,
-    chibi: kind !== "manga" && (modeSettings == null ? void 0 : modeSettings.chibiStyle) !== "thumb",
-    mangaSafe: (modeSettings == null ? void 0 : modeSettings.bwMangaSafeMode) ?? true,
+    shots: modeSettings.shots,
+    chibi: kind !== "manga" && modeSettings.chibiStyle !== "thumb",
+    mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     backend: "nai",
     ...profile ? { profile } : {},
     // 副 API 报错即停，不回退主 API（并把原文记进日志）
@@ -4206,6 +4387,7 @@ async function runTheaterTask(input) {
           mode,
           floor,
           source: "api",
+          plan: readOutConfig().activePlanName,
           prompt: genInput.prompt,
           ...genInput.negative ? { negative: genInput.negative } : {},
           ...genInput.size ? { size: genInput.size } : {},
@@ -4219,6 +4401,7 @@ async function runTheaterTask(input) {
           mode,
           floor,
           source: "api",
+          plan: readOutConfig().activePlanName,
           prompt: genInput.prompt,
           ...genInput.negative ? { negative: genInput.negative } : {},
           ...genInput.size ? { size: genInput.size } : {},
@@ -4229,13 +4412,7 @@ async function runTheaterTask(input) {
         throw err;
       }
     },
-    readLooks: (names) => {
-      const lookup = new Map(characters.characters.map((c) => [c.name, c]));
-      return names.map((name) => {
-        const c = lookup.get(name);
-        return c ? { name, tag: c.tag, ...c.nl ? { nl: c.nl } : {} } : { name, tag: "" };
-      });
-    }
+    readLooks: makeLookReader(characters.characters, input.characterName)
   });
   return { ok: result.ok, stories: result.stories, ...result.error ? { error: result.error } : {} };
 }
@@ -4251,7 +4428,7 @@ async function rerollPanel(floor, kind, setId, index2) {
     return { ok: false, message: "这一格没存下当时的出图词，请用「整条重出」。" };
   }
   const mode = modeOfKind(kind);
-  await ensureModeOutPlan$1(mode, settings2);
+  await ensureModeOutPlan(mode, settings2);
   const seed = randomSeed();
   const startedAt = Date.now();
   try {
@@ -4271,6 +4448,7 @@ async function rerollPanel(floor, kind, setId, index2) {
       mode,
       floor,
       source: "api",
+      plan: readOutConfig().activePlanName,
       prompt: panel.prompt,
       ...panel.negative ? { negative: panel.negative } : {},
       size: "portrait",
@@ -4309,7 +4487,7 @@ async function rerollSet(floor, kind, setId) {
     return { ok: false, message: "这张卡片没存下当时的选段，请重新选段生成。" };
   }
   const mode = modeOfKind(kind);
-  await ensureModeOutPlan$1(mode, settings2);
+  await ensureModeOutPlan(mode, settings2);
   const result = await runTheaterTask({
     mode,
     settings: settings2,
@@ -5932,25 +6110,6 @@ function sceneFromSegment(segment) {
     ...context.nextText ? { nextText: context.nextText } : {}
   };
 }
-async function ensureModeOutPlan(mode, deps) {
-  var _a;
-  const planId = (_a = deps.fullSettings.modeOutPlans) == null ? void 0 : _a[mode];
-  if (!planId) return;
-  const snap = readOutConfig();
-  if (!snap.plans.some((p) => p.id === planId)) {
-    console.warn(`[ST-Story-Illustrator] ${mode} 指定的出图方案已不存在，改用当前方案。`);
-    return;
-  }
-  if (snap.activePlanId === planId) return;
-  try {
-    const result = await switchBaiBaiPlan(planId);
-    if (!result.ok && result.reason !== "already") {
-      console.warn(`[ST-Story-Illustrator] 切换出图方案失败（继续用当前方案）：${result.message}`);
-    }
-  } catch (e) {
-    console.warn("[ST-Story-Illustrator] 切换出图方案异常（继续用当前方案）:", e);
-  }
-}
 async function runIllustration(task, ctx, deps) {
   var _a, _b, _c;
   const segment = task.source;
@@ -5980,7 +6139,7 @@ async function runIllustration(task, ctx, deps) {
   const prompt = composeEnglishPrompt(tagSegments);
   if (!prompt.trim()) throw new Error("组装后的英文 prompt 为空。");
   ctx.report({ stage: "generating" });
-  await ensureModeOutPlan("illustration", deps);
+  await ensureModeOutPlan("illustration", deps.fullSettings);
   const tag = buildBbiTag({
     prompt,
     ...plan.data.nl ? { nl: plan.data.nl } : {},
@@ -6006,6 +6165,7 @@ async function runIllustration(task, ctx, deps) {
     mode: "illustration",
     floor,
     source: "card",
+    plan: readOutConfig().activePlanName,
     prompt,
     ...plan.data.nl ? { nl: plan.data.nl } : {},
     ...plan.data.negative ? { negative: plan.data.negative } : {},
@@ -6083,7 +6243,7 @@ async function runComic(task, ctx, deps) {
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
-  const modeSettings = deps.fullSettings.modes["comic"];
+  const modeSettings = resolveModeSettings(deps.fullSettings, "comic");
   const swipeId = ((_a = segment.messages[0]) == null ? void 0 : _a.swipeId) ?? 0;
   const sendDate = (_b = segment.messages[0]) == null ? void 0 : _b.sendDate;
   const layout = modeSettings.comicLayout ?? "regular";
@@ -6134,7 +6294,7 @@ async function runComic(task, ctx, deps) {
       throw new Error("分镜计划里只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。");
     }
   }
-  await ensureModeOutPlan("comic", deps);
+  await ensureModeOutPlan("comic", deps.fullSettings);
   let done = 0;
   const totalPages = plan.data.length;
   for (const page of plan.data) {
@@ -6170,6 +6330,7 @@ async function runComic(task, ctx, deps) {
       mode: "comic",
       floor,
       source: "card",
+      plan: readOutConfig().activePlanName,
       prompt: enforced.prompt,
       ...enforced.nl ? { nl: enforced.nl } : {},
       size: "portrait",
@@ -6233,22 +6394,23 @@ async function runComic(task, ctx, deps) {
   ctx.report({ stage: "completed" });
 }
 async function runTheaterMode(task, ctx, deps) {
-  var _a, _b, _c, _d;
+  var _a, _b, _c;
   const segment = task.source;
   const mode = task.mode;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
   const kind = mode === "chibi-status" ? "status" : mode === "chibi-bonus" ? "bonus" : "manga";
-  const modeSettings = deps.fullSettings.modes[mode];
+  const modeSettings = resolveModeSettings(deps.fullSettings, mode);
   const characters = await getCharacters(floor);
+  const characterName = ((_a = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _a.speaker) ?? "";
   ctx.report({ stage: "reading" });
-  await ensureModeOutPlan(mode, deps);
+  await ensureModeOutPlan(mode, deps.fullSettings);
   const result = await runTheaterOne({
     kind,
     chatId: task.chatId,
     floor,
-    swipe: ((_a = segment.messages[0]) == null ? void 0 : _a.swipeId) ?? 0,
-    characterName: ((_b = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _b.speaker) ?? "",
+    swipe: ((_b = segment.messages[0]) == null ? void 0 : _b.swipeId) ?? 0,
+    characterName,
     body: segment.text,
     shots: modeSettings.shots,
     chibi: kind !== "manga" && modeSettings.chibiStyle !== "thumb",
@@ -6278,6 +6440,7 @@ async function runTheaterMode(task, ctx, deps) {
           mode,
           floor,
           source: "api",
+          plan: readOutConfig().activePlanName,
           prompt: input.prompt,
           ...input.negative ? { negative: input.negative } : {},
           ...input.size ? { size: input.size } : {},
@@ -6291,6 +6454,7 @@ async function runTheaterMode(task, ctx, deps) {
           mode,
           floor,
           source: "api",
+          plan: readOutConfig().activePlanName,
           prompt: input.prompt,
           ...input.negative ? { negative: input.negative } : {},
           ...input.size ? { size: input.size } : {},
@@ -6301,18 +6465,11 @@ async function runTheaterMode(task, ctx, deps) {
         throw err;
       }
     },
-    readLooks: (names) => {
-      const lookup = new Map(characters.characters.map((c) => [c.name, c]));
-      return names.map((name) => {
-        const c = lookup.get(name);
-        return c ? { name, tag: c.tag, ...c.nl ? { nl: c.nl } : {} } : { name, tag: "" };
-      });
-    }
+    readLooks: makeLookReader(characters.characters, characterName)
   });
   if (!result.ok) throw new Error(result.error ?? "小剧场生成失败。");
   const setId = newSetId();
-  const characterName = ((_c = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _c.speaker) ?? "";
-  const setTitle = ((_d = result.stories[0]) == null ? void 0 : _d.title) ?? "";
+  const setTitle = ((_c = result.stories[0]) == null ? void 0 : _c.title) ?? "";
   const total = result.stories.length;
   const stories = result.stories.map((story) => ({
     ...story,
@@ -6412,7 +6569,7 @@ function initQueue() {
     },
     onError: (task, error) => {
       console.error(`[ST-Story-Illustrator] 任务 ${task.id} 失败:`, error);
-      showToast(`生成失败：${error.message}`, "error");
+      showToast(`${MODE_LABEL$1[task.mode]} 生成失败：${error.message}`, "error");
     }
   });
 }
@@ -6566,7 +6723,6 @@ function openGeneratePanel(options) {
 const autoRunning = /* @__PURE__ */ new Set();
 function maybeAutoTrigger(floor) {
   if (!isAvailable()) return;
-  const modes = settings.modes ?? {};
   const orders = [
     { mode: "chibi-status", kind: "status" },
     { mode: "chibi-bonus", kind: "bonus" },
@@ -6574,8 +6730,8 @@ function maybeAutoTrigger(floor) {
   ];
   const picks = [];
   for (const { mode, kind } of orders) {
-    const conf = modes[mode];
-    if (!(conf == null ? void 0 : conf.autoTrigger)) continue;
+    const conf = resolveModeSettings(settings, mode);
+    if (!conf.autoTrigger) continue;
     if (hasStory(floor, kind)) continue;
     if (kind === "bonus") {
       const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);

@@ -26,6 +26,8 @@ export interface ImageLogEntry {
   nl?: string;
   negative?: string;
   size?: string;
+  /** 这次出图实际用的柏宝绘方案名（排查「明明分了方案却用旧的」的关键证据） */
+  plan?: string;
   seed?: number;
   status: ImageLogStatus;
   durationMs?: number;
@@ -68,6 +70,8 @@ export function recordImageLog(input: {
   nl?: string;
   negative?: string;
   size?: string;
+  /** 这次出图实际用的柏宝绘方案名（排查「明明分了方案却用旧的」的关键证据） */
+  plan?: string;
   seed?: number;
   status: ImageLogStatus;
   durationMs?: number;
