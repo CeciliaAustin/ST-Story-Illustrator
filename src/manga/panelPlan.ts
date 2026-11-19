@@ -22,6 +22,7 @@ import type {
   ComicPanelPlan,
   ComicPagePlan,
 } from '../types';
+import { stripThinkingBlocks } from '../prompt/think';
 
 // ============================================================
 // 常量（唯一来源）
@@ -472,7 +473,8 @@ export function parseComicPagePlan(input: unknown): ParseComicPagePlanResult {
   let data: unknown = input;
 
   if (typeof data === 'string') {
-    const trimmed = data.trim();
+    // 思考块先剥掉：思维链里出现花括号会让下面的取 JSON 失败
+    const trimmed = stripThinkingBlocks(data).trim();
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const candidate = fenced ? fenced[1].trim() : trimmed;
     try {

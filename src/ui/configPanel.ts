@@ -13,6 +13,7 @@ import {
   moneySavingHint,
   type OutConfigSnapshot,
 } from '../baibai/planConfig';
+import { readPromptSet } from '../baibai/specPrompt';
 import { switchBaiBaiPlan } from '../baibai/planSwitch';
 import {
   listSharedChannelInfos,
@@ -157,6 +158,9 @@ function render(panel: HTMLElement, tab: StudioTab = 'settings'): void {
     cur.appendChild(warn);
   }
   body.appendChild(cur);
+
+  // ── 读剧情用的提示词（柏宝绘自定义提示词是否已接上）──
+  body.appendChild(renderPromptSource());
 
   // ── 自动出图：五个模式各自一个开关 ──
   body.appendChild(renderAutomationSettings());
@@ -637,6 +641,37 @@ function renderComicSettings(): HTMLElement {
   ));
   group.appendChild(box);
   return group;
+}
+
+/**
+ * 读剧情用的提示词来源（只读展示）。
+ *
+ * 为什么要摆出来：柏宝绘设置里的「自定义提示词」现在会被我们一并压进出图前
+ * 读剧情的 system（服装一致性、什么算自创，全写在那份规范里）。用户改完它
+ * 在小剧场看不到任何反馈，只能猜「生效了没有」——所以在这里直接报字数。
+ */
+function renderPromptSource(): HTMLElement {
+  const set = readPromptSet();
+  const block = section(
+    '读剧情用的提示词',
+    '柏宝绘 → 设置 →「自定义提示词」里的 NAI 规范与思维链，会被一并压进我们读剧情的请求'
+    + '（和柏宝绘自己出图时一样）。留空就用插件自带的精简规则。',
+  );
+  const box = document.createElement('div');
+  box.className = 'sti-config-eplist';
+  const rows: Array<[string, string]> = [
+    ['NAI 规范', set.spec ? `已接入 · ${set.spec.length} 字` : '未填写 · 用插件内置精简规则'],
+    ['思维链', set.thinking ? `已接入 · ${set.thinking.length} 字` : '未填写'],
+    ['破限词', set.jailbreak ? `已接入 · ${set.jailbreak.length} 字` : '未填写'],
+  ];
+  for (const [label, value] of rows) {
+    const row = document.createElement('div');
+    row.className = 'sti-config-ep';
+    row.textContent = `${label} → ${value}`;
+    box.appendChild(row);
+  }
+  block.appendChild(box);
+  return block;
 }
 
 /** 显示与入口：悬浮球、划词按钮。 */

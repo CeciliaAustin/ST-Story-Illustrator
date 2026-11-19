@@ -24,8 +24,27 @@ const JSON_FIELDS =
 
 const LINES_SCHEMA = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
 
+/**
+ * 本批服装：**只定一次**，写在顶层 cast 里。
+ *
+ * 为什么单独要这个字段：服装一致性是「同一批所有格必须逐字一样」的硬要求，
+ * 而一次输出里的每格是模型各自重写一遍的——它会写 `white shirt`、`grey shirt`、
+ * `school uniform` 三种，NAI 每格又是独立请求，没人替它记上一格。
+ * 让它在 cast 里定一次，出图时由代码逐字拼进每一格的角色块，才不会漂。
+ */
+const CAST_SCHEMA =
+  '"cast":[{"name":"角色名（照抄库里的名字）","outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）"}]';
+
+const OUTFIT_RULE =
+  '`cast` 是本批的**服装定妆**：每个出场角色一条，`outfit` 用英文写清版型、主色、关键配件（white dress shirt, black pleated skirt, brown loafers）。'
+  + '【角色固定外貌库】里该角色有「固定着装」时**照抄那一串，不要改写**；没有时按正文/角色卡/世界书定一次，正文没写就合理定一套具体的。'
+  + '同一批所有格共用这一串，**不许因为这一格没提衣服就换一套**；正文明确换装/穿脱/衣物破损时才写新的那一套。'
+  + '`characters[].act` 里**不要再写任何服装词**——服装只由 cast 提供，代码会把它拼到每一格。';
+
+
 const COMMON_RULES = [
   '画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。',
+  OUTFIT_RULE,
   'characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other\'s sleeve, leaning against the door, holding a broken cup）。',
   '只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。',
   'characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。',
@@ -44,23 +63,23 @@ const COMMON_RULES = [
 function statusSingleSystem(): string {
   return [
     '读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。',
-    `格式：${JSON_FIELDS}`,
+    `格式：{"title":"中文，14 字以内，这一楼发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}`,
     'tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。',
     ...COMMON_RULES,
     '景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。',
-    '没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。',
+    '没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。',
   ].join('\n');
 }
 
 function statusManySystem(count: number): string {
   return [
     `读一段角色扮演正文，把这一楼发生的事挑成 ${count} 个先后画面，像一条小分镜，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内，这一楼讲了一件什么事","panels":[${JSON_FIELDS}]}`,
+    `格式：{"title":"中文，14 字以内，这一楼讲了一件什么事",${CAST_SCHEMA},"panels":[${JSON_FIELDS}]}`,
     'panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。',
     '每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。',
     ...COMMON_RULES,
     '每格景别只写 close-up / upper body / medium shot 里的一个，相邻两格不要一样（卡片是偏半身构图，不要写 full body 或 wide shot）。',
-    '没有角色出场时输出 {"title":"","panels":[]}。',
+    '没有角色出场时输出 {"title":"","cast":[],"panels":[]}。',
   ].join('\n');
 }
 
@@ -72,7 +91,7 @@ function bonusSystem(count: number): string {
     : '';
   return [
     '读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。',
-    `格式：{"title":"中文，14 字以内，以「彩蛋：」开头","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${linesSchema}${panelsSchema}}`,
+    `格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${linesSchema}${panelsSchema}}`,
     '题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。',
     '每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。',
     `每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。${many ? `把彩蛋拆成最多 ${count} 个先后画面（panels），按时间顺序，每格不同瞬间。` : '只画一个画面。'}`,
@@ -84,7 +103,7 @@ function bonusSystem(count: number): string {
 function mangaSingleSystem(safe: boolean, dialogue = false): string {
   const rules = [
     '读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。',
-    `格式：{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ''}}`,
+    `格式：{"title":"中文，14 字以内，这一格发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ''}}`,
     ...COMMON_RULES,
     'tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。',
     '**这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。',
@@ -104,7 +123,7 @@ function mangaSingleSystem(safe: boolean, dialogue = false): string {
 function mangaManySystem(count: number, safe: boolean, dialogue = false): string {
   const rules = [
     `读一段角色扮演正文，把这一楼发生的事挑成最多 ${count} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内","panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ''}}]}`,
+    `格式：{"title":"中文，14 字以内",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ''}}]}`,
     'panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。',
     ...COMMON_RULES,
     'tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。',

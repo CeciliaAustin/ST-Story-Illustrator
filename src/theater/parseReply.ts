@@ -5,7 +5,8 @@
  * 坏 JSON 丢弃、不连累整条；旧格式兼容；超额/去重/清洗。
  */
 
-import type { StatusFrame, StatusReading, StatusLine, StatusRole, StoryKind } from '../types';
+import type { StatusFrame, StatusOutfit, StatusReading, StatusLine, StatusRole, StoryKind } from '../types';
+import { stripThinkingBlocks } from '../prompt/think';
 
 export const STATUS_MAX_CHARACTERS = 2;
 export const STATUS_MAX_PANELS = 4;
@@ -90,6 +91,41 @@ function emptyFrame(): StatusFrame {
   return { title: '', characters: [], roles: [], mood: '', tags: '', nl: '' };
 }
 
+const MAX_OUTFIT_CHARS = 160;
+
+/**
+ * 「本批服装」：模型在顶层 `cast[].outfit` 里给每个角色定**一次**着装，
+ * 出图时由代码逐字拼进每一格的角色块。
+ *
+ * 为什么要代码兜这一层：同一批四格是一次 LLM 输出，但模型对每一格会重新"想"一遍
+ * 衣服（白衬衫 / 灰衬衫 / 校服），而 NAI 每格是独立请求，没人替它记住上一格。
+ * 服装一致性靠提示词只是软约束；这里把它冻成同一串词，才是硬的。
+ */
+export function parseOutfits(record: Record<string, unknown>): StatusOutfit[] {
+  const out: StatusOutfit[] = [];
+  const push = (name: unknown, outfit: unknown) => {
+    const n = typeof name === 'string' ? name.trim() : '';
+    const o = typeof outfit === 'string' ? outfit.replace(/\s+/g, ' ').trim() : '';
+    if (!n || !o) return;
+    if (out.length >= 4) return;
+    if (out.some(item => item.name === n)) return;
+    // NAI 只认英文 tag：带中文的整条丢掉，让调用方回落到角色库/原始 act
+    if (HAS_CJK.test(o)) return;
+    out.push({ name: n, outfit: o.slice(0, MAX_OUTFIT_CHARS) });
+  };
+  const cast = record.cast ?? record.outfits;
+  if (Array.isArray(cast)) {
+    for (const item of cast) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const rec = item as Record<string, unknown>;
+      push(rec.name, rec.outfit ?? rec.current ?? rec.clothing);
+    }
+  } else if (cast && typeof cast === 'object') {
+    for (const [name, outfit] of Object.entries(cast as Record<string, unknown>)) push(name, outfit);
+  }
+  return out;
+}
+
 /** 容忍式解析模型 JSON → StatusReading。 */
 export function parseStatusReply(raw: string, kind: StoryKind = 'status'): StatusReading {
   const empty: StatusReading = { ...emptyFrame(), panels: [] };
@@ -97,7 +133,8 @@ export function parseStatusReply(raw: string, kind: StoryKind = 'status'): Statu
   const sanitize: SanitizeOptions = manga
     ? { allowFraming: true, maxTags: MAX_TAGS_MANGA }
     : {};
-  const text = String(raw ?? '');
+  // 我们让模型先写 <thinking> 再给 JSON（柏宝绘的思维链要求），这里先剥掉
+  const text = stripThinkingBlocks(String(raw ?? ''));
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start < 0 || end <= start) return empty;
@@ -185,7 +222,13 @@ export function parseStatusReply(raw: string, kind: StoryKind = 'status'): Statu
   if (!panels.length && top.tags) panels.push(top);
   if (!panels.length) return empty;
   const head = panels[0];
-  return { ...head, title: (pick(record.title) || head.title).slice(0, 40), panels };
+  const outfits = parseOutfits(record);
+  return {
+    ...head,
+    title: (pick(record.title) || head.title).slice(0, 40),
+    panels,
+    ...(outfits.length ? { outfits } : {}),
+  };
 }
 
 /** 张数 clamp 到 1~4。 */

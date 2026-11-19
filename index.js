@@ -106,11 +106,11 @@ function on(eventName, callback) {
     }
   };
 }
-const SETTINGS_KEY = "STStoryIllustrator";
+const SETTINGS_KEY$1 = "STStoryIllustrator";
 function getSettings(defaults) {
   const ctx = getContext();
   const settings2 = ctx.extensionSettings ?? {};
-  const stored = settings2[SETTINGS_KEY];
+  const stored = settings2[SETTINGS_KEY$1];
   if (!stored || typeof stored !== "object") {
     return { ...defaults };
   }
@@ -121,7 +121,7 @@ function saveSettings(settings2) {
   if (!ctx.extensionSettings) {
     ctx.extensionSettings = {};
   }
-  ctx.extensionSettings[SETTINGS_KEY] = settings2;
+  ctx.extensionSettings[SETTINGS_KEY$1] = settings2;
   if (typeof ctx.saveSettingsDebounced === "function") {
     ctx.saveSettingsDebounced();
   }
@@ -1184,7 +1184,7 @@ function layoutWordsIn(text) {
 function asRecord(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : null;
 }
-function str(v, fallback = "") {
+function str$1(v, fallback = "") {
   return typeof v === "string" ? v : fallback;
 }
 function detectModelFamily(model) {
@@ -1200,14 +1200,14 @@ function parseEndpoints(raw) {
   for (const item of raw) {
     const e = asRecord(item);
     if (!e) continue;
-    const id = str(e.id).trim();
+    const id = str$1(e.id).trim();
     if (!id) continue;
-    const url = str(e.url).trim();
+    const url = str$1(e.url).trim();
     out.push({
       id,
-      name: str(e.name).trim() || id,
+      name: str$1(e.name).trim() || id,
       url,
-      hasKey: str(e.key).trim().length > 0
+      hasKey: str$1(e.key).trim().length > 0
     });
   }
   return out;
@@ -1218,13 +1218,13 @@ function parseArtists(raw) {
   for (const item of raw) {
     const a = asRecord(item);
     if (!a) continue;
-    const id = str(a.id).trim();
+    const id = str$1(a.id).trim();
     if (!id) continue;
     out.push({
       id,
-      name: str(a.name).trim() || id,
-      prompt: str(a.prompt).trim(),
-      quality: str(a.quality).trim()
+      name: str$1(a.name).trim() || id,
+      prompt: str$1(a.prompt).trim(),
+      quality: str$1(a.quality).trim()
     });
   }
   return out;
@@ -1238,21 +1238,21 @@ function parsePlans(raw, endpoints, artists = []) {
   for (const item of raw) {
     const p = asRecord(item);
     if (!p) continue;
-    const id = str(p.id).trim();
+    const id = str$1(p.id).trim();
     if (!id) continue;
-    const endpointId = str(p.endpointId).trim();
-    const artistId = str(p.artistId).trim();
+    const endpointId = str$1(p.endpointId).trim();
+    const artistId = str$1(p.artistId).trim();
     const artist = artistById.get(artistId);
     out.push({
       id,
-      name: str(p.name).trim() || "未命名方案",
-      model: str(p.model).trim(),
+      name: str$1(p.name).trim() || "未命名方案",
+      model: str$1(p.model).trim(),
       endpointId,
       endpointName: ((_a = byId.get(endpointId)) == null ? void 0 : _a.name) ?? (endpointId || "(未指定)"),
       // 柏宝绘里尺寸直接存成形如 "832×1216" 的字符串
-      portraitSize: str(p.portraitSize).trim(),
-      landscapeSize: str(p.landscapeSize).trim(),
-      modelFamily: detectModelFamily(str(p.model)),
+      portraitSize: str$1(p.portraitSize).trim(),
+      landscapeSize: str$1(p.landscapeSize).trim(),
+      modelFamily: detectModelFamily(str$1(p.model)),
       artistId,
       artistName: (artist == null ? void 0 : artist.name) ?? "",
       layoutWords: artist ? layoutWordsIn(`${artist.prompt}, ${artist.quality}`) : []
@@ -1266,11 +1266,11 @@ function parseOutConfig(raw) {
   const endpoints = parseEndpoints(nai.endpoints);
   const artists = parseArtists(nai.artistPresets);
   const plans = parsePlans(nai.plans, endpoints, artists);
-  const activePlanId = str(nai.activePlanId).trim();
+  const activePlanId = str$1(nai.activePlanId).trim();
   const active = plans.find((p) => p.id === activePlanId) ?? plans[0];
   const activeEndpoint = endpoints.find((e) => e.id === (active == null ? void 0 : active.endpointId));
   return {
-    backend: str(settings2.defaultBackend, "nai"),
+    backend: str$1(settings2.defaultBackend, "nai"),
     endpoints,
     plans,
     activePlanId: (active == null ? void 0 : active.id) ?? "",
@@ -2115,6 +2115,54 @@ function destroyLightbox() {
   }
   galleryItems = [];
 }
+const SETTINGS_KEY = "baibai_image";
+function str(v) {
+  return typeof v === "string" ? v.trim() : "";
+}
+function parsePromptSet(raw) {
+  const settings2 = raw && typeof raw === "object" ? raw : {};
+  const autoTag = settings2.autoTag && typeof settings2.autoTag === "object" ? settings2.autoTag : {};
+  const prompts = autoTag.prompts && typeof autoTag.prompts === "object" ? autoTag.prompts : {};
+  return {
+    jailbreak: str(prompts.jailbreak),
+    spec: str(prompts.naiV5Spec) || str(prompts.naiSpec),
+    thinking: str(prompts.naiV5Thinking) || str(prompts.naiThinking)
+  };
+}
+function expandNlSections(text, nl) {
+  return String(text ?? "").replace(
+    /\{\{([#^])nl\}\}([\s\S]*?)\{\{\/nl\}\}/g,
+    (_match, kind, body) => kind === "#" === nl ? body : ""
+  );
+}
+const CONTRACT_PRIORITY = "【本任务的输出契约优先】\n上面是柏宝绘的写词规范，它约束的是**画什么、怎么写词**：人物与服装怎么取证、什么算自创、连续场景怎么保持同一套衣服、Base 与角色块怎么分工。\n规范里出现的示例 JSON（position / tag / characters[].tag / nl / size 等）只是柏宝绘自己的字段，**不要照抄那些字段名**：本次输出的 JSON 只按下面【任务协议】里的字段来，不要输出 position、size，也不要把整段 JSON 塞进 tag。\n冲突时：**格式以任务协议为准，画面内容以规范为准。**";
+function buildSpecPreamble(set, options) {
+  const parts = [];
+  if (set.jailbreak) parts.push(expandNlSections(set.jailbreak, options.nl));
+  if (set.spec) parts.push(expandNlSections(set.spec, options.nl));
+  if (set.thinking) parts.push(expandNlSections(set.thinking, options.nl));
+  const body = parts.map((p) => p.trim()).filter(Boolean).join("\n\n");
+  if (!body) return "";
+  return `${body.replace(/\n{3,}/g, "\n\n").trim()}
+
+${CONTRACT_PRIORITY}`;
+}
+function readPromptSet() {
+  var _a;
+  const ctx = getContext();
+  return parsePromptSet((_a = ctx.extensionSettings) == null ? void 0 : _a[SETTINGS_KEY]);
+}
+function specPreambleFor(nl) {
+  return buildSpecPreamble(readPromptSet(), { nl });
+}
+function withSpecPreamble(system, nl) {
+  const preamble = specPreambleFor(nl);
+  return preamble ? `${preamble}
+
+------
+
+${system}` : system;
+}
 const HOST_ID = "bbi-app-host";
 const NAV_LABEL = "渠道";
 const TAB_LABEL = "NAI";
@@ -2736,6 +2784,7 @@ function render(panel, tab = "settings") {
     cur.appendChild(warn);
   }
   body.appendChild(cur);
+  body.appendChild(renderPromptSource());
   body.appendChild(renderAutomationSettings());
   body.appendChild(renderTheaterSettings());
   body.appendChild(renderComicSettings());
@@ -3136,6 +3185,28 @@ function renderComicSettings() {
   ));
   group.appendChild(box);
   return group;
+}
+function renderPromptSource() {
+  const set = readPromptSet();
+  const block = section(
+    "读剧情用的提示词",
+    "柏宝绘 → 设置 →「自定义提示词」里的 NAI 规范与思维链，会被一并压进我们读剧情的请求（和柏宝绘自己出图时一样）。留空就用插件自带的精简规则。"
+  );
+  const box = document.createElement("div");
+  box.className = "sti-config-eplist";
+  const rows = [
+    ["NAI 规范", set.spec ? `已接入 · ${set.spec.length} 字` : "未填写 · 用插件内置精简规则"],
+    ["思维链", set.thinking ? `已接入 · ${set.thinking.length} 字` : "未填写"],
+    ["破限词", set.jailbreak ? `已接入 · ${set.jailbreak.length} 字` : "未填写"]
+  ];
+  for (const [label, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "sti-config-ep";
+    row.textContent = `${label} → ${value}`;
+    box.appendChild(row);
+  }
+  block.appendChild(box);
+  return block;
 }
 function renderUiSettings() {
   const s = getSettings(DEFAULT_SETTINGS);
@@ -3725,6 +3796,12 @@ async function releasePlanGuard(settings2) {
   if (holders > 0) return { ok: true, deferred: true };
   return restoreOutPlan(settings2);
 }
+const THINK_BLOCK = /<think(?:ing)?>[\s\S]*?(?:<\/think(?:ing)?>|$)/gi;
+function stripThinkingBlocks(raw) {
+  const text = String(raw ?? "");
+  if (!/<think/i.test(text)) return text;
+  return text.replace(THINK_BLOCK, "").trim();
+}
 const PANEL_BUBBLE_AREAS = [
   "tl",
   "tc",
@@ -4041,7 +4118,7 @@ function parseComicPagePlan(input) {
   const warnings = [];
   let data = input;
   if (typeof data === "string") {
-    const trimmed = data.trim();
+    const trimmed = stripThinkingBlocks(data).trim();
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
     const candidate = fenced ? fenced[1].trim() : trimmed;
     try {
@@ -4073,7 +4150,7 @@ function parseComicPagePlan(input) {
   return { pages, warnings };
 }
 function extractJson(text) {
-  const raw = String(text ?? "");
+  const raw = stripThinkingBlocks(String(text ?? ""));
   if (!raw.trim()) return null;
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) {
@@ -4249,8 +4326,9 @@ const defaultLlmCaller = async (system, user) => {
 };
 function makeModeLlmCaller(settings2, mode) {
   const channelId = resolveChannelId(mode, settings2.modeChannels, settings2.llmSource);
-  if (channelId === "main") return mainApiLlmCaller;
-  return async (system, user) => generateViaChannelStrict(channelId, system, user);
+  const base = channelId === "main" ? mainApiLlmCaller : async (system, user) => generateViaChannelStrict(channelId, system, user);
+  const nl = settings2.includeNl !== false;
+  return async (system, user) => base(withSpecPreamble(system, nl), user);
 }
 async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
@@ -4376,11 +4454,35 @@ function sanitizeStatusTags(raw, options = {}) {
 function emptyFrame() {
   return { title: "", characters: [], roles: [], mood: "", tags: "", nl: "" };
 }
+const MAX_OUTFIT_CHARS = 160;
+function parseOutfits(record) {
+  const out = [];
+  const push2 = (name, outfit) => {
+    const n = typeof name === "string" ? name.trim() : "";
+    const o = typeof outfit === "string" ? outfit.replace(/\s+/g, " ").trim() : "";
+    if (!n || !o) return;
+    if (out.length >= 4) return;
+    if (out.some((item) => item.name === n)) return;
+    if (HAS_CJK.test(o)) return;
+    out.push({ name: n, outfit: o.slice(0, MAX_OUTFIT_CHARS) });
+  };
+  const cast = record.cast ?? record.outfits;
+  if (Array.isArray(cast)) {
+    for (const item of cast) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const rec = item;
+      push2(rec.name, rec.outfit ?? rec.current ?? rec.clothing);
+    }
+  } else if (cast && typeof cast === "object") {
+    for (const [name, outfit] of Object.entries(cast)) push2(name, outfit);
+  }
+  return out;
+}
 function parseStatusReply(raw, kind = "status") {
   const empty = { ...emptyFrame(), panels: [] };
   const manga = kind === "manga";
   const sanitize = manga ? { allowFraming: true, maxTags: MAX_TAGS_MANGA } : {};
-  const text = String(raw ?? "");
+  const text = stripThinkingBlocks(String(raw ?? ""));
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end <= start) return empty;
@@ -4467,7 +4569,13 @@ function parseStatusReply(raw, kind = "status") {
   if (!panels.length && top.tags) panels.push(top);
   if (!panels.length) return empty;
   const head = panels[0];
-  return { ...head, title: (pick(record.title) || head.title).slice(0, 40), panels };
+  const outfits = parseOutfits(record);
+  return {
+    ...head,
+    title: (pick(record.title) || head.title).slice(0, 40),
+    panels,
+    ...outfits.length ? { outfits } : {}
+  };
 }
 function clampMangaShots(raw) {
   const value = Math.round(Number(raw) || 1);
@@ -4483,8 +4591,11 @@ function clampBody(body, many) {
 }
 const JSON_FIELDS = '{"title":"中文，14 字以内，这一楼发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}';
 const LINES_SCHEMA = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
+const CAST_SCHEMA = '"cast":[{"name":"角色名（照抄库里的名字）","outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）"}]';
+const OUTFIT_RULE = "`cast` 是本批的**服装定妆**：每个出场角色一条，`outfit` 用英文写清版型、主色、关键配件（white dress shirt, black pleated skirt, brown loafers）。【角色固定外貌库】里该角色有「固定着装」时**照抄那一串，不要改写**；没有时按正文/角色卡/世界书定一次，正文没写就合理定一套具体的。同一批所有格共用这一串，**不许因为这一格没提衣服就换一套**；正文明确换装/穿脱/衣物破损时才写新的那一套。`characters[].act` 里**不要再写任何服装词**——服装只由 cast 提供，代码会把它拼到每一格。";
 const COMMON_RULES = [
   "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
+  OUTFIT_RULE,
   "characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other's sleeve, leaning against the door, holding a broken cup）。",
   "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
   "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
@@ -4502,22 +4613,22 @@ const COMMON_RULES = [
 function statusSingleSystem() {
   return [
     "读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。",
-    `格式：${JSON_FIELDS}`,
+    `格式：{"title":"中文，14 字以内，这一楼发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}`,
     "tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。",
     ...COMMON_RULES,
     "景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。",
-    '没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。'
+    '没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。'
   ].join("\n");
 }
 function statusManySystem(count) {
   return [
     `读一段角色扮演正文，把这一楼发生的事挑成 ${count} 个先后画面，像一条小分镜，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内，这一楼讲了一件什么事","panels":[${JSON_FIELDS}]}`,
+    `格式：{"title":"中文，14 字以内，这一楼讲了一件什么事",${CAST_SCHEMA},"panels":[${JSON_FIELDS}]}`,
     "panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。",
     "每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。",
     ...COMMON_RULES,
     "每格景别只写 close-up / upper body / medium shot 里的一个，相邻两格不要一样（卡片是偏半身构图，不要写 full body 或 wide shot）。",
-    '没有角色出场时输出 {"title":"","panels":[]}。'
+    '没有角色出场时输出 {"title":"","cast":[],"panels":[]}。'
   ].join("\n");
 }
 function bonusSystem(count) {
@@ -4526,7 +4637,7 @@ function bonusSystem(count) {
   const panelsSchema = many ? `,"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences","lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]` : "";
   return [
     "读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。",
-    `格式：{"title":"中文，14 字以内，以「彩蛋：」开头","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${linesSchema}${panelsSchema}}`,
+    `格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${linesSchema}${panelsSchema}}`,
     "题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。",
     "每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。",
     `每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。${many ? `把彩蛋拆成最多 ${count} 个先后画面（panels），按时间顺序，每格不同瞬间。` : "只画一个画面。"}`,
@@ -4537,7 +4648,7 @@ function bonusSystem(count) {
 function mangaSingleSystem(safe, dialogue = false) {
   const rules = [
     "读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。",
-    `格式：{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}`,
+    `格式：{"title":"中文，14 字以内，这一格发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}`,
     ...COMMON_RULES,
     "tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。",
     "**这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。",
@@ -4556,7 +4667,7 @@ function mangaSingleSystem(safe, dialogue = false) {
 function mangaManySystem(count, safe, dialogue = false) {
   const rules = [
     `读一段角色扮演正文，把这一楼发生的事挑成最多 ${count} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内","panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}]}`,
+    `格式：{"title":"中文，14 字以内",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}]}`,
     "panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。",
     ...COMMON_RULES,
     "tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。",
@@ -4715,11 +4826,19 @@ function scrubMangaReading(reading) {
     return { ...frame, tags: tags.tags, roles, nl };
   };
   const panels = reading.panels.map(scrubFrame).filter((f) => !!f.tags);
+  const outfits = (reading.outfits ?? []).filter((item) => {
+    if (!UNSAFE_RE.test(item.outfit)) return true;
+    hits.push(`${item.name} 的服装描写`);
+    return false;
+  });
+  const kept = { ...reading };
+  if (outfits.length) kept.outfits = outfits;
+  else delete kept.outfits;
   const head = panels[0];
   if (!head) {
-    return { reading: { ...reading, panels, tags: "", roles: [], characters: [], nl: "" }, hits };
+    return { reading: { ...kept, panels, tags: "", roles: [], characters: [], nl: "" }, hits };
   }
-  return { reading: { ...reading, ...head, title: reading.title, panels }, hits };
+  return { reading: { ...kept, ...head, title: reading.title, panels }, hits };
 }
 function statusSeedFor(name) {
   const text = (Array.isArray(name) ? name : [name]).map((s) => String(s ?? "").trim()).filter(Boolean).join("|");
@@ -4742,6 +4861,94 @@ function rerollSeed(backend, previous = 0) {
 function decideSeed(backend, override, fixedSeed = 0) {
   if (backend === "nai") return fixedSeed > 0 ? fixedSeed : rerollSeed("nai");
   return rerollSeed(backend);
+}
+const FIELD_LABELS = [
+  ["fandom", "同人身份"],
+  ["sex", "性别"],
+  ["hair", "头发"],
+  ["eyes", "眼睛"],
+  ["skin", "肤色"],
+  ["body", "体型"],
+  ["extra", "标志特征"],
+  ["outfit", "固定着装"]
+];
+function formatLibraryEntry(entry, locked = entry.scope === "global") {
+  const parts = [];
+  const fields = entry.fields ?? {};
+  for (const [key, label] of FIELD_LABELS) {
+    const value = String(fields[key] ?? "").trim();
+    if (value) parts.push(`${label}=${value}`);
+  }
+  if (!parts.length) {
+    const tag = String(entry.tag ?? "").trim();
+    if (tag) parts.push(`外貌=${tag}`);
+  }
+  const nl = String(entry.nl ?? "").trim();
+  if (nl) parts.push(`外观句=${nl}`);
+  return `- ${entry.name}${locked ? "［全局］" : ""}: ${parts.join(", ") || "(本条目没有数据，请到柏宝绘补全)"}`;
+}
+function buildLibraryBlock(entries2) {
+  const usable = entries2.filter((entry) => String(entry.name ?? "").trim());
+  if (!usable.length) return "";
+  const lines = usable.map((entry) => formatLibraryEntry(entry, entry.scope === "global"));
+  return [
+    "【角色固定外貌库 · 来自柏宝绘，只读】",
+    "以下名字是**唯一合法**的 characters[].name。正文里的称呼与这里不同（「你」「Cecilia」「那个金发男生」）时，",
+    "先判断指的是库里哪一位，再照抄库里的名字；判不出来才用正文叫法。",
+    "外貌（发色/瞳色/体型/标志特征/固定着装）由本库提供，**不要自己编**，也不要把外貌写进 tags。",
+    ...lines
+  ].join("\n");
+}
+function clip(text, limit) {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+function buildCastBlock(ctx) {
+  const lines = [];
+  if (ctx.personaName) {
+    lines.push(`- 用户扮演：${ctx.personaName}（正文里的「你」指的就是这一位，出图必须画成这个人）`);
+  }
+  if (ctx.cardName) {
+    lines.push(`- 角色卡主角：${ctx.cardName}（正文里与他对话/互动的一方）`);
+  }
+  const persona = clip(ctx.personaText, 600);
+  const card = clip(ctx.cardText, 600);
+  if (persona) lines.push(`- 用户人设摘要：${persona}`);
+  if (card) lines.push(`- 角色卡摘要：${card}`);
+  if (!lines.length) return "";
+  return ["【本聊天的人物对应】", ...lines].join("\n");
+}
+function readCastContext(fallbackCardName = "") {
+  const ctx = getContext();
+  const personaName = String(ctx.name1 ?? "").trim();
+  const cardName = String(ctx.name2 ?? fallbackCardName ?? "").trim();
+  let personaText = "";
+  try {
+    const substitute = ctx.substituteParams;
+    if (typeof substitute === "function") {
+      personaText = String(substitute.call(ctx, "{{persona}}") ?? "");
+    }
+  } catch {
+    personaText = "";
+  }
+  if (!personaText) {
+    const powerUser = globalThis.power_user;
+    if (powerUser && typeof powerUser.persona_description === "string") {
+      personaText = powerUser.persona_description;
+    }
+  }
+  let cardText = "";
+  const characters = ctx.characters;
+  const characterId = typeof ctx.characterId === "number" ? ctx.characterId : -1;
+  const card = characters && characterId >= 0 ? characters[characterId] : void 0;
+  const data = card == null ? void 0 : card.data;
+  if (data) {
+    cardText = [data.description, data.personality].filter((v) => typeof v === "string" && !!v.trim()).join(" / ");
+  }
+  return { personaName, cardName, personaText, cardText };
+}
+function normalizeName$1(name) {
+  return String(name ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, "").toLowerCase();
 }
 function combinedPanelTags(panel) {
   const pieces = [];
@@ -4843,6 +5050,16 @@ async function runTheaterOne(input) {
       for (const l of panel.lines ?? []) if (l.speaker && l.speaker !== "旁白") names.add(l.speaker);
     }
     const fixedSeed = statusSeedFor([...names]);
+    const outfitByName = /* @__PURE__ */ new Map();
+    for (const item of reading.outfits ?? []) {
+      const key = normalizeName$1(item.name);
+      if (key && item.outfit && !outfitByName.has(key)) outfitByName.set(key, item.outfit);
+    }
+    const outfitOf = (name, look) => {
+      const key = normalizeName$1(name);
+      const base = normalizeName$1(String(name ?? "").split(/[（(【\[]/)[0]);
+      return outfitByName.get(key) ?? (base ? outfitByName.get(base) : void 0) ?? (look == null ? void 0 : look.outfit) ?? "";
+    };
     const stories = [];
     const missingLooks = /* @__PURE__ */ new Set();
     const nativeCharacters = input.supportsCharacters !== false;
@@ -4861,14 +5078,16 @@ async function runTheaterOne(input) {
       }
       const characters = nativeCharacters ? looks.filter((look) => look.tag).map((look) => {
         const act = acts.get(look.name) ?? acts.get(look.name.trim()) ?? "";
+        const outfit = outfitOf(look.name, look);
+        const tag = [look.tag, outfit, act].filter(Boolean).join(", ");
         return {
           name: look.name,
-          tag: act ? `${look.tag}, ${act}` : look.tag,
+          tag,
           ...look.nl ? { nl: look.nl } : {}
         };
       }) : [];
-      const missingActs = looks.filter((look) => !look.tag).map((look) => acts.get(look.name) ?? "").filter(Boolean);
-      const appearances = nativeCharacters ? [] : looks.map((look) => look.tag).filter(Boolean);
+      const missingActs = looks.filter((look) => !look.tag).map((look) => [acts.get(look.name) ?? "", outfitOf(look.name, look)].filter(Boolean).join(", ")).filter(Boolean);
+      const appearances = nativeCharacters ? [] : looks.map((look) => [look.tag, outfitOf(look.name, look)].filter(Boolean).join(", ")).filter(Boolean);
       const baseTags = nativeCharacters ? [panel.tags, ...missingActs].filter(Boolean).join(", ") : combinedPanelTags(panel);
       const prompt = buildTheaterImagePrompt(
         input.kind,
@@ -4930,91 +5149,6 @@ async function runTheaterOne(input) {
       hits: []
     };
   }
-}
-const FIELD_LABELS = [
-  ["fandom", "同人身份"],
-  ["sex", "性别"],
-  ["hair", "头发"],
-  ["eyes", "眼睛"],
-  ["skin", "肤色"],
-  ["body", "体型"],
-  ["extra", "标志特征"],
-  ["outfit", "固定着装"]
-];
-function formatLibraryEntry(entry, locked = entry.scope === "global") {
-  const parts = [];
-  const fields = entry.fields ?? {};
-  for (const [key, label] of FIELD_LABELS) {
-    const value = String(fields[key] ?? "").trim();
-    if (value) parts.push(`${label}=${value}`);
-  }
-  if (!parts.length) {
-    const tag = String(entry.tag ?? "").trim();
-    if (tag) parts.push(`外貌=${tag}`);
-  }
-  const nl = String(entry.nl ?? "").trim();
-  if (nl) parts.push(`外观句=${nl}`);
-  return `- ${entry.name}${locked ? "［全局］" : ""}: ${parts.join(", ") || "(本条目没有数据，请到柏宝绘补全)"}`;
-}
-function buildLibraryBlock(entries2) {
-  const usable = entries2.filter((entry) => String(entry.name ?? "").trim());
-  if (!usable.length) return "";
-  const lines = usable.map((entry) => formatLibraryEntry(entry, entry.scope === "global"));
-  return [
-    "【角色固定外貌库 · 来自柏宝绘，只读】",
-    "以下名字是**唯一合法**的 characters[].name。正文里的称呼与这里不同（「你」「Cecilia」「那个金发男生」）时，",
-    "先判断指的是库里哪一位，再照抄库里的名字；判不出来才用正文叫法。",
-    "外貌（发色/瞳色/体型/标志特征/固定着装）由本库提供，**不要自己编**，也不要把外貌写进 tags。",
-    ...lines
-  ].join("\n");
-}
-function clip(text, limit) {
-  const value = String(text ?? "").replace(/\s+/g, " ").trim();
-  return value.length > limit ? `${value.slice(0, limit)}…` : value;
-}
-function buildCastBlock(ctx) {
-  const lines = [];
-  if (ctx.personaName) {
-    lines.push(`- 用户扮演：${ctx.personaName}（正文里的「你」指的就是这一位，出图必须画成这个人）`);
-  }
-  if (ctx.cardName) {
-    lines.push(`- 角色卡主角：${ctx.cardName}（正文里与他对话/互动的一方）`);
-  }
-  const persona = clip(ctx.personaText, 600);
-  const card = clip(ctx.cardText, 600);
-  if (persona) lines.push(`- 用户人设摘要：${persona}`);
-  if (card) lines.push(`- 角色卡摘要：${card}`);
-  if (!lines.length) return "";
-  return ["【本聊天的人物对应】", ...lines].join("\n");
-}
-function readCastContext(fallbackCardName = "") {
-  const ctx = getContext();
-  const personaName = String(ctx.name1 ?? "").trim();
-  const cardName = String(ctx.name2 ?? fallbackCardName ?? "").trim();
-  let personaText = "";
-  try {
-    const substitute = ctx.substituteParams;
-    if (typeof substitute === "function") {
-      personaText = String(substitute.call(ctx, "{{persona}}") ?? "");
-    }
-  } catch {
-    personaText = "";
-  }
-  if (!personaText) {
-    const powerUser = globalThis.power_user;
-    if (powerUser && typeof powerUser.persona_description === "string") {
-      personaText = powerUser.persona_description;
-    }
-  }
-  let cardText = "";
-  const characters = ctx.characters;
-  const characterId = typeof ctx.characterId === "number" ? ctx.characterId : -1;
-  const card = characters && characterId >= 0 ? characters[characterId] : void 0;
-  const data = card == null ? void 0 : card.data;
-  if (data) {
-    cardText = [data.description, data.personality].filter((v) => typeof v === "string" && !!v.trim()).join(" / ");
-  }
-  return { personaName, cardName, personaText, cardText };
 }
 const ALL_BUBBLE_STYLES = [
   "classic",
@@ -5600,22 +5734,34 @@ function makeLookReader(characters, primary = "") {
   const userWord = /^(你|我|你们|我们|you|i|me|us)$/i;
   const otherWord = /^(他|她|它|他们|她们|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|the man|the woman)$/i;
   return (names) => {
+    const toLook = (name, entry) => {
+      var _a;
+      const outfit = String(((_a = entry.fields) == null ? void 0 : _a.outfit) ?? "").trim();
+      return {
+        name,
+        tag: entry.tag,
+        ...entry.nl ? { nl: entry.nl } : {},
+        ...outfit ? { outfit } : {}
+      };
+    };
     const out = names.map((name) => {
       const key = normalizeName(name);
       const base = normalizeName(String(name ?? "").split(/[（(【\[]/)[0]);
       const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0);
-      if (hit) return { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} };
+      if (hit) return toLook(name, hit);
       const word = String(name ?? "").trim();
       const fallback = userWord.test(word) ? persona ?? onlyOne : otherWord.test(word) ? card ?? onlyOne : void 0;
-      return fallback ? { name, tag: fallback.tag, ...fallback.nl ? { nl: fallback.nl } : {} } : { name, tag: "" };
+      return fallback ? toLook(name, fallback) : { name, tag: "" };
     });
     const unresolved = out.filter((item) => !item.tag);
     if (unresolved.length === 1) {
       const usedNames = new Set(out.filter((item) => item.tag).map((item) => item.name));
       const free = characters.filter((entry) => !usedNames.has(entry.name));
       if (free.length === 1 && free[0].tag) {
-        unresolved[0].tag = free[0].tag;
-        if (free[0].nl) unresolved[0].nl = free[0].nl;
+        const picked = toLook(unresolved[0].name, free[0]);
+        unresolved[0].tag = picked.tag;
+        if (picked.nl) unresolved[0].nl = picked.nl;
+        if (picked.outfit) unresolved[0].outfit = picked.outfit;
       }
     }
     return out;

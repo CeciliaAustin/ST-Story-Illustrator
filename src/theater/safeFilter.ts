@@ -59,9 +59,19 @@ export function scrubMangaReading(reading: StatusReading): { reading: StatusRead
     return { ...frame, tags: tags.tags, roles, nl };
   };
   const panels = reading.panels.map(scrubFrame).filter(f => !!f.tags);
+  // 本批服装也要过一遍：一串「underwear / no bra」会把安全模式直接废掉，
+  // 而它不在 tags/act/nl 里，光洗那三处漏得干干净净。
+  const outfits = (reading.outfits ?? []).filter(item => {
+    if (!UNSAFE_RE.test(item.outfit)) return true;
+    hits.push(`${item.name} 的服装描写`);
+    return false;
+  });
+  const kept: StatusReading = { ...reading };
+  if (outfits.length) kept.outfits = outfits;
+  else delete kept.outfits;
   const head = panels[0];
   if (!head) {
-    return { reading: { ...reading, panels, tags: '', roles: [], characters: [], nl: '' }, hits };
+    return { reading: { ...kept, panels, tags: '', roles: [], characters: [], nl: '' }, hits };
   }
-  return { reading: { ...reading, ...head, title: reading.title, panels }, hits };
+  return { reading: { ...kept, ...head, title: reading.title, panels }, hits };
 }

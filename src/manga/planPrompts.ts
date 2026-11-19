@@ -21,6 +21,7 @@ import type {
   PanelPageType,
   DialoguePolicy,
 } from '../types';
+import { stripThinkingBlocks } from '../prompt/think';
 import {
   buildPanelRule,
   normalizePanelLayout,
@@ -38,7 +39,9 @@ import {
  * 容忍 markdown 代码围栏、前后解释文字、首尾逗号等常见脏输出。
  */
 export function extractJson(text: string): string | null {
-  const raw = String(text ?? '');
+  // 先剥思考块：我们把柏宝绘的「思维链」也压进了 system，模型会先输出
+  // <thinking>…</thinking>。那里面随手一个花括号就会把下面的括号配对扫描带偏。
+  const raw = stripThinkingBlocks(String(text ?? ''));
   if (!raw.trim()) return null;
 
   // 1) 代码围栏优先

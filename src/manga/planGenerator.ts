@@ -31,6 +31,7 @@ import {
   type SceneInput,
 } from './planPrompts';
 import { parseComicPagePlan } from './panelPlan';
+import { withSpecPreamble } from '../baibai/specPrompt';
 
 // ============================================================
 // 可注入的 LLM 调用器
@@ -68,13 +69,26 @@ export function makeLlmCaller(source: 'auto' | 'secondary' | 'main'): LlmCaller 
  * 指定渠道不可用时回退酒馆主 API，保证任务不中断。
  */
 export function makeModeLlmCaller(
-  settings: { modeChannels?: ModeChannelMap; llmSource?: 'auto' | 'main' | 'secondary' },
+  settings: {
+    modeChannels?: ModeChannelMap;
+    llmSource?: 'auto' | 'main' | 'secondary';
+    /** 是否生成自然语言（nl）。柏宝绘的规范里 {{#nl}}/{{^nl}} 条件段按它展开 */
+    includeNl?: boolean;
+  },
   mode: CreationMode,
 ): LlmCaller {
   const channelId = resolveChannelId(mode, settings.modeChannels, settings.llmSource);
   // 指派了主 API 才算「用主 API」；指派了副渠道就**只走副渠道**，报错即停（不偷偷回退）
-  if (channelId === 'main') return mainApiLlmCaller;
-  return async (system, user) => generateViaChannelStrict(channelId, system, user);
+  const base: LlmCaller = channelId === 'main'
+    ? mainApiLlmCaller
+    : async (system, user) => generateViaChannelStrict(channelId, system, user);
+
+  // 每一次「写 tag / 写 nl」的调用都先过一遍柏宝绘的【自定义提示词】：
+  // 人物与服装怎么取证、什么算自创、连续场景怎么沿用同一套衣服，全写在那份规范里。
+  // 用户改过它而我们只用自己的紧凑规则，等于他写的规则对本插件完全无效
+  // ——「人物对了，服装每格都不一样」就是这么来的。柏宝绘每一张都过一遍，我们也过。
+  const nl = settings.includeNl !== false;
+  return async (system, user) => base(withSpecPreamble(system, nl), user);
 }
 
 // ============================================================

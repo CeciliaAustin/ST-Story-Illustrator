@@ -13,6 +13,7 @@ import { parseStatusReply, clampMangaShots } from './parseReply';
 import { scrubMangaReading, MANGA_SAFE_NEGATIVE } from './safeFilter';
 import { statusSeedFor, decideSeed } from './seed';
 import { speakersOf } from './store';
+import { normalizeName } from './library';
 
 // ============================================================
 // 注入的依赖
@@ -53,6 +54,8 @@ export interface CharacterLook {
   name: string;
   tag: string;
   nl?: string;
+  /** 角色库里的「固定着装」（有就当作本批服装的兜底） */
+  outfit?: string;
 }
 
 export type LookReader = (names: string[]) => CharacterLook[];
@@ -252,6 +255,22 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
     }
     const fixedSeed = statusSeedFor([...names]);
 
+    // 本批服装：模型在顶层 cast[].outfit 里定了一次，这里按名字收好，
+    // 每一格都拼**同一串词**。以前服装是每格各自重写一遍，四格能穿出四种衣服。
+    const outfitByName = new Map<string, string>();
+    for (const item of reading.outfits ?? []) {
+      const key = normalizeName(item.name);
+      if (key && item.outfit && !outfitByName.has(key)) outfitByName.set(key, item.outfit);
+    }
+    const outfitOf = (name: string, look?: CharacterLook): string => {
+      const key = normalizeName(name);
+      const base = normalizeName(String(name ?? '').split(/[（(【\[]/)[0]);
+      return outfitByName.get(key)
+        ?? (base ? outfitByName.get(base) : undefined)
+        ?? look?.outfit
+        ?? '';
+    };
+
     const stories: BbiStatusInfo[] = [];
     const missingLooks = new Set<string>();
     // 支持原生多角色（NAI4.5/V5）时，外貌走 characters 通道；不支持的才回落到拼进正向词
@@ -286,20 +305,29 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
             .filter(look => look.tag)
             .map(look => {
               const act = acts.get(look.name) ?? acts.get(look.name.trim()) ?? '';
+              const outfit = outfitOf(look.name, look);
+              // 顺序照柏宝绘的书写规范：身份/固定外貌 → 当前着装 → 姿势动作。
+              // 服装只从 cast（本批定一次）来，不从这一格的 act 来——那正是漂移的来源。
+              const tag = [look.tag, outfit, act].filter(Boolean).join(', ');
               return {
                 name: look.name,
-                tag: act ? `${look.tag}, ${act}` : look.tag,
+                tag,
                 ...(look.nl ? { nl: look.nl } : {}),
               };
             })
         : [];
       // 走原生角色通道时 Base 只放「全局信息」；没有外貌的人把动作留在 Base，
       // 至少人不会凭空消失（同时 missingLooks 已经告诉用户去补档）。
+      // 服装一起并进去：没有外貌 tag 时，衣服是唯一还能把他画成同一个人的线索。
       const missingActs = looks
         .filter(look => !look.tag)
-        .map(look => acts.get(look.name) ?? '')
+        .map(look => [acts.get(look.name) ?? '', outfitOf(look.name, look)].filter(Boolean).join(', '))
         .filter(Boolean);
-      const appearances = nativeCharacters ? [] : looks.map(look => look.tag).filter(Boolean);
+      const appearances = nativeCharacters
+        ? []
+        : looks
+            .map(look => [look.tag, outfitOf(look.name, look)].filter(Boolean).join(', '))
+            .filter(Boolean);
       const baseTags = nativeCharacters
         ? [panel.tags, ...missingActs].filter(Boolean).join(', ')
         : combinedPanelTags(panel);

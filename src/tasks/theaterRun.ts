@@ -117,20 +117,29 @@ export function makeLookReader(
   const otherWord = /^(他|她|它|他们|她们|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|the man|the woman)$/i;
 
   return names => {
+    // 角色库里的「固定着装」：模型没在 cast 里给服装时，这是唯一能保证同一批里
+    // 穿同一套的依据。空库/没填就是空串，不影响主流程。
+    const toLook = (name: string, entry: BaiBaiCharacter) => {
+      const outfit = String(entry.fields?.outfit ?? '').trim();
+      return {
+        name,
+        tag: entry.tag,
+        ...(entry.nl ? { nl: entry.nl } : {}),
+        ...(outfit ? { outfit } : {}),
+      };
+    };
     const out = names.map(name => {
       const key = normalizeName(name);
       const base = normalizeName(String(name ?? '').split(/[（(【\[]/)[0]);
       const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : undefined);
-      if (hit) return { name, tag: hit.tag, ...(hit.nl ? { nl: hit.nl } : {}) };
+      if (hit) return toLook(name, hit);
       const word = String(name ?? '').trim();
       const fallback = userWord.test(word)
         ? (persona ?? onlyOne)
         : otherWord.test(word)
           ? (card ?? onlyOne)
           : undefined;
-      return fallback
-        ? { name, tag: fallback.tag, ...(fallback.nl ? { nl: fallback.nl } : {}) }
-        : { name, tag: '' };
+      return fallback ? toLook(name, fallback) : { name, tag: '' };
     });
 
     // 一对一补位：一格里只有一个名字对不上、而库里正好只剩一条没被用掉，
@@ -141,8 +150,10 @@ export function makeLookReader(
       const usedNames = new Set(out.filter(item => item.tag).map(item => item.name));
       const free = characters.filter(entry => !usedNames.has(entry.name));
       if (free.length === 1 && free[0].tag) {
-        unresolved[0].tag = free[0].tag;
-        if (free[0].nl) unresolved[0].nl = free[0].nl;
+        const picked = toLook(unresolved[0].name, free[0]);
+        unresolved[0].tag = picked.tag;
+        if (picked.nl) unresolved[0].nl = picked.nl;
+        if (picked.outfit) unresolved[0].outfit = picked.outfit;
       }
     }
     return out;

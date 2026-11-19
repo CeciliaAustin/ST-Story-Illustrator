@@ -314,6 +314,17 @@ export interface StatusFrame {
 
 export interface StatusReading extends StatusFrame {
   panels: StatusFrame[];
+  /**
+   * 本批共用的「当前着装」，每个角色一条（模型在顶层 cast[].outfit 里定一次）。
+   * 出图时由代码逐字拼进每一格的角色块，保证同一批四格穿的是同一套衣服。
+   */
+  outfits?: StatusOutfit[];
+}
+
+/** 一个角色的本批着装（英文 danbooru 短语）。 */
+export interface StatusOutfit {
+  name: string;
+  outfit: string;
 }
 
 export interface BbiStatusInfo {
