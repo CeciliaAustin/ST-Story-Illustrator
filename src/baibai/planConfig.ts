@@ -49,11 +49,13 @@ export interface PlanInfo {
   layoutWords: string[];
 }
 
-/** 柏宝绘画师串（只取判定需要的三个字段）。 */
+/** 柏宝绘画师串（只取判定需要的字段）。 */
 export interface ArtistInfo {
   id: string;
   name: string;
   prompt: string;
+  /** 正面质量词：也算进「会不会抢版面」的判定（有人把分格词写在这） */
+  quality: string;
 }
 
 /** 画师串里会抢走版面的词。 */
@@ -130,6 +132,7 @@ export function parseArtists(raw: unknown): ArtistInfo[] {
       id,
       name: str(a.name).trim() || id,
       prompt: str(a.prompt).trim(),
+      quality: str(a.quality).trim(),
     });
   }
   return out;
@@ -165,7 +168,7 @@ export function parsePlans(
       modelFamily: detectModelFamily(str(p.model)),
       artistId,
       artistName: artist?.name ?? '',
-      layoutWords: artist ? layoutWordsIn(artist.prompt) : [],
+      layoutWords: artist ? layoutWordsIn(`${artist.prompt}, ${artist.quality}`) : [],
     });
   }
   return out;

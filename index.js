@@ -1201,7 +1201,8 @@ function parseArtists(raw) {
     out.push({
       id,
       name: str(a.name).trim() || id,
-      prompt: str(a.prompt).trim()
+      prompt: str(a.prompt).trim(),
+      quality: str(a.quality).trim()
     });
   }
   return out;
@@ -1232,7 +1233,7 @@ function parsePlans(raw, endpoints, artists = []) {
       modelFamily: detectModelFamily(str(p.model)),
       artistId,
       artistName: (artist == null ? void 0 : artist.name) ?? "",
-      layoutWords: artist ? layoutWordsIn(artist.prompt) : []
+      layoutWords: artist ? layoutWordsIn(`${artist.prompt}, ${artist.quality}`) : []
     });
   }
   return out;
