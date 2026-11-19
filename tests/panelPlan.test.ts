@@ -179,7 +179,7 @@ describe('buildPanelRule', () => {
 
 describe('panelDialogueClause', () => {
   it('differs json vs tag format', () => {
-    expect(panelDialogueClause('json')).toContain('images 数组');
+    expect(panelDialogueClause('json')).toContain('页对象');
     expect(panelDialogueClause('tag')).toContain('<dialogue>');
   });
 

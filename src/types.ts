@@ -614,6 +614,12 @@ export interface ModeSettings {
   comicLayout?: PanelLayout;
   comicPageType?: PanelPageType;
   comicMaxPages?: number;
+  /**
+   * 每页固定几格（0 = 跟随版面：规整档 2 格，其余档不约束）。
+   * 以前「切页」完全由模型决定：regular 档的构图词是 2koma，模型却可能写 3~4 段内容，
+   * 版面切不出来就只能挤成一格。现在这个值会同时管住提示词、构图词与 nl 首句。
+   */
+  comicPanelsPerPage?: number;
   comicDialoguePolicy?: DialoguePolicy;
   comicBubbleStyle?: BubbleStyleId;
   comicBubbleFont?: BubbleFontId;
@@ -689,6 +695,11 @@ export interface StoryIllustratorSettings {
   dialoguePolicy: DialoguePolicy;
   bubbleStyle: BubbleStyleId;
   bubbleFont: BubbleFontId;
+  /**
+   * 「提示词」标签页里改过的内置提示词。
+   * 键 = PromptDocId（单格版）或 `${id}@many`（多格版）；空串/缺省 = 用内置默认。
+   */
+  promptOverrides: Record<string, string>;
 }
 
 function defaultModeSettings(mode: CreationMode): ModeSettings {
@@ -703,6 +714,7 @@ function defaultModeSettings(mode: CreationMode): ModeSettings {
       return { ...base, enabled: true, illustrationMultiImage: false };
     case 'comic':
       return { ...base, comicLayout: 'regular', comicPageType: 'auto', comicMaxPages: 1,
+        comicPanelsPerPage: 0,
         comicDialoguePolicy: 'auto', comicBubbleStyle: 'classic', comicBubbleFont: 'sans', comicShowComposite: true };
     case 'chibi-status':
       return { ...base, chibiStyle: 'card' };
@@ -784,4 +796,5 @@ export const DEFAULT_SETTINGS: StoryIllustratorSettings = {
   dialoguePolicy: 'auto',
   bubbleStyle: 'classic',
   bubbleFont: 'sans',
+  promptOverrides: {},
 };

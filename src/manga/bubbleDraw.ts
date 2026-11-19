@@ -88,7 +88,10 @@ export function drawBubbles(
     if (bubble.tail) {
       const baseY = bubble.tail === 'down' ? bubble.y + bubble.height : bubble.y;
       const tipY = bubble.tail === 'down' ? baseY + tailSize : baseY - tailSize;
-      const baseX = bubble.x + bubble.width * 0.28;
+      // 尾巴朝向人物：气泡在左半边就把尾巴放右下角、指向画面中轴，反之亦然。
+      // 原来固定 0.28，气泡靠右时尾巴会翘到画面外，读起来像别人的台词。
+      const towardCenter = bubble.x + bubble.width / 2 < width / 2 ? 0.72 : 0.28;
+      const baseX = bubble.x + bubble.width * towardCenter;
       const inner = lineWidth / 2;
       ctx.beginPath();
       ctx.moveTo(baseX - tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);

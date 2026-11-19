@@ -11,11 +11,12 @@
  * 真正的跳转实现由 index.ts 在激活时注册。
  */
 
-export type StudioTab = 'generate' | 'settings' | 'log';
+export type StudioTab = 'generate' | 'settings' | 'prompts' | 'log';
 
 export interface StudioHandlers {
   generate: (options?: { floor?: number; text?: string }) => void;
   settings: () => void;
+  prompts: () => void;
   log: () => void;
 }
 
@@ -35,6 +36,7 @@ export function openStudio(tab: StudioTab, options?: { floor?: number; text?: st
     return;
   }
   if (tab === 'settings') handlers.settings();
+  else if (tab === 'prompts') handlers.prompts();
   else if (tab === 'log') handlers.log();
   else handlers.generate(options);
 }
@@ -42,6 +44,7 @@ export function openStudio(tab: StudioTab, options?: { floor?: number; text?: st
 const TAB_LABELS: Array<{ tab: StudioTab; label: string; icon: string }> = [
   { tab: 'generate', label: '生成配图', icon: 'fa-wand-magic-sparkles' },
   { tab: 'settings', label: '配图设置', icon: 'fa-sliders' },
+  { tab: 'prompts', label: '提示词', icon: 'fa-pen-to-square' },
   { tab: 'log', label: '出图日志', icon: 'fa-list-ul' },
 ];
 

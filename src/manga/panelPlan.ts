@@ -67,6 +67,32 @@ function compositionTags(layout: PanelLayout): string {
   return PANEL_TAGS_BY_LAYOUT[layout].join(', ');
 }
 
+/**
+ * 这一页到底切几格。
+ *
+ * 用户设了 2/3/4 就用它；设 0（自动）时只有「规整」档能确定（2 格），
+ * 其余三档由页型自己决定，返回 0 表示「不要用数字去约束模型」。
+ */
+export function resolvePanelsPerPage(layout: PanelLayout, value?: number): number {
+  const v = Number(value);
+  if (Number.isFinite(v) && v >= 2 && v <= 4) return Math.round(v);
+  return normalizePanelLayout(layout) === 'regular' ? 2 : 0;
+}
+
+/**
+ * 按格数取构图词。
+ *
+ * regular 档的默认是 2koma；用户选 3/4 格时还发 2koma，模型只会画两格，
+ * 剩下的内容全挤在第二格里——这就是「切页乱了」的机械原因。
+ */
+export function panelTagsForCount(layout: PanelLayout, count: number): readonly string[] {
+  const kind = normalizePanelLayout(layout);
+  if (kind === 'regular' && count >= 3) {
+    return ['1.4::multiple views::', '1.5::split screen::', `1.4::${count >= 4 ? 4 : 3}koma::`];
+  }
+  return PANEL_TAGS_BY_LAYOUT[kind];
+}
+
 // ============================================================
 // 归一化入口（脏设置 / 模型输出 → 白名单）
 // ============================================================
@@ -226,7 +252,7 @@ export function panelDialogueClause(
   policy: DialoguePolicy = 'auto',
 ): string {
   const format = mode === 'json'
-    ? 'images 数组对应元素加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","area":"tl"}]`'
+    ? '页对象上加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","area":"tl"}]`'
     : '在该条生图标签里写子标签 `<dialogue>[{"text":"放学一起走吗？","area":"tl"}]</dialogue>`';
   return `【对白气泡】这一张是漫画页，剧情里「谁说了什么」值得画进图时，${format}。
    - text：简短中文口语，一条不超过 20 个字；最多 4 条，${DIALOGUE_POLICY_TEXT[policy]}；
@@ -258,6 +284,41 @@ function regularRule(nlOn: boolean): string {
     '4. 景别 tag 仍然只写一个，用 cowboy shot 或 full body；两格各自的远近写在 nl 里。',
     '5. 两格里出现的人必须一致，同一个人在两格保持同一套外观词。',
     '6. 画幅写 portrait：上下两格各占一半高度，从上到下读。不要写 landscape。',
+    '7. focus tag 属于整张图、不分格，全图最多 1~2 个。',
+    PANEL_FORBIDDEN_CLAUSE,
+    ninth,
+  ].join('\n');
+}
+
+/**
+ * 规整档但用户指定了 3/4 格。
+ *
+ * 不是把 irregular 搬过来：规整档要的是「等分、满版、格间细 gutter」，
+ * irregular 要的是「大小不等」。这里只把格数与版面说清楚，其余沿用规整档口径。
+ */
+function regularMultiRule(nlOn: boolean, count: number): string {
+  const n = count >= 4 ? 4 : 3;
+  const shape = n === 4
+    ? '上方两格、下方两格（2×2 四等分，每格约占页面四分之一）'
+    : '上方一条宽格（约页面 40% 高度），下方左右两个等宽格';
+  const leads = n === 4
+    ? '"In the top-left panel, ..." / "In the top-right panel, ..." / "In the bottom-left panel, ..." / "In the bottom-right panel, ..."'
+    : '"In the upper panel, ..." / "In the lower left panel, ..." / "In the lower right panel, ..."';
+  const ninth = nlOn
+    ? `9. nl 必须按格写：先一句总述版面（${n} 格怎么分），之后逐格一句，用 ${leads} 这类句式。不要用 Panel 1 / Panel 2 编号，也不要写对白。`
+    : '9. 本次没有 nl 通道：格内容只能靠 tag 表达，让人物动作在格与格之间发生变化。';
+  return [
+    `[漫画分镜｜一张画布切${n}格]`,
+    '',
+    `这一张是${n}格漫画，不是普通插画：同一张画布被细黑边框切成 ${n} 格，读者从上往下、从左往右读。所有格讲同一件事的不同层，不是${n}件不相干的事。`,
+    '',
+    `1. 构图 tag 必须写全这三个，原样照抄（含权重写法），一个都不能少，紧跟人数 tag、排在外貌之前：${compositionTags('regular').replace('2koma', `${n}koma`)}。`
+      + ' 不要写 panel layout、comic panel、manga（0 帖空 tag）；也不要写 comic（整本漫画语义，会拉成黑白网点）。',
+    `2. 版面：${shape}。格间只留细黑 gutter（约页宽 3%），人物画大撑到格边，所有格合计覆盖页面九成以上。`,
+    '3. 相邻两格至少要有两个肉眼可辨的差异（人在做的事、画面里的东西、远近）；只有一个差异会被当噪声抹平。',
+    '4. 景别 tag 仍然只写一个，用 cowboy shot 或 full body；各格各自的远近写在 nl 里。',
+    `5. ${n} 格里出现的人必须一致，同一个人在所有格保持同一套外观词。`,
+    `6. 画幅写 portrait：${n} 格按上面说的排法铺满整页。不要写 landscape。`,
     '7. focus tag 属于整张图、不分格，全图最多 1~2 个。',
     PANEL_FORBIDDEN_CLAUSE,
     ninth,
@@ -343,6 +404,8 @@ function unframedRule(nlOn: boolean, pageType: PanelPageType): string {
 // ============================================================
 
 export interface PanelRuleOptions {
+  /** 每页固定格数（0/缺省 = 跟随档位） */
+  panelsPerPage?: number;
   backend?: 'nai' | 'comfyui' | 'other';
   charPrompts?: boolean;
   nl?: boolean;
@@ -364,13 +427,16 @@ export function buildPanelRule(enabled: boolean, options: PanelRuleOptions): str
   const nlOn = options.nl !== false;
   const pageType = normalizePanelPageType(options.pageType);
 
+  const panels = resolvePanelsPerPage(layout, options.panelsPerPage);
   let body: string;
   switch (layout) {
     case 'irregular': body = irregularRule(nlOn); break;
     case 'inset': body = insetRule(nlOn); break;
     case 'unframed': body = unframedRule(nlOn, pageType); break;
     case 'regular':
-    default: body = regularRule(nlOn); break;
+    default:
+      body = panels >= 3 ? regularMultiRule(nlOn, panels) : regularRule(nlOn);
+      break;
   }
 
   const parts: string[] = [body, PANEL_SELF_CHECK];

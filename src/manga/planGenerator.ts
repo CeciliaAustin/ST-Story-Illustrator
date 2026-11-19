@@ -31,6 +31,7 @@ import {
   type SceneInput,
 } from './planPrompts';
 import { parseComicPagePlan } from './panelPlan';
+import type { PromptOverrideMap } from '../prompt/presets';
 import { withSpecPreamble } from '../baibai/specPrompt';
 
 // ============================================================
@@ -111,13 +112,15 @@ export interface GenerateIllustrationInput {
   characters?: BaiBaiCharacter[];
   options: IllustrationPromptOptions;
   caller?: LlmCaller;
+  /** 用户在「提示词」标签页里改过的模板 */
+  promptOverrides?: PromptOverrideMap;
 }
 
 export async function generateIllustrationPlan(
   input: GenerateIllustrationInput,
 ): Promise<GeneratePlanResult<GeneratePromptResponse>> {
   const caller = input.caller ?? defaultLlmCaller;
-  const system = buildIllustrationSystemPrompt(input.options);
+  const system = buildIllustrationSystemPrompt(input.options, input.promptOverrides);
   const user = buildIllustrationUserPrompt(input.scene, input.characters ?? []);
   try {
     const raw = await caller(system, user);
@@ -140,13 +143,15 @@ export interface GenerateComicPlanInput {
   characters?: BaiBaiCharacter[];
   options: ComicPlanOptions;
   caller?: LlmCaller;
+  /** 用户在「提示词」标签页里改过的模板 */
+  promptOverrides?: PromptOverrideMap;
 }
 
 export async function generateComicPlan(
   input: GenerateComicPlanInput,
 ): Promise<GeneratePlanResult<ComicPagePlan[]>> {
   const caller = input.caller ?? defaultLlmCaller;
-  const system = buildComicSystemPrompt(input.options);
+  const system = buildComicSystemPrompt(input.options, input.promptOverrides);
   const user = buildComicUserPrompt(input.scene, input.characters ?? [], input.options.extraInstruction);
   try {
     const raw = await caller(system, user);

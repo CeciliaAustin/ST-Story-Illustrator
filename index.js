@@ -532,6 +532,7 @@ function defaultModeSettings(mode) {
         comicLayout: "regular",
         comicPageType: "auto",
         comicMaxPages: 1,
+        comicPanelsPerPage: 0,
         comicDialoguePolicy: "auto",
         comicBubbleStyle: "classic",
         comicBubbleFont: "sans",
@@ -607,7 +608,8 @@ const DEFAULT_SETTINGS = {
   dialogueEnabled: false,
   dialoguePolicy: "auto",
   bubbleStyle: "classic",
-  bubbleFont: "sans"
+  bubbleFont: "sans",
+  promptOverrides: {}
 };
 const SHARED_EXCLUDES_KEY = "baibai_exclude_settings";
 const DEFAULT_STRIP_TAGS = ["\\[mvu[\\s\\S]*?\\]"];
@@ -1308,12 +1310,14 @@ function openStudio(tab, options) {
     return;
   }
   if (tab === "settings") handlers.settings();
+  else if (tab === "prompts") handlers.prompts();
   else if (tab === "log") handlers.log();
   else handlers.generate(options);
 }
 const TAB_LABELS = [
   { tab: "generate", label: "生成配图", icon: "fa-wand-magic-sparkles" },
   { tab: "settings", label: "配图设置", icon: "fa-sliders" },
+  { tab: "prompts", label: "提示词", icon: "fa-pen-to-square" },
   { tab: "log", label: "出图日志", icon: "fa-list-ul" }
 ];
 function buildStudioTabs(active) {
@@ -2682,6 +2686,210 @@ function destroyRunStatus() {
   labelEl = null;
   dotEl = null;
 }
+function truthy(v) {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return v.trim().length > 0;
+  return false;
+}
+const CONDITION_RE = /\{\{([#^])([a-zA-Z0-9_-]+)\}\}([\s\S]*?)\{\{\/\2\}\}/g;
+const VAR_RE = /\{\{([a-zA-Z0-9_-]+)\}\}/g;
+function renderTemplate(template, vars = {}) {
+  const source = String(template ?? "");
+  if (!source) return "";
+  let text = source;
+  for (let depth = 0; depth < 8; depth += 1) {
+    let changed = false;
+    text = text.replace(CONDITION_RE, (_all, sigil, name, inner) => {
+      changed = true;
+      const on2 = truthy(vars[name]);
+      const keep = sigil === "#" ? on2 : !on2;
+      return keep ? inner : "";
+    });
+    if (!changed) break;
+  }
+  text = text.replace(VAR_RE, (_all, name) => {
+    const value = vars[name];
+    if (value === null || value === void 0) return "";
+    return String(value);
+  });
+  return text;
+}
+function collapseBlankLines(text) {
+  return String(text ?? "").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+function renderCompact(template, vars = {}) {
+  return collapseBlankLines(renderTemplate(template, vars));
+}
+function overrideKey(id, variant) {
+  return variant === "many" ? `${id}@many` : id;
+}
+const CAST_SCHEMA = '"cast":[{"name":"角色名（照抄库里的名字）","outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）"}]';
+const OUTFIT_RULE = "`cast` 是本批的**服装定妆**：每个出场角色一条，`outfit` 用英文写清版型、主色、关键配件（white dress shirt, black pleated skirt, brown loafers）。【角色固定外貌库】里该角色有「固定着装」时**照抄那一串，不要改写**；没有时按正文/角色卡/世界书定一次，正文没写就合理定一套具体的。同一批所有格共用这一串，**不许因为这一格没提衣服就换一套**；正文明确换装/穿脱/衣物破损时才写新的那一套。`characters[].act` 里**不要再写任何服装词**——服装只由 cast 提供，代码会把它拼到每一格。";
+const COMMON_RULES = [
+  "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
+  OUTFIT_RULE,
+  "characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other's sleeve, leaning against the door, holding a broken cup）。",
+  "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
+  "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
+  "characters[].name **必须照抄【角色固定外貌库】里的名字**。正文里用「你」「他」「那个金发男生」或另一个叫法时，先判断指的是库里哪一位，再写库里的名字——名字写错就等于这个人没有外貌，会被画成路人。",
+  "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
+  "tags 里必须交代这三件事：① 人数与互动；② 地点或环境（classroom / dormitory / arched corridor / street / outdoors）；③ 光线或时间（sunlight / backlighting / golden hour / night / indoor lighting）。",
+  "characters[].act 只写「这个人」的动作、表情、以及和场景/道具的接触；外貌、发型、瞳色、服装由柏宝绘角色库提供，这里**绝对不要写**。",
+  "nl 用英文自然语言写同一件事，不要分点、不要换行。",
+  "禁止写：画风、画质（masterpiece / best quality / absurdres）、画师名、角色外貌与服装细节、负面词——这些由柏宝绘的方案负责。",
+  "不要解释，不要 markdown 代码块，不要多余文字。"
+].join("\n");
+const SPEECH_ROOM_RULE = "有台词的那一格，nl 里要写明主角位于画面下半部或偏左右一侧、画面上方留出安静的空白（气泡会叠在那里）——人物头顶顶到画面上沿时，气泡只能盖在脸上。";
+const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你的任务是根据给定剧情，输出结构化的英文生图标签。
+严格遵守：
+1. 只输出一个 JSON 对象，不要输出任何解释文字、不要使用 Markdown 代码围栏。
+2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}],"nl":"可选英文自然语言描述","negative":"可选英文负面词","size":"portrait|landscape"}。
+3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
+4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
+5. 一次只策划一个明确的瞬间，不要描述整段剧情的时间跨度。
+6. 场景与动作必须以给定剧情和上下文为依据，不得凭空添加关键剧情事实。
+7. segment 按 order 从小到大排列；无需的字段直接省略，不要填空字符串或空数组。
+8. 若剧情里的名场面适合漫画分镜，仍按单幅插画输出（漫画由专门的模式处理）。
+{{#hasFlags}}
+补充约束：
+{{#noChinese}}不要生成 chinese 字段（用户已关闭中文辅助）。{{/noChinese}}
+{{#noNl}}不要生成 nl 字段（当前后端不使用自然语言通道）。{{/noNl}}
+{{#noNegative}}不要生成 negative 字段。{{/noNegative}}
+{{#sizeClause}}画幅倾向：{{sizeClause}}。{{/sizeClause}}
+{{/hasFlags}}`;
+const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
+只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
+硬要求：
+1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
+2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
+3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
+4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），各格远近只写在 nl 里。
+5. page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。
+6. panels 数组只用来标「每一格画了什么」：{{#fixedPanels}}**每页固定 {{panelsPerPage}} 格**——panels 必须正好 {{panelsPerPage}} 条，nl 必须按 {{panelsPerPage}} 格分区写，版面也必须真的切出 {{panelsPerPage}} 格。{{/fixedPanels}}{{^fixedPanels}}2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致；**版面必须真的切出这么多格**——说 three panels 就要画三格，不能拿两格模板套四段内容。{{/fixedPanels}}
+7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。
+8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。
+9. 有台词的页，nl 里要让人物偏下、上方留出干净空间给气泡；人物头顶顶到页边时气泡只能盖在脸上。
+{{#hasRule}}
+
+【分镜规则（必须遵守）】
+{{panelRule}}
+{{/hasRule}}
+
+【输出约束】最多 {{maxPages}} 页；{{#dialogue}}dialogue 必须写：每页 2~3 条中文台词，取自这一段里真的说过的话；实在没有对白才用一句旁白式台词顶上。{{/dialogue}}{{^dialogue}}本次不要输出 dialogue 字段。{{/dialogue}}
+{{#noChinese}}除台词外的辅助中文一律不要输出。{{/noChinese}}`;
+const STATUS_SINGLE = `读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。
+格式：{"title":"中文，14 字以内，这一楼发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}
+tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。
+${COMMON_RULES}
+景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。
+没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。`;
+const STATUS_MANY = `读一段角色扮演正文，把这一楼发生的事挑成 {{count}} 个先后画面，像一条小分镜，只输出一个 JSON 对象。
+格式：{"title":"中文，14 字以内，这一楼讲了一件什么事",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}]}
+panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。
+每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。
+${COMMON_RULES}
+每格景别只写 close-up / upper body / medium shot 里的一个，相邻两格不要一样（卡片是偏半身构图，不要写 full body 或 wide shot）。
+没有角色出场时输出 {"title":"","cast":[],"panels":[]}。`;
+const BONUS_LINES = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
+const BONUS_SINGLE = `读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。
+格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${BONUS_LINES}}
+题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。
+每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。
+每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。只画一个画面。
+彩蛋不是正文的延续：不要接着正文里刚发生的事画。
+${COMMON_RULES}
+${SPEECH_ROOM_RULE}`;
+const BONUS_MANY = `读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。
+格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${BONUS_LINES},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences","lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]}
+题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。
+每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。
+每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。把彩蛋拆成最多 {{count}} 个先后画面（panels），按时间顺序，每格不同瞬间。
+彩蛋不是正文的延续：不要接着正文里刚发生的事画。
+${COMMON_RULES}
+${SPEECH_ROOM_RULE}`;
+const MANGA_BASE_RULES = "禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。\n禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。";
+const MANGA_SINGLE = `读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。
+格式：{"title":"中文，14 字以内，这一格发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"{{#dialogue}},${BONUS_LINES}{{/dialogue}}}
+${COMMON_RULES}
+tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。
+**这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。
+${MANGA_BASE_RULES}
+{{#dialogue}}每格给 1~3 条 lines：台词用中文短句、符合角色口吻，必须是正文里真的说过、或那一刻自然会说的话；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。
+${SPEECH_ROOM_RULE}{{/dialogue}}
+{{#safe}}这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。{{/safe}}
+没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。`;
+const MANGA_MANY = `读一段角色扮演正文，把这一楼发生的事挑成最多 {{count}} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。
+格式：{"title":"中文，14 字以内",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"{{#dialogue}},${BONUS_LINES}{{/dialogue}}}]}
+panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。
+${COMMON_RULES}
+tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。
+**每一格都要画出正文里那一刻的场面**：谁、在哪里、正在做什么。除景别与表情外，每格至少一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall）和一条地点 tag。只写外貌与人数的图会变成一页与剧情无关的头像。
+${MANGA_BASE_RULES}
+{{#dialogue}}每格给 1~3 条 lines：中文短句、符合角色口吻，按时间顺序连起来要能读懂这一楼发生了什么；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。
+${SPEECH_ROOM_RULE}{{/dialogue}}
+{{#safe}}每格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写；用表情、留白、构图表达张力，tags 与 act 里不许出现 NSFW 词。{{/safe}}
+没有角色出场时输出 {"title":"","cast":[],"panels":[]}。`;
+const PROMPT_DOCS = [
+  {
+    id: "illustration",
+    label: "正文插画",
+    hint: "读选段 → 输出 tag 段（segment）与 nl。改字段名会导致解析失败。",
+    vars: ["hasFlags", "noChinese", "noNl", "noNegative", "sizeClause"],
+    defaults: { single: ILLUSTRATION }
+  },
+  {
+    id: "comic",
+    label: "正文漫画分镜",
+    hint: "一页一张图。{{panelRule}} 是系统按「分镜档位 / 页型 / 后端」注入的规则块，别删。",
+    vars: ["hasRule", "panelRule", "maxPages", "dialogue", "noChinese", "fixedPanels", "panelsPerPage"],
+    defaults: { single: COMIC }
+  },
+  {
+    id: "status",
+    label: "QQ 人状态栏",
+    hint: "只画这一楼最要紧的一张。{{count}} 是多格模式要的格数。",
+    vars: ["count"],
+    defaults: { single: STATUS_SINGLE, many: STATUS_MANY }
+  },
+  {
+    id: "bonus",
+    label: "QQ 人彩蛋",
+    hint: "架空小片段，与正文剧情无关，但人物性格照旧。",
+    vars: ["count"],
+    defaults: { single: BONUS_SINGLE, many: BONUS_MANY }
+  },
+  {
+    id: "manga",
+    label: "黑白漫小剧场",
+    hint: "单格黑白漫画；{{#safe}} 是安全模式，{{#dialogue}} 是台词。",
+    vars: ["count", "safe", "dialogue"],
+    defaults: { single: MANGA_SINGLE, many: MANGA_MANY }
+  }
+];
+function promptDocOf(id) {
+  return PROMPT_DOCS.find((doc) => doc.id === id);
+}
+function defaultTemplate(id, variant) {
+  const doc = promptDocOf(id);
+  if (!doc) return "";
+  if (variant === "many") return doc.defaults.many ?? doc.defaults.single;
+  return doc.defaults.single;
+}
+function resolveTemplate(id, variant, overrides) {
+  const custom = overrides == null ? void 0 : overrides[overrideKey(id, variant)];
+  if (typeof custom === "string" && custom.trim()) return custom;
+  return defaultTemplate(id, variant);
+}
+function renderPromptDoc(id, variant, vars, overrides) {
+  const template = resolveTemplate(id, variant, overrides);
+  return renderCompact(template, vars);
+}
+function isCustomized(id, variant, overrides) {
+  const custom = overrides == null ? void 0 : overrides[overrideKey(id, variant)];
+  return typeof custom === "string" && !!custom.trim();
+}
 const PANEL_ID = "sti-config-panel";
 const OVERLAY_ID$1 = "sti-config-overlay";
 const MODE_LABEL = {
@@ -2694,6 +2902,8 @@ const MODE_LABEL = {
 };
 let panelEl = null;
 let overlayEl = null;
+let promptDocId = "illustration";
+let promptVariant = "single";
 function ensurePanel() {
   if (panelEl && overlayEl && document.body.contains(panelEl)) {
     return { panel: panelEl, overlay: overlayEl };
@@ -2742,7 +2952,7 @@ function render(panel, tab = "settings") {
   const head = document.createElement("div");
   head.className = "sti-config-head";
   const title = document.createElement("h2");
-  title.textContent = tab === "log" ? "出图日志" : "配图设置";
+  title.textContent = tab === "log" ? "出图日志" : tab === "prompts" ? "提示词" : "配图设置";
   head.appendChild(title);
   const close = document.createElement("button");
   close.type = "button";
@@ -2757,6 +2967,13 @@ function render(panel, tab = "settings") {
     logBody.className = "sti-config-body";
     logBody.appendChild(renderLogSection());
     panel.appendChild(logBody);
+    return;
+  }
+  if (tab === "prompts") {
+    const promptBody = document.createElement("div");
+    promptBody.className = "sti-config-body";
+    promptBody.appendChild(renderPromptSettings(panel));
+    panel.appendChild(promptBody);
     return;
   }
   const body = document.createElement("div");
@@ -3167,6 +3384,15 @@ function renderComicSettings() {
     })
   ));
   box.appendChild(selectRow(
+    "每页格数",
+    String((comic == null ? void 0 : comic.comicPanelsPerPage) ?? 0),
+    [["0", "跟随版面"], ["2", "2 格"], ["3", "3 格"], ["4", "4 格"]],
+    (v) => patchSettings((st) => {
+      st.modes["comic"].comicPanelsPerPage = Number(v);
+    }),
+    "一页切几格。定死之后，提示词、构图词（2/3/4koma）与 nl 分区会一起对齐——以前是模型说几格就几格，规整档的 2koma 会把三四段内容压进两格。"
+  ));
+  box.appendChild(selectRow(
     "最多页数",
     String((comic == null ? void 0 : comic.comicMaxPages) ?? 1),
     [["1", "1 页"], ["2", "2 页"], ["3", "3 页"]],
@@ -3241,6 +3467,120 @@ function renderUiSettings() {
     "兼容把思维链写进正文的预设，避免把思考过程算进剧情。"
   ));
   return group;
+}
+function renderPromptSettings(panel) {
+  const wrap = document.createElement("div");
+  const doc = promptDocOf(promptDocId) ?? PROMPT_DOCS[0];
+  promptDocId = doc.id;
+  const hasMany = !!doc.defaults.many;
+  const variant = hasMany ? promptVariant : "single";
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const overrides = settings2.promptOverrides ?? {};
+  const customized = isCustomized(doc.id, variant, overrides);
+  const current = resolveTemplate(doc.id, variant, overrides);
+  wrap.appendChild(section(
+    "内置提示词",
+    "这就是插件「读剧情」时发给模型的原话（不含柏宝绘自定义提示词与角色库，那两段另行注入）。留空保存 = 恢复内置默认。"
+  ));
+  const chips = document.createElement("div");
+  chips.className = "sti-prompt-chips";
+  for (const item of PROMPT_DOCS) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `sti-prompt-chip${item.id === doc.id ? " active" : ""}`;
+    btn.textContent = item.label;
+    if (isCustomized(item.id, "single", overrides) || item.defaults.many && isCustomized(item.id, "many", overrides)) {
+      const dot = document.createElement("span");
+      dot.className = "sti-prompt-dot";
+      dot.title = "这一套有自定义版本";
+      btn.appendChild(dot);
+    }
+    btn.addEventListener("click", () => {
+      promptDocId = item.id;
+      promptVariant = "single";
+      render(panel, "prompts");
+    });
+    chips.appendChild(btn);
+  }
+  wrap.appendChild(chips);
+  if (hasMany) {
+    const seg = document.createElement("div");
+    seg.className = "sti-prompt-seg";
+    for (const [value, label] of [["single", "单格"], ["many", "多格"]]) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `sti-prompt-seg-btn${variant === value ? " active" : ""}`;
+      btn.textContent = label;
+      const marked = isCustomized(doc.id, value, overrides);
+      if (marked) {
+        const dot = document.createElement("span");
+        dot.className = "sti-prompt-dot";
+        dot.title = "这一版已自定义";
+        btn.appendChild(dot);
+      }
+      btn.addEventListener("click", () => {
+        promptVariant = value;
+        render(panel, "prompts");
+      });
+      seg.appendChild(btn);
+    }
+    wrap.appendChild(seg);
+  }
+  const hint = document.createElement("div");
+  hint.className = "sti-config-sub";
+  hint.textContent = doc.hint;
+  wrap.appendChild(hint);
+  const area = document.createElement("textarea");
+  area.className = "sti-prompt-area";
+  area.value = current;
+  area.spellcheck = false;
+  area.rows = 20;
+  wrap.appendChild(area);
+  const vars = document.createElement("div");
+  vars.className = "sti-prompt-vars";
+  vars.textContent = `可用变量：${doc.vars.map((v) => `{{${v}}}`).join("  ")} · 条件段写法 {{#name}}…{{/name}}（成立才保留）/ {{^name}}…{{/name}}（不成立才保留）`;
+  wrap.appendChild(vars);
+  const bar = document.createElement("div");
+  bar.className = "sti-prompt-actions";
+  const state2 = document.createElement("span");
+  state2.className = `sti-prompt-state${customized ? " is-custom" : ""}`;
+  state2.textContent = customized ? "● 已自定义" : "○ 内置默认";
+  bar.appendChild(state2);
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "sti-prompt-btn";
+  reset.textContent = "恢复默认";
+  reset.disabled = !customized;
+  reset.addEventListener("click", () => {
+    const next = { ...getSettings(DEFAULT_SETTINGS) };
+    const map = { ...next.promptOverrides ?? {} };
+    delete map[overrideKey(doc.id, variant)];
+    next.promptOverrides = map;
+    saveSettings(next);
+    render(panel, "prompts");
+  });
+  bar.appendChild(reset);
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "sti-prompt-btn is-primary";
+  save.textContent = "保存";
+  save.addEventListener("click", () => {
+    const next = { ...getSettings(DEFAULT_SETTINGS) };
+    const map = { ...next.promptOverrides ?? {} };
+    const value = area.value.trim();
+    if (!value) delete map[overrideKey(doc.id, variant)];
+    else map[overrideKey(doc.id, variant)] = value;
+    next.promptOverrides = map;
+    saveSettings(next);
+    render(panel, "prompts");
+  });
+  bar.appendChild(save);
+  wrap.appendChild(bar);
+  const note = document.createElement("div");
+  note.className = "sti-config-sub sti-prompt-note";
+  note.textContent = "改措辞、加规矩都没问题；但 JSON 的字段名（title / characters / tags / nl / cast / panels / lines …）是解析器的契约，改名会让这一块解析不出来。改坏了点「恢复默认」。";
+  wrap.appendChild(note);
+  return wrap;
 }
 function renderLogSection() {
   const entries2 = getImageLog();
@@ -3837,6 +4177,18 @@ const PANEL_NO_POS_CLAUSE = "分格图不需要 pos：NAI 的坐标是整张图�
 function compositionTags(layout) {
   return PANEL_TAGS_BY_LAYOUT[layout].join(", ");
 }
+function resolvePanelsPerPage(layout, value) {
+  const v = Number(value);
+  if (Number.isFinite(v) && v >= 2 && v <= 4) return Math.round(v);
+  return normalizePanelLayout(layout) === "regular" ? 2 : 0;
+}
+function panelTagsForCount(layout, count) {
+  const kind = normalizePanelLayout(layout);
+  if (kind === "regular" && count >= 3) {
+    return ["1.4::multiple views::", "1.5::split screen::", `1.4::${count >= 4 ? 4 : 3}koma::`];
+  }
+  return PANEL_TAGS_BY_LAYOUT[kind];
+}
 function normalizePanelLayout(v) {
   return v === "irregular" || v === "inset" || v === "unframed" ? v : "regular";
 }
@@ -3935,7 +4287,7 @@ const DIALOGUE_POLICY_TEXT = {
   eager: "有对话、呼喊、惊讶时必须写；只有独处、风景镜头才允许省略"
 };
 function panelDialogueClause(mode, policy = "auto") {
-  const format = mode === "json" ? 'images 数组对应元素加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","area":"tl"}]`' : '在该条生图标签里写子标签 `<dialogue>[{"text":"放学一起走吗？","area":"tl"}]</dialogue>`';
+  const format = mode === "json" ? '页对象上加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","area":"tl"}]`' : '在该条生图标签里写子标签 `<dialogue>[{"text":"放学一起走吗？","area":"tl"}]</dialogue>`';
   return `【对白气泡】这一张是漫画页，剧情里「谁说了什么」值得画进图时，${format}。
    - text：简短中文口语，一条不超过 20 个字；最多 4 条，${DIALOGUE_POLICY_TEXT[policy]}；
    - area：气泡锚点（tl/tc/tr/ml/mr/bl/bc/br），按说话人位置挑，可省略；
@@ -3958,6 +4310,27 @@ function regularRule(nlOn) {
     "4. 景别 tag 仍然只写一个，用 cowboy shot 或 full body；两格各自的远近写在 nl 里。",
     "5. 两格里出现的人必须一致，同一个人在两格保持同一套外观词。",
     "6. 画幅写 portrait：上下两格各占一半高度，从上到下读。不要写 landscape。",
+    "7. focus tag 属于整张图、不分格，全图最多 1~2 个。",
+    PANEL_FORBIDDEN_CLAUSE,
+    ninth
+  ].join("\n");
+}
+function regularMultiRule(nlOn, count) {
+  const n = count >= 4 ? 4 : 3;
+  const shape = n === 4 ? "上方两格、下方两格（2×2 四等分，每格约占页面四分之一）" : "上方一条宽格（约页面 40% 高度），下方左右两个等宽格";
+  const leads = n === 4 ? '"In the top-left panel, ..." / "In the top-right panel, ..." / "In the bottom-left panel, ..." / "In the bottom-right panel, ..."' : '"In the upper panel, ..." / "In the lower left panel, ..." / "In the lower right panel, ..."';
+  const ninth = nlOn ? `9. nl 必须按格写：先一句总述版面（${n} 格怎么分），之后逐格一句，用 ${leads} 这类句式。不要用 Panel 1 / Panel 2 编号，也不要写对白。` : "9. 本次没有 nl 通道：格内容只能靠 tag 表达，让人物动作在格与格之间发生变化。";
+  return [
+    `[漫画分镜｜一张画布切${n}格]`,
+    "",
+    `这一张是${n}格漫画，不是普通插画：同一张画布被细黑边框切成 ${n} 格，读者从上往下、从左往右读。所有格讲同一件事的不同层，不是${n}件不相干的事。`,
+    "",
+    `1. 构图 tag 必须写全这三个，原样照抄（含权重写法），一个都不能少，紧跟人数 tag、排在外貌之前：${compositionTags("regular").replace("2koma", `${n}koma`)}。 不要写 panel layout、comic panel、manga（0 帖空 tag）；也不要写 comic（整本漫画语义，会拉成黑白网点）。`,
+    `2. 版面：${shape}。格间只留细黑 gutter（约页宽 3%），人物画大撑到格边，所有格合计覆盖页面九成以上。`,
+    "3. 相邻两格至少要有两个肉眼可辨的差异（人在做的事、画面里的东西、远近）；只有一个差异会被当噪声抹平。",
+    "4. 景别 tag 仍然只写一个，用 cowboy shot 或 full body；各格各自的远近写在 nl 里。",
+    `5. ${n} 格里出现的人必须一致，同一个人在所有格保持同一套外观词。`,
+    `6. 画幅写 portrait：${n} 格按上面说的排法铺满整页。不要写 landscape。`,
     "7. focus tag 属于整张图、不分格，全图最多 1~2 个。",
     PANEL_FORBIDDEN_CLAUSE,
     ninth
@@ -4029,6 +4402,7 @@ function buildPanelRule(enabled, options) {
   const layout = normalizePanelLayout(options.layout);
   const nlOn = options.nl !== false;
   const pageType = normalizePanelPageType(options.pageType);
+  const panels = resolvePanelsPerPage(layout, options.panelsPerPage);
   let body;
   switch (layout) {
     case "irregular":
@@ -4042,7 +4416,7 @@ function buildPanelRule(enabled, options) {
       break;
     case "regular":
     default:
-      body = regularRule(nlOn);
+      body = panels >= 3 ? regularMultiRule(nlOn, panels) : regularRule(nlOn);
       break;
   }
   const parts = [body, PANEL_SELF_CHECK];
@@ -4199,26 +4573,15 @@ function safeParseJson(text) {
     return null;
   }
 }
-const ILLUSTRATION_SYSTEM = `你是一位专业的图像提示词（tag）编辑。你的任务是根据给定剧情，输出结构化的英文生图标签。
-严格遵守：
-1. 只输出一个 JSON 对象，不要输出任何解释文字、不要使用 Markdown 代码围栏。
-2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}],"nl":"可选英文自然语言描述","negative":"可选英文负面词","size":"portrait|landscape"}。
-3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
-4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
-5. 一次只策划一个明确的瞬间，不要描述整段剧情的时间跨度。
-6. 场景与动作必须以给定剧情和上下文为依据，不得凭空添加关键剧情事实。
-7. segment 按 order 从小到大排列；无需的字段直接省略，不要填空字符串或空数组。
-8. 若剧情里的名场面适合漫画分镜，仍按单幅插画输出（漫画由专门的模式处理）。`;
-function buildIllustrationSystemPrompt(options) {
-  const flags = [];
-  if (!options.includeChinese) flags.push("不要生成 chinese 字段（用户已关闭中文辅助）。");
-  if (!options.includeNl) flags.push("不要生成 nl 字段（当前后端不使用自然语言通道）。");
-  if (!options.includeNegative) flags.push("不要生成 negative 字段。");
-  if (options.size) flags.push(`画幅倾向：${options.size}。`);
-  return flags.length ? `${ILLUSTRATION_SYSTEM}
-
-补充约束：
-${flags.join("\n")}` : ILLUSTRATION_SYSTEM;
+function buildIllustrationSystemPrompt(options, overrides) {
+  const hasFlags = !options.includeChinese || !options.includeNl || !options.includeNegative || !!options.size;
+  return renderPromptDoc("illustration", "single", {
+    hasFlags,
+    noChinese: !options.includeChinese,
+    noNl: !options.includeNl,
+    noNegative: !options.includeNegative,
+    sizeClause: options.size ?? ""
+  }, overrides);
 }
 function buildIllustrationUserPrompt(scene, characters) {
   const parts = [];
@@ -4266,20 +4629,9 @@ function parseIllustrationResponse(text) {
   if (typeof data.size === "string" && data.size.trim()) result.size = data.size.trim().slice(0, 40);
   return result;
 }
-const COMIC_SYSTEM_HEAD = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
-只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
-硬要求：
-1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
-2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
-3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
-4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），各格远近只写在 nl 里。
-5. page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。
-6. panels 数组只用来标「每一格画了什么」：2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致。
-7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。
-8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。`;
-function buildComicSystemPrompt(options) {
+function buildComicSystemPrompt(options, overrides) {
   const ruleOptions = {
+    panelsPerPage: options.panelsPerPage ?? 0,
     backend: options.backend,
     charPrompts: options.charPrompts,
     nl: options.nl,
@@ -4291,11 +4643,17 @@ function buildComicSystemPrompt(options) {
     dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy)
   };
   const rule = buildPanelRule(options.panelMode, ruleOptions);
-  const parts = [COMIC_SYSTEM_HEAD];
-  if (rule) parts.push("【分镜规则（必须遵守）】\n" + rule);
-  parts.push(`【输出约束】最多 ${Math.max(1, Math.min(8, options.maxPages))} 页；${options.dialogue ? "dialogue 必须写：每页 2~3 条中文台词，取自这一段里真的说过的话；实在没有对白才用一句旁白式台词顶上。" : "本次不要输出 dialogue 字段。"}`);
-  if (!options.includeChinese) parts.push("除台词外的辅助中文一律不要输出。");
-  return parts.join("\n\n");
+  const fixedPanels = resolvePanelsPerPage(normalizePanelLayout(options.panelLayout), options.panelsPerPage);
+  return renderPromptDoc("comic", "single", {
+    // 不启用分镜时别谈「每页几格」——那一页根本不是漫画页
+    fixedPanels: options.panelMode && fixedPanels >= 2,
+    panelsPerPage: fixedPanels >= 2 ? fixedPanels : "",
+    hasRule: !!rule,
+    panelRule: rule,
+    maxPages: Math.max(1, Math.min(8, options.maxPages)),
+    dialogue: options.dialogue,
+    noChinese: !options.includeChinese
+  }, overrides);
 }
 function buildComicUserPrompt(scene, characters, extraInstruction) {
   const parts = [];
@@ -4332,7 +4690,7 @@ function makeModeLlmCaller(settings2, mode) {
 }
 async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
-  const system = buildIllustrationSystemPrompt(input.options);
+  const system = buildIllustrationSystemPrompt(input.options, input.promptOverrides);
   const user = buildIllustrationUserPrompt(input.scene, input.characters ?? []);
   try {
     const raw = await caller(system, user);
@@ -4347,7 +4705,7 @@ async function generateIllustrationPlan(input) {
 }
 async function generateComicPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
-  const system = buildComicSystemPrompt(input.options);
+  const system = buildComicSystemPrompt(input.options, input.promptOverrides);
   const user = buildComicUserPrompt(input.scene, input.characters ?? [], input.options.extraInstruction);
   try {
     const raw = await caller(system, user);
@@ -4589,126 +4947,33 @@ function clampBody(body, many) {
   const limit = many ? BODY_LIMIT_STORY : BODY_LIMIT;
   return text.length > limit ? text.slice(-limit) : text;
 }
-const JSON_FIELDS = '{"title":"中文，14 字以内，这一楼发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}';
-const LINES_SCHEMA = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
-const CAST_SCHEMA = '"cast":[{"name":"角色名（照抄库里的名字）","outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）"}]';
-const OUTFIT_RULE = "`cast` 是本批的**服装定妆**：每个出场角色一条，`outfit` 用英文写清版型、主色、关键配件（white dress shirt, black pleated skirt, brown loafers）。【角色固定外貌库】里该角色有「固定着装」时**照抄那一串，不要改写**；没有时按正文/角色卡/世界书定一次，正文没写就合理定一套具体的。同一批所有格共用这一串，**不许因为这一格没提衣服就换一套**；正文明确换装/穿脱/衣物破损时才写新的那一套。`characters[].act` 里**不要再写任何服装词**——服装只由 cast 提供，代码会把它拼到每一格。";
-const COMMON_RULES = [
-  "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
-  OUTFIT_RULE,
-  "characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other's sleeve, leaning against the door, holding a broken cup）。",
-  "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
-  "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
-  "characters[].name **必须照抄【角色固定外貌库】里的名字**。正文里用「你」「他」「那个金发男生」或另一个叫法时，先判断指的是库里哪一位，再写库里的名字——名字写错就等于这个人没有外貌，会被画成路人。",
-  "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
-  // 这一条是照柏宝绘自己的规范写的：它要求模型补全「怎么拍」（景别/光线/色调），
-  // 因为正文是散文，从来不会写机位。我们之前反过来禁止模型写景别与光线，
-  // 结果是每格都成了同一张平光半身像——画面里看不出「在哪、什么时候、什么气氛」。
-  "tags 里必须交代这三件事：① 人数与互动；② 地点或环境（classroom / dormitory / arched corridor / street / outdoors）；③ 光线或时间（sunlight / backlighting / golden hour / night / indoor lighting）。",
-  "characters[].act 只写「这个人」的动作、表情、以及和场景/道具的接触；外貌、发型、瞳色、服装由柏宝绘角色库提供，这里**绝对不要写**。",
-  "nl 用英文自然语言写同一件事，不要分点、不要换行。",
-  "禁止写：画风、画质（masterpiece / best quality / absurdres）、画师名、角色外貌与服装细节、负面词——这些由柏宝绘的方案负责。",
-  "不要解释，不要 markdown 代码块，不要多余文字。"
-];
-function statusSingleSystem() {
-  return [
-    "读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。",
-    `格式：{"title":"中文，14 字以内，这一楼发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}`,
-    "tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。",
-    ...COMMON_RULES,
-    "景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。",
-    '没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。'
-  ].join("\n");
-}
-function statusManySystem(count) {
-  return [
-    `读一段角色扮演正文，把这一楼发生的事挑成 ${count} 个先后画面，像一条小分镜，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内，这一楼讲了一件什么事",${CAST_SCHEMA},"panels":[${JSON_FIELDS}]}`,
-    "panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。",
-    "每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。",
-    ...COMMON_RULES,
-    "每格景别只写 close-up / upper body / medium shot 里的一个，相邻两格不要一样（卡片是偏半身构图，不要写 full body 或 wide shot）。",
-    '没有角色出场时输出 {"title":"","cast":[],"panels":[]}。'
-  ].join("\n");
-}
-function bonusSystem(count) {
-  const linesSchema = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
-  const many = count > 1;
-  const panelsSchema = many ? `,"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences","lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]` : "";
-  return [
-    "读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。",
-    `格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${linesSchema}${panelsSchema}}`,
-    "题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。",
-    "每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。",
-    `每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。${many ? `把彩蛋拆成最多 ${count} 个先后画面（panels），按时间顺序，每格不同瞬间。` : "只画一个画面。"}`,
-    "彩蛋不是正文的延续：不要接着正文里刚发生的事画。",
-    ...COMMON_RULES
-  ].join("\n");
-}
-function mangaSingleSystem(safe, dialogue = false) {
-  const rules = [
-    "读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。",
-    `格式：{"title":"中文，14 字以内，这一格发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}`,
-    ...COMMON_RULES,
-    "tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。",
-    "**这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。",
-    "禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。",
-    "禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。"
-  ];
-  if (dialogue) {
-    rules.push("每格给 1~3 条 lines：台词用中文短句、符合角色口吻，必须是正文里真的说过、或那一刻自然会说的话；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。");
-  }
-  if (safe) {
-    rules.push("这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。");
-  }
-  rules.push('没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。');
-  return rules.join("\n");
-}
-function mangaManySystem(count, safe, dialogue = false) {
-  const rules = [
-    `读一段角色扮演正文，把这一楼发生的事挑成最多 ${count} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}]}`,
-    "panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。",
-    ...COMMON_RULES,
-    "tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。",
-    "**每一格都要画出正文里那一刻的场面**：谁、在哪里、正在做什么。除景别与表情外，每格至少一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall）和一条地点 tag。只写外貌与人数的图会变成一页与剧情无关的头像。",
-    "禁止写：黑白、网点、screentone、画风、角色外貌、chibi 比例词；禁止 speech bubble / text / dialogue / caption / comic panel border。"
-  ];
-  if (dialogue) {
-    rules.push("每格给 1~3 条 lines：中文短句、符合角色口吻，按时间顺序连起来要能读懂这一楼发生了什么；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。");
-  }
-  if (safe) rules.push("每格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写；用表情、留白、构图表达张力，tags 与 act 里不许出现 NSFW 词。");
-  rules.push('没有角色出场时输出 {"title":"","panels":[]}。');
-  return rules.join("\n");
-}
+const DOC_OF_KIND = {
+  status: "status",
+  bonus: "bonus",
+  manga: "manga"
+};
 function buildTheaterPrompt(input) {
   const count = Math.min(Math.max(Math.round(Number(input.shots) || 1), 1), STATUS_MAX_PANELS);
   const many = count > 1;
   const body = clampBody(input.body, many || input.kind === "bonus");
   const name = input.characterName || "（未命名）";
-  let system;
-  let bodyLabel = "正文：";
-  switch (input.kind) {
-    case "bonus":
-      system = bonusSystem(count);
-      bodyLabel = "正文（只用来认人，不用来取材）：";
-      break;
-    case "manga":
-      system = many ? mangaManySystem(count, input.mangaSafe !== false, input.dialogue === true) : mangaSingleSystem(input.mangaSafe !== false, input.dialogue === true);
-      break;
-    case "status":
-    default:
-      system = many ? statusManySystem(count) : statusSingleSystem();
-      break;
+  const docId = DOC_OF_KIND[input.kind] ?? "status";
+  const systemVars = { count };
+  if (input.kind === "manga") {
+    systemVars.safe = input.mangaSafe !== false;
+    systemVars.dialogue = input.dialogue === true;
   }
+  let system = renderPromptDoc(docId, many ? "many" : "single", systemVars, input.promptOverrides);
+  const bodyLabel = input.kind === "bonus" ? "正文（只用来认人，不用来取材）：" : "正文：";
   const roster = (input.roster ?? []).map((n) => String(n ?? "").trim()).filter(Boolean).slice(0, 12);
   const rosterLine = roster.length ? `可用角色（柏宝绘角色库；characters[].name 必须照抄其中一项，不要自己造人）：${roster.join("、")}
 ` : "";
   const reference = [input.castBlock, input.libraryBlock].filter(Boolean).join("\n\n");
-  return {
-    system: reference ? `${system}
+  if (reference) system = `${system}
 
-${reference}` : system,
+${reference}`;
+  return {
+    system,
     user: `${rosterLine}角色：${name}
 ${bodyLabel}
 ${body}`
@@ -5002,7 +5267,8 @@ async function readTheater(input, extraInstruction = "") {
     dialogue: input.dialogue === true,
     ...((_a = input.roster) == null ? void 0 : _a.length) ? { roster: input.roster } : {},
     ...input.libraryBlock ? { libraryBlock: input.libraryBlock } : {},
-    ...input.castBlock ? { castBlock: input.castBlock } : {}
+    ...input.castBlock ? { castBlock: input.castBlock } : {},
+    ...input.promptOverrides ? { promptOverrides: input.promptOverrides } : {}
   });
   const finalSystem = extraInstruction ? `${system}
 
@@ -5196,7 +5462,12 @@ const BUBBLE_ANCHORS = {
   bc: { x: 0.5, y: 0.84 },
   br: { x: 0.76, y: 0.79 }
 };
-const FALLBACK_ORDER = ["tl", "tr", "bl", "br", "tc", "bc", "ml", "mr"];
+const SLOT_X = [0.16, 0.5, 0.84];
+const SLOT_Y = [0.1, 0.3, 0.62, 0.84];
+const FACE_AVOID_ZONES = [
+  { x: 0.33, y: 0.14, width: 0.34, height: 0.4, weight: 4 },
+  { x: 0.28, y: 0.42, width: 0.44, height: 0.38, weight: 1.2 }
+];
 function wrapText(text, maxWidth, measure) {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return [];
@@ -5270,87 +5541,204 @@ function boxInkFor(style) {
   if (variant === "ink") return { color: "#2a2320", glow: null };
   return { color: "#111111", glow: null };
 }
-function placeRect(rect, item, index2, page, margin, fontSize, placed, usedAreas, withTail) {
-  let area = item.area;
-  if (!area) area = FALLBACK_ORDER.find((c) => !usedAreas.has(c)) ?? FALLBACK_ORDER[index2 % FALLBACK_ORDER.length];
-  if (area) usedAreas.add(area);
-  const anchor = BUBBLE_ANCHORS[area ?? "tl"];
+function overlapArea(a, b) {
+  const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+function atCenter(rect, cx, cy, page, margin) {
+  return {
+    x: Math.min(Math.max(margin, cx - rect.width / 2), Math.max(margin, page.width - rect.width - margin)),
+    y: Math.min(Math.max(margin, cy - rect.height / 2), Math.max(margin, page.height - rect.height - margin))
+  };
+}
+function candidatesFor(rect, item, page, margin) {
+  const out = [];
+  for (const ay of SLOT_Y) {
+    for (const ax of SLOT_X) out.push(atCenter(rect, ax * page.width, ay * page.height, page, margin));
+  }
+  if (item.area && BUBBLE_ANCHORS[item.area]) {
+    const a = BUBBLE_ANCHORS[item.area];
+    out.push(atCenter(rect, a.x * page.width, a.y * page.height, page, margin));
+  }
+  return out;
+}
+const THUMB = 1;
+const W_PLACED = 240;
+const W_FACE = 130;
+const W_CROSS = 14;
+const W_EDGE = 26;
+function scoreAt(rect, point, item, page, placed, zones) {
+  const probe2 = { ...rect, x: point.x, y: point.y };
+  const area = Math.max(THUMB, rect.width * rect.height);
+  let score = 0;
+  for (const zone of zones) {
+    const box = {
+      x: zone.x * page.width,
+      y: zone.y * page.height,
+      width: zone.width * page.width,
+      height: zone.height * page.height
+    };
+    const ratio = overlapArea(probe2, box) / area;
+    if (ratio <= 0) continue;
+    score += ratio * W_FACE * (zone.weight ?? 1);
+  }
+  for (const other of placed) {
+    const ratio = overlapArea(probe2, other) / area;
+    if (ratio > 0) score += ratio * W_PLACED;
+  }
+  const mid = page.width * 0.5;
+  if (probe2.x < mid && probe2.x + probe2.width > mid) score += W_CROSS;
+  const edge = Math.min(
+    probe2.x,
+    probe2.y,
+    page.width - probe2.x - probe2.width,
+    page.height - probe2.y - probe2.height
+  );
+  score += Math.max(0, edge) / Math.max(1, page.width) * W_EDGE;
+  if (item.area && BUBBLE_ANCHORS[item.area]) {
+    const a = BUBBLE_ANCHORS[item.area];
+    const ax = a.x * page.width;
+    const ay = a.y * page.height;
+    const dist = Math.hypot(probe2.x + probe2.width / 2 - ax, probe2.y + probe2.height / 2 - ay);
+    score += dist / Math.max(1, page.width) * 6;
+  }
+  return score;
+}
+function bestPoint(rect, item, page, margin, placed, zones) {
+  let best = null;
+  for (const point of candidatesFor(rect, item, page, margin)) {
+    const score = scoreAt(rect, point, item, page, placed, zones);
+    if (!best || score < best.score) best = { point, score };
+  }
+  return best ?? { point: { x: margin, y: margin }, score: 0 };
+}
+function faceCoverRatio(rect, page, zones = FACE_AVOID_ZONES) {
+  const face = zones[0];
+  if (!face) return 0;
+  const box = {
+    x: face.x * page.width,
+    y: face.y * page.height,
+    width: face.width * page.width,
+    height: face.height * page.height
+  };
+  const area = Math.max(1, rect.width * rect.height);
+  return overlapArea(rect, box) / area;
+}
+function placeRect(rect, item, index2, page, margin, zones, placed, withTail) {
   if (typeof item.x === "number" && typeof item.y === "number") {
     rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
     rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
-    if (withTail) rect.tail = item.y < 0.5 ? "down" : "up";
     placed.push(rect);
     return;
   }
-  rect.x = Math.min(Math.max(margin, anchor.x * page.width - rect.width / 2), page.width - rect.width - margin);
-  rect.y = Math.min(Math.max(margin, anchor.y * page.height - rect.height / 2), page.height - rect.height - margin);
-  for (let guard = 0; guard < 8; guard += 1) {
-    const hit = placed.find((o) => rect.x < o.x + o.width && rect.x + rect.width > o.x && rect.y < o.y + o.height && rect.y + rect.height > o.y);
-    if (!hit) break;
-    const down = hit.y + hit.height + fontSize * 0.3;
-    if (down + rect.height <= page.height - margin) rect.y = down;
-    else rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.3);
-  }
-  if (withTail) rect.tail = rect.y + rect.height / 2 < page.height / 2 ? "down" : "up";
+  const { point } = bestPoint(rect, item, page, margin, placed, zones);
+  rect.x = point.x;
+  rect.y = point.y;
   placed.push(rect);
 }
 function planBubbles(items, page, measure, opts = {}) {
   if (!page.width || !page.height) return [];
   const style = normalizeBubbleStyle(opts.style);
-  if (isBlendStyle(style)) return planBlend(items, page, measure, style);
-  return planBubbleBox(items, page, measure, style);
+  const zones = opts.avoidFace === false ? [] : opts.avoid ?? FACE_AVOID_ZONES;
+  if (isBlendStyle(style)) return planBlend(items, page, measure, style, zones);
+  return planBubbleBox(items, page, measure, style, zones);
 }
-function planBubbleBox(items, page, measure, style) {
-  const variant = bubbleVariantOf(style);
-  const fontSize = Math.max(15, Math.min(44, Math.round(Math.min(page.width, page.height) * 0.034)));
-  const lineHeight = fontSize * 1.4;
+const MAX_BUBBLE_RATIO = 0.34;
+function measureBox(item, page, measure, fontSize, variant) {
+  var _a;
   const padX = fontSize * 0.7;
   const padY = fontSize * 0.55;
-  const maxBubbleWidth = page.width * 0.42;
+  if (variant === "vertical") {
+    const step = fontSize * 1.15;
+    const perCol = Math.max(3, Math.floor(page.height * 0.5 / step));
+    const chars = [...item.text];
+    const cols = [];
+    for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
+    return {
+      lines: cols,
+      width: Math.ceil(cols.length * fontSize + (cols.length - 1) * fontSize * 0.26 + padX * 2),
+      height: Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step + padY * 2),
+      vertical: true
+    };
+  }
+  const lines = wrapText(item.text, page.width * MAX_BUBBLE_RATIO - padX * 2, measure);
+  if (!lines.length) return null;
+  return {
+    lines,
+    width: Math.ceil(Math.max(...lines.map(measure)) + padX * 2),
+    height: Math.ceil(lines.length * fontSize * 1.4 + padY * 2),
+    vertical: false
+  };
+}
+function planBubbleBox(items, page, measure, style, zones) {
+  const variant = bubbleVariantOf(style);
+  const baseFont = Math.max(15, Math.min(38, Math.round(Math.min(page.width, page.height) * 0.03)));
   const margin = Math.round(page.width * 0.02);
   const placed = [];
-  const usedAreas = /* @__PURE__ */ new Set();
-  items.slice(0, PANEL_DIALOGUE_MAX).forEach((item, index2) => {
-    var _a;
-    if (!item.text.trim()) return;
-    if (variant === "vertical") {
-      const step = fontSize * 1.15;
-      const perCol = Math.max(3, Math.floor(page.height * 0.5 / step));
-      const cols = [];
-      const chars = [...item.text];
-      for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
-      const width2 = Math.ceil(cols.length * fontSize + (cols.length - 1) * fontSize * 0.26 + padX * 2);
-      const height2 = Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step + padY * 2);
-      placeRect({ x: 0, y: 0, width: width2, height: height2, lines: cols, vertical: true }, item, index2, page, margin, fontSize, placed, usedAreas, true);
-      return;
-    }
-    const lines = wrapText(item.text, maxBubbleWidth - padX * 2, measure);
-    if (!lines.length) return;
-    const width = Math.ceil(Math.max(...lines.map(measure)) + padX * 2);
-    const height = Math.ceil(lines.length * lineHeight + padY * 2);
-    if (variant === "subtitle") {
-      const area = ["bc", "bl", "br"][index2 % 3];
-      const anchor = BUBBLE_ANCHORS[area];
-      const rect = { x: 0, y: 0, width, height, lines };
-      rect.x = Math.min(Math.max(margin, anchor.x * page.width - rect.width / 2), page.width - rect.width - margin);
-      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((item) => item.text.trim());
+  capped.forEach((item) => {
+    if (typeof item.x === "number" && typeof item.y === "number") {
+      const metrics = measureBox(item, page, measure, baseFont, variant === "subtitle" ? "normal" : variant);
+      if (!metrics) return;
+      const rect = {
+        x: 0,
+        y: 0,
+        width: metrics.width,
+        height: metrics.height,
+        lines: metrics.lines,
+        ...metrics.vertical ? { vertical: true } : {}
+      };
+      rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+      rect.tail = item.y < 0.5 ? "down" : "up";
       placed.push(rect);
       return;
     }
-    placeRect({ x: 0, y: 0, width, height, lines }, item, index2, page, margin, fontSize, placed, usedAreas, true);
+    if (variant === "subtitle") {
+      const fontSize = baseFont;
+      const metrics = measureBox(item, page, measure, fontSize, "normal");
+      if (!metrics) return;
+      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines };
+      rect.x = Math.min(Math.max(margin, page.width * 0.5 - rect.width / 2), page.width - rect.width - margin);
+      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
+      for (let guard = 0; guard < 8; guard += 1) {
+        const hit = placed.find((o) => overlapArea(rect, o) > 0);
+        if (!hit) break;
+        rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.3);
+      }
+      placed.push(rect);
+      return;
+    }
+    let chosen = null;
+    for (const scale of [1, 0.86, 0.74]) {
+      const fontSize = Math.max(12, Math.round(baseFont * scale));
+      const metrics = measureBox(item, page, measure, fontSize, variant);
+      if (!metrics) continue;
+      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...metrics.vertical ? { vertical: true } : {} };
+      const { point, score } = bestPoint(rect, item, page, margin, placed, zones);
+      rect.x = point.x;
+      rect.y = point.y;
+      const cover = faceCoverRatio(rect, page, zones);
+      if (!chosen || cover < 0.02 || score < chosen.score) {
+        chosen = { rect, score };
+        if (cover <= 1e-3 && score < W_PLACED) break;
+      }
+    }
+    if (!chosen) return;
+    chosen.rect.tail = chosen.rect.y + chosen.rect.height / 2 < page.height / 2 ? "down" : "up";
+    placed.push(chosen.rect);
   });
   return placed;
 }
-function planBlend(items, page, measure, style) {
+function planBlend(items, page, measure, style, zones) {
   const fontSize = blendFontSize(page);
   const margin = Math.round(page.width * 0.02);
-  const maxW = page.width * (style === "blend-subtitle" ? 0.86 : 0.52);
+  const maxW = page.width * (style === "blend-subtitle" ? 0.86 : 0.42);
   const maxH = page.height * 0.42;
   const forceVertical = style === "blend-vertical";
   const subtitle = style === "blend-subtitle";
-  const subtitleAreas = ["bc", "bl", "br"];
   const placed = [];
-  const usedAreas = /* @__PURE__ */ new Set();
   items.slice(0, PANEL_DIALOGUE_MAX).forEach((item, index2) => {
     if (!item.text.trim()) return;
     const vertical = forceVertical || !subtitle && item.dir === "v";
@@ -5364,19 +5752,17 @@ function planBlend(items, page, measure, style) {
       rect = { x: 0, y: 0, width, height, lines };
     }
     if (subtitle) {
-      const area = subtitleAreas[index2 % subtitleAreas.length];
-      const anchor = BUBBLE_ANCHORS[area];
-      rect.x = Math.min(Math.max(margin, anchor.x * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.x = Math.min(Math.max(margin, page.width * 0.5 - rect.width / 2), page.width - rect.width - margin);
       rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
       for (let guard = 0; guard < 8; guard += 1) {
-        const hit = placed.find((o) => rect.x < o.x + o.width && rect.x + rect.width > o.x && rect.y < o.y + o.height && rect.y + rect.height > o.y);
+        const hit = placed.find((o) => overlapArea(rect, o) > 0);
         if (!hit) break;
         rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.25);
       }
       placed.push(rect);
       return;
     }
-    placeRect(rect, item, index2, page, margin, fontSize, placed, usedAreas, false);
+    placeRect(rect, item, index2, page, margin, zones, placed);
   });
   return placed;
 }
@@ -5435,7 +5821,8 @@ function drawBubbles(image, items, opts = {}) {
     if (bubble.tail) {
       const baseY = bubble.tail === "down" ? bubble.y + bubble.height : bubble.y;
       const tipY = bubble.tail === "down" ? baseY + tailSize : baseY - tailSize;
-      const baseX = bubble.x + bubble.width * 0.28;
+      const towardCenter = bubble.x + bubble.width / 2 < width / 2 ? 0.72 : 0.28;
+      const baseX = bubble.x + bubble.width * towardCenter;
       const inner = lineWidth / 2;
       ctx.beginPath();
       ctx.moveTo(baseX - tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
@@ -5800,6 +6187,7 @@ async function runTheaterTask(input) {
     roster: characters.characters.map((c) => c.name),
     ...libraryBlock ? { libraryBlock } : {},
     ...castBlock ? { castBlock } : {},
+    ...settings2.promptOverrides ? { promptOverrides: settings2.promptOverrides } : {},
     supportsCharacters,
     backend: "nai",
     ...profile ? { profile } : {},
@@ -6802,11 +7190,13 @@ const INSET_SCENE_TAGS = [
   "depth of field",
   "shallow depth of field"
 ];
-function enforcePanelPrompt(prompt, layout) {
+function enforcePanelPrompt(prompt, layout, panelsPerPage = 0) {
   const kind = normalizePanelLayout(layout);
   const source = String(prompt ?? "").trim();
   if (!source) return { prompt: source, removed: [], added: [] };
+  const count = resolvePanelsPerPage(kind, panelsPerPage);
   const forbidden = new Set(PANEL_FORBIDDEN_BY_LAYOUT[kind]);
+  if (kind === "regular" && count >= 3) forbidden.add("2koma");
   const stripScene = kind === "inset" || kind === "unframed";
   const sceneLimit = kind === "unframed";
   let locationKept = 0;
@@ -6853,7 +7243,7 @@ function enforcePanelPrompt(prompt, layout) {
     }
     kept.push(text);
   }
-  const missing = PANEL_TAGS_BY_LAYOUT[kind].filter((tag) => !present.has(bareTagOf(tag)));
+  const missing = panelTagsForCount(kind, count).filter((tag) => !present.has(bareTagOf(tag)));
   return { prompt: [...missing, ...kept].join(", "), removed, added: missing };
 }
 function decidePanelInjection(input) {
@@ -6879,7 +7269,7 @@ function enforceForGeneration(input) {
     panelLayout: input.panelLayout,
     chibiOn: input.chibiOn
   });
-  const enforced = enforcePanelPrompt(input.prompt, decision.layout);
+  const enforced = enforcePanelPrompt(input.prompt, decision.layout, input.panelsPerPage ?? 0);
   return {
     prompt: enforced.prompt,
     nl: applyPanelToNl(input.nl, decision.layout, input.orientation, input.pageType),
@@ -6944,6 +7334,13 @@ const LAYOUT_NL_HEAD = {
   inset: "A manga page on a white background: an unframed character illustration in the center with narrow white margins, plus one or two small close-up panels with thin black borders.",
   unframed: "A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders."
 };
+function layoutNlHead(layout, count) {
+  if (layout !== "regular" || count < 3) return LAYOUT_NL_HEAD[layout] ?? LAYOUT_NL_HEAD.regular;
+  if (count >= 4) {
+    return "A four-panel comic page in a two-by-two grid, separated by thin black gutters, read from top to bottom, left to right.";
+  }
+  return "A three-panel comic page: one wide panel across the top and two smaller panels side by side below, separated by thin black gutters, read from top to bottom.";
+}
 const AREA_LEAD = {
   regular: ["In the upper panel", "The lower panel shows", "In the third panel", "The bottom panel shows"],
   irregular: ["In the large panel", "In the narrow panel", "In the small panel", "In the bottom strip"],
@@ -6969,12 +7366,12 @@ function mergePanelTags(page) {
   return out.join(", ");
 }
 function buildPageNl(page) {
-  var _a;
-  const head = LAYOUT_NL_HEAD[page.layout] ?? LAYOUT_NL_HEAD.regular;
+  var _a, _b;
+  const head = layoutNlHead(page.layout, ((_a = page.panels) == null ? void 0 : _a.length) ?? 0);
   const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
   const parts = [head];
   let wrote = false;
-  (_a = page.panels) == null ? void 0 : _a.forEach((panel, index2) => {
+  (_b = page.panels) == null ? void 0 : _b.forEach((panel, index2) => {
     const body = String(panel.nl ?? "").trim();
     if (!body) return;
     const lead = leads[Math.min(index2, leads.length - 1)];
@@ -7238,7 +7635,8 @@ async function runIllustration(task, ctx, deps) {
       includeNl: deps.fullSettings.includeNl,
       includeNegative: true
     },
-    caller: makeModeLlmCaller(deps.fullSettings, "illustration")
+    caller: makeModeLlmCaller(deps.fullSettings, "illustration"),
+    promptOverrides: deps.fullSettings.promptOverrides
   });
   if (!plan.ok || !plan.data) {
     recordLlmError({ mode: "illustration", floor, error: plan.error ?? "Tag 计划生成失败。" });
@@ -7369,13 +7767,15 @@ async function runComic(task, ctx, deps) {
     backend: "nai",
     charPrompts: false,
     includeChinese: deps.fullSettings.includeChinese,
-    maxPages: modeSettings.comicMaxPages ?? 1
+    maxPages: modeSettings.comicMaxPages ?? 1,
+    panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage)
   };
   let plan = await generateComicPlan({
     scene: sceneFromSegment(segment),
     characters: characters.characters,
     options: planOptions,
-    caller: makeModeLlmCaller(deps.fullSettings, "comic")
+    caller: makeModeLlmCaller(deps.fullSettings, "comic"),
+    promptOverrides: deps.fullSettings.promptOverrides
   });
   if (!plan.ok || !plan.data) {
     recordLlmError({ mode: "comic", floor, error: plan.error ?? "分镜计划生成失败。" });
@@ -7390,7 +7790,8 @@ async function runComic(task, ctx, deps) {
         ...planOptions,
         extraInstruction: "上一次的 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。这次 page.tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。"
       },
-      caller: makeModeLlmCaller(deps.fullSettings, "comic")
+      caller: makeModeLlmCaller(deps.fullSettings, "comic"),
+      promptOverrides: deps.fullSettings.promptOverrides
     });
     if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
     if (!hasStoryContent(plan.data)) {
@@ -7408,7 +7809,8 @@ async function runComic(task, ctx, deps) {
       prompt: composed.prompt,
       nl: composed.nl,
       panelLayout: page.layout,
-      chibiOn: false
+      chibiOn: false,
+      panelsPerPage: resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage)
     });
     const tag = buildBbiTag({
       prompt: enforced.prompt,
@@ -7615,6 +8017,10 @@ async function onActivate() {
       settings: () => {
         hideSelectionPanel();
         showConfigPanel("settings");
+      },
+      prompts: () => {
+        hideSelectionPanel();
+        showConfigPanel("prompts");
       },
       log: () => {
         hideSelectionPanel();

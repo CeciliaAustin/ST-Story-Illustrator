@@ -17,11 +17,12 @@
 
 import type { PanelLayout, PanelPageType } from '../types';
 import {
-  PANEL_TAGS_BY_LAYOUT,
   PANEL_NL_SENTENCE,
   unframedNlSentence,
   normalizePanelLayout,
   normalizePanelPageType,
+  panelTagsForCount,
+  resolvePanelsPerPage,
 } from './panelPlan';
 
 // ============================================================
@@ -92,12 +93,19 @@ export interface EnforceResult {
  * 出图前删冲突词 + 补缺词 + 白底档管场景词，只改本次发送的字符串。
  * 空提示词不造词（避免无中生有）。
  */
-export function enforcePanelPrompt(prompt: string, layout: PanelLayout): EnforceResult {
+export function enforcePanelPrompt(
+  prompt: string,
+  layout: PanelLayout,
+  panelsPerPage = 0,
+): EnforceResult {
   const kind = normalizePanelLayout(layout);
   const source = String(prompt ?? '').trim();
   if (!source) return { prompt: source, removed: [], added: [] };
 
+  const count = resolvePanelsPerPage(kind, panelsPerPage);
   const forbidden = new Set(PANEL_FORBIDDEN_BY_LAYOUT[kind]);
+  // 规整档选了 3/4 格：2koma 与目标格数直接打架，必须删掉（否则模型只画两格）
+  if (kind === 'regular' && count >= 3) forbidden.add('2koma');
   // 场景词兜底只发生在白底两档：inset 全删；unframed 放行室内外锚 + 地点词限流 2 个。
   // 场景词全删会让模型连室内外都没锚，室内戏被画到室外（坑 6）。
   const stripScene = kind === 'inset' || kind === 'unframed';
@@ -136,7 +144,7 @@ export function enforcePanelPrompt(prompt: string, layout: PanelLayout): Enforce
     kept.push(text);
   }
 
-  const missing = PANEL_TAGS_BY_LAYOUT[kind].filter(tag => !present.has(bareTagOf(tag)));
+  const missing = panelTagsForCount(kind, count).filter(tag => !present.has(bareTagOf(tag)));
   return { prompt: [...missing, ...kept].join(', '), removed, added: missing };
 }
 
@@ -209,6 +217,8 @@ export interface EnforceForGenerationInput {
   storyImage: boolean;
   orientation?: 'portrait' | 'landscape' | 'square';
   pageType?: PanelPageType;
+  /** 每页固定格数（0 = 跟随档位） */
+  panelsPerPage?: number;
 }
 
 export interface EnforcedGenerationText {
@@ -237,7 +247,7 @@ export function enforceForGeneration(input: EnforceForGenerationInput): Enforced
       layout: decision.layout, removed: [], added: [],
     };
   }
-  const enforced = enforcePanelPrompt(input.prompt, decision.layout);
+  const enforced = enforcePanelPrompt(input.prompt, decision.layout, input.panelsPerPage ?? 0);
   return {
     prompt: enforced.prompt,
     nl: applyPanelToNl(input.nl, decision.layout, input.orientation, input.pageType),

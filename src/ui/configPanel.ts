@@ -31,6 +31,15 @@ import { buildStudioTabs, type StudioTab } from './studio';
 import { destroyWandMenu, injectWandMenu } from './wandMenu';
 import { clearImageLog, getImageLog, type ImageLogEntry } from '../log/imageLog';
 import { getRunStatus, runStatusText } from './runStatus';
+import {
+  PROMPT_DOCS,
+  isCustomized,
+  overrideKey,
+  promptDocOf,
+  resolveTemplate,
+  type PromptDocId,
+  type PromptVariant,
+} from '../prompt/presets';
 
 const PANEL_ID = 'sti-config-panel';
 const OVERLAY_ID = 'sti-config-overlay';
@@ -47,6 +56,10 @@ const MODE_LABEL: Record<string, string> = {
 
 let panelEl: HTMLElement | null = null;
 let overlayEl: HTMLElement | null = null;
+
+/** 「提示词」标签页当前编辑哪一条 / 哪一版（面板重建后保持选择） */
+let promptDocId: PromptDocId = 'illustration';
+let promptVariant: PromptVariant = 'single';
 
 function ensurePanel(): { panel: HTMLElement; overlay: HTMLElement } {
   if (panelEl && overlayEl && document.body.contains(panelEl)) {
@@ -104,7 +117,7 @@ function render(panel: HTMLElement, tab: StudioTab = 'settings'): void {
   const head = document.createElement('div');
   head.className = 'sti-config-head';
   const title = document.createElement('h2');
-  title.textContent = tab === 'log' ? '出图日志' : '配图设置';
+  title.textContent = tab === 'log' ? '出图日志' : tab === 'prompts' ? '提示词' : '配图设置';
   head.appendChild(title);
   const close = document.createElement('button');
   close.type = 'button';
@@ -120,6 +133,14 @@ function render(panel: HTMLElement, tab: StudioTab = 'settings'): void {
     logBody.className = 'sti-config-body';
     logBody.appendChild(renderLogSection());
     panel.appendChild(logBody);
+    return;
+  }
+
+  if (tab === 'prompts') {
+    const promptBody = document.createElement('div');
+    promptBody.className = 'sti-config-body';
+    promptBody.appendChild(renderPromptSettings(panel));
+    panel.appendChild(promptBody);
     return;
   }
 
@@ -625,6 +646,14 @@ function renderComicSettings(): HTMLElement {
     }),
   ));
   box.appendChild(selectRow(
+    '每页格数',
+    String(comic?.comicPanelsPerPage ?? 0),
+    [['0', '跟随版面'], ['2', '2 格'], ['3', '3 格'], ['4', '4 格']],
+    v => patchSettings(st => { st.modes['comic'].comicPanelsPerPage = Number(v); }),
+    '一页切几格。定死之后，提示词、构图词（2/3/4koma）与 nl 分区会一起对齐——'
+    + '以前是模型说几格就几格，规整档的 2koma 会把三四段内容压进两格。',
+  ));
+  box.appendChild(selectRow(
     '最多页数',
     String(comic?.comicMaxPages ?? 1),
     [['1', '1 页'], ['2', '2 页'], ['3', '3 页']],
@@ -717,6 +746,150 @@ function renderUiSettings(): HTMLElement {
  * 所以这里自己记一份，重点是**失败时的错误原文**与**实际发出去的提示词**：
  * 那是判断「图为什么跟剧情无关」的唯一依据。
  */
+/**
+ * 「提示词」标签页。
+ *
+ * 设计取舍：
+ * - 直接显示**当前生效的全文**（默认或覆盖），不是「比默认多了什么」——
+ *   用户要能整段读一遍、整段改。
+ * - 留空保存 = 恢复默认。这一条必须让用户看得见，否则「清空」会被理解成发空提示词。
+ * - 改坏了的代价说明写在下面：字段名是解析器的契约，改字段名会解析失败。
+ */
+function renderPromptSettings(panel: HTMLElement): HTMLElement {
+  const wrap = document.createElement('div');
+  const doc = promptDocOf(promptDocId) ?? PROMPT_DOCS[0];
+  promptDocId = doc.id;
+  const hasMany = !!doc.defaults.many;
+  const variant: PromptVariant = hasMany ? promptVariant : 'single';
+
+  const settings = getSettings(DEFAULT_SETTINGS);
+  const overrides = settings.promptOverrides ?? {};
+  const customized = isCustomized(doc.id, variant, overrides);
+  const current = resolveTemplate(doc.id, variant, overrides);
+
+  wrap.appendChild(section(
+    '内置提示词',
+    '这就是插件「读剧情」时发给模型的原话（不含柏宝绘自定义提示词与角色库，那两段另行注入）。'
+    + '留空保存 = 恢复内置默认。',
+  ));
+
+  // ── 选哪一套 ──
+  const chips = document.createElement('div');
+  chips.className = 'sti-prompt-chips';
+  for (const item of PROMPT_DOCS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `sti-prompt-chip${item.id === doc.id ? ' active' : ''}`;
+    btn.textContent = item.label;
+    if (isCustomized(item.id, 'single', overrides) || (item.defaults.many && isCustomized(item.id, 'many', overrides))) {
+      const dot = document.createElement('span');
+      dot.className = 'sti-prompt-dot';
+      dot.title = '这一套有自定义版本';
+      btn.appendChild(dot);
+    }
+    btn.addEventListener('click', () => {
+      promptDocId = item.id;
+      promptVariant = 'single';
+      render(panel, 'prompts');
+    });
+    chips.appendChild(btn);
+  }
+  wrap.appendChild(chips);
+
+  // ── 单格 / 多格 ──
+  if (hasMany) {
+    const seg = document.createElement('div');
+    seg.className = 'sti-prompt-seg';
+    for (const [value, label] of [['single', '单格'], ['many', '多格']] as Array<[PromptVariant, string]>) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `sti-prompt-seg-btn${variant === value ? ' active' : ''}`;
+      btn.textContent = label;
+      const marked = isCustomized(doc.id, value, overrides);
+      if (marked) {
+        const dot = document.createElement('span');
+        dot.className = 'sti-prompt-dot';
+        dot.title = '这一版已自定义';
+        btn.appendChild(dot);
+      }
+      btn.addEventListener('click', () => {
+        promptVariant = value;
+        render(panel, 'prompts');
+      });
+      seg.appendChild(btn);
+    }
+    wrap.appendChild(seg);
+  }
+
+  const hint = document.createElement('div');
+  hint.className = 'sti-config-sub';
+  hint.textContent = doc.hint;
+  wrap.appendChild(hint);
+
+  // ── 编辑区 ──
+  const area = document.createElement('textarea');
+  area.className = 'sti-prompt-area';
+  area.value = current;
+  area.spellcheck = false;
+  area.rows = 20;
+  wrap.appendChild(area);
+
+  const vars = document.createElement('div');
+  vars.className = 'sti-prompt-vars';
+  vars.textContent = `可用变量：${doc.vars.map(v => `{{${v}}}`).join('  ')}`
+    + ' · 条件段写法 {{#name}}…{{/name}}（成立才保留）/ {{^name}}…{{/name}}（不成立才保留）';
+  wrap.appendChild(vars);
+
+  // ── 操作 ──
+  const bar = document.createElement('div');
+  bar.className = 'sti-prompt-actions';
+
+  const state = document.createElement('span');
+  state.className = `sti-prompt-state${customized ? ' is-custom' : ''}`;
+  state.textContent = customized ? '● 已自定义' : '○ 内置默认';
+  bar.appendChild(state);
+
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'sti-prompt-btn';
+  reset.textContent = '恢复默认';
+  reset.disabled = !customized;
+  reset.addEventListener('click', () => {
+    const next = { ...getSettings(DEFAULT_SETTINGS) };
+    const map = { ...(next.promptOverrides ?? {}) };
+    delete map[overrideKey(doc.id, variant)];
+    next.promptOverrides = map;
+    saveSettings(next);
+    render(panel, 'prompts');
+  });
+  bar.appendChild(reset);
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'sti-prompt-btn is-primary';
+  save.textContent = '保存';
+  save.addEventListener('click', () => {
+    const next = { ...getSettings(DEFAULT_SETTINGS) };
+    const map = { ...(next.promptOverrides ?? {}) };
+    const value = area.value.trim();
+    if (!value) delete map[overrideKey(doc.id, variant)];
+    else map[overrideKey(doc.id, variant)] = value;
+    next.promptOverrides = map;
+    saveSettings(next);
+    render(panel, 'prompts');
+  });
+  bar.appendChild(save);
+  wrap.appendChild(bar);
+
+  const note = document.createElement('div');
+  note.className = 'sti-config-sub sti-prompt-note';
+  note.textContent = '改措辞、加规矩都没问题；但 JSON 的字段名（title / characters / tags / nl / cast / panels / lines …）'
+    + '是解析器的契约，改名会让这一块解析不出来。改坏了点「恢复默认」。';
+  wrap.appendChild(note);
+
+  return wrap;
+}
+
 function renderLogSection(): HTMLElement {
   const entries = getImageLog();
   const live = getRunStatus();

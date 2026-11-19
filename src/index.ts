@@ -74,6 +74,7 @@ export async function onActivate(): Promise<void> {
     registerStudio({
       generate: (options) => { hideConfigPanel(); openGeneratePanel(options); },
       settings: () => { hideSelectionPanel(); showConfigPanel('settings'); },
+      prompts: () => { hideSelectionPanel(); showConfigPanel('prompts'); },
       log: () => { hideSelectionPanel(); hideConfigPanel(); showConfigPanel('log'); },
     });
     setRunStatusLogOpener(() => openStudio('log'));

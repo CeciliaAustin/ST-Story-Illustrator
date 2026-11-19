@@ -31,6 +31,7 @@ import { saveChatSafe } from '../host/sillytavern';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
+import { resolvePanelsPerPage } from '../manga/panelPlan';
 import { hasStoryContent } from '../manga/panelRelevance';
 import { composePagePrompt } from '../manga/pageCompose';
 import { bakeDialogueIntoImage } from '../manga/bubbleBake';
@@ -91,6 +92,7 @@ async function runIllustration(
       includeNegative: true,
     },
     caller: makeModeLlmCaller(deps.fullSettings, 'illustration'),
+    promptOverrides: deps.fullSettings.promptOverrides,
   });
   if (!plan.ok || !plan.data) {
     recordLlmError({ mode: 'illustration', floor, error: plan.error ?? 'Tag 计划生成失败。' });
@@ -250,6 +252,7 @@ async function runComic(
     charPrompts: false,
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
+    panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
   };
 
   let plan = await generateComicPlan({
@@ -257,6 +260,7 @@ async function runComic(
     characters: characters.characters,
     options: planOptions,
     caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
+    promptOverrides: deps.fullSettings.promptOverrides,
   });
   if (!plan.ok || !plan.data) {
     recordLlmError({ mode: 'comic', floor, error: plan.error ?? '分镜计划生成失败。' });
@@ -276,6 +280,7 @@ async function runComic(
           '这次 page.tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。',
       },
       caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
+      promptOverrides: deps.fullSettings.promptOverrides,
     });
     if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
     if (!hasStoryContent(plan.data)) {
@@ -303,6 +308,7 @@ async function runComic(
       panelLayout: page.layout,
       chibiOn: false,
       storyImage: false,
+      panelsPerPage: resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage),
     });
 
     const tag = buildBbiTag({

@@ -225,6 +225,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     roster: characters.characters.map(c => c.name),
     ...(libraryBlock ? { libraryBlock } : {}),
     ...(castBlock ? { castBlock } : {}),
+    ...(settings.promptOverrides ? { promptOverrides: settings.promptOverrides } : {}),
     supportsCharacters,
     backend: 'nai',
     ...(profile ? { profile } : {}),

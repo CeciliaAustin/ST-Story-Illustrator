@@ -9,6 +9,7 @@
 
 import type { StoryKind, StatusReading, StatusFrame, BbiStatusInfo, VisualProfile } from '../types';
 import { buildTheaterPrompt, buildTheaterImagePrompt, buildMangaNl } from './prompts';
+import type { PromptOverrideMap } from '../prompt/presets';
 import { parseStatusReply, clampMangaShots } from './parseReply';
 import { scrubMangaReading, MANGA_SAFE_NEGATIVE } from './safeFilter';
 import { statusSeedFor, decideSeed } from './seed';
@@ -94,6 +95,8 @@ export interface RunOneInput {
   readLooks: LookReader;
   /** 逐格进度（画「生成中 2/3」用） */
   onPanel?: (index: number, total: number) => void;
+  /** 用户在「提示词」标签页里改过的模板（空 = 用内置默认） */
+  promptOverrides?: PromptOverrideMap;
 }
 
 export interface RunOneResult {
@@ -196,6 +199,7 @@ export async function readTheater(
     ...(input.roster?.length ? { roster: input.roster } : {}),
     ...(input.libraryBlock ? { libraryBlock: input.libraryBlock } : {}),
     ...(input.castBlock ? { castBlock: input.castBlock } : {}),
+    ...(input.promptOverrides ? { promptOverrides: input.promptOverrides } : {}),
   });
   const finalSystem = extraInstruction ? `${system}\n\n【追加要求】${extraInstruction}` : system;
   const raw = await input.llm(finalSystem, user);

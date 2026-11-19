@@ -21,6 +21,20 @@ export const LAYOUT_NL_HEAD: Record<PanelLayout, string> = {
     'A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders.',
 };
 
+/**
+ * 规整档按实际格数换首句。
+ *
+ * 旧版不管模型给几格，都写死 "A two-panel comic page"——三格四格的内容
+ * 被这句话按回两格，第三、四段就只能挤进第二格。这就是「切页乱了」。
+ */
+export function layoutNlHead(layout: PanelLayout, count: number): string {
+  if (layout !== 'regular' || count < 3) return LAYOUT_NL_HEAD[layout] ?? LAYOUT_NL_HEAD.regular;
+  if (count >= 4) {
+    return 'A four-panel comic page in a two-by-two grid, separated by thin black gutters, read from top to bottom, left to right.';
+  }
+  return 'A three-panel comic page: one wide panel across the top and two smaller panels side by side below, separated by thin black gutters, read from top to bottom.';
+}
+
 /** 各档的「在哪一格」引导词，按顺序取，超出就沿用最后一种。 */
 const AREA_LEAD: Record<PanelLayout, string[]> = {
   regular: ['In the upper panel', 'The lower panel shows', 'In the third panel', 'The bottom panel shows'],
@@ -53,7 +67,7 @@ export function mergePanelTags(page: ComicPagePlan): string {
 
 /** 用各格的 nl 拼出整页的分区描述（模型没写 page.nl 时兜底）。 */
 export function buildPageNl(page: ComicPagePlan): string {
-  const head = LAYOUT_NL_HEAD[page.layout] ?? LAYOUT_NL_HEAD.regular;
+  const head = layoutNlHead(page.layout, page.panels?.length ?? 0);
   const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
   const parts: string[] = [head];
 

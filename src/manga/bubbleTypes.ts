@@ -56,9 +56,25 @@ export interface BubbleRect {
   tail?: 'down' | 'up';
 }
 
+/** 主体避让区（归一化矩形 0~1）：放置气泡时按重叠面积罚分。 */
+export interface AvoidZone {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** 相对权重：脸比身体重要得多 */
+  weight?: number;
+}
+
 export interface PlanOptions {
   style?: BubbleStyleId;
   font?: BubbleFontId;
+  /**
+   * 主体避让区。缺省用 bubblePlan 的 `FACE_AVOID_ZONES`（脸 + 上半身）；
+   * `avoidFace: false` 可关掉，退回旧的九宫格行为。
+   */
+  avoid?: readonly AvoidZone[];
+  avoidFace?: boolean;
 }
 
 export interface BubbleCompositeResult {
