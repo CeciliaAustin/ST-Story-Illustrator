@@ -449,6 +449,12 @@ export interface ComicDialogue {
   text: string;
   speaker?: string;
   area?: PanelBubbleArea;
+  /**
+   * 这一句出现在第几格（1 起，按阅读顺序）。
+   * 气泡合成的第一条硬规则是「不许离开自己那一格」，所以这个字段比 area 重要：
+   * area 只是页内九宫格，模型看不到真实的格线；panel 是它自己写的分镜顺序。
+   */
+  panel?: number;
   dir?: 'h' | 'v';
   mood?: 'calm' | 'shout' | 'whisper';
 }

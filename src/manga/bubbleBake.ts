@@ -10,7 +10,8 @@
  */
 
 import { compositeDialogue } from './bubbleComposite';
-import type { PanelDialogueItem } from './bubbleTypes';
+import type { PanelDialogueItem, AvoidZone } from './bubbleTypes';
+import type { PanelSlot } from './panelSlots';
 import type { BubbleStyleId, BubbleFontId } from '../types';
 import { getContext } from '../host/sillytavern';
 
@@ -22,6 +23,15 @@ export interface BakeBubblesInput {
   dialogue: PanelDialogueItem[];
   style?: BubbleStyleId;
   font?: BubbleFontId;
+  /**
+   * 这一页的格位（归一化、阅读顺序）。给了就按格排版：
+   * 气泡不许出格、不许骑 gutter——真漫画的第一条排版语法。
+   */
+  slots?: readonly PanelSlot[];
+  /** 页面级禁区（特写格、顶部脸条），格内排版时用 */
+  noGo?: readonly AvoidZone[];
+  /** 每一格出场的人（阅读顺序），用于按说话人反查台词属于哪一格 */
+  panelCast?: readonly (readonly string[])[];
 }
 
 /** blob URL → base64（不含 data: 前缀）。 */
@@ -81,6 +91,9 @@ export async function bakeDialogueIntoImage(input: BakeBubblesInput): Promise<st
   const composite = await compositeDialogue(input.imagePath, items, {
     ...(input.style ? { style: input.style } : {}),
     ...(input.font ? { font: input.font } : {}),
+    ...(input.slots && input.slots.length ? { panels: input.slots } : {}),
+    ...(input.noGo && input.noGo.length ? { avoid: input.noGo } : {}),
+    ...(input.panelCast && input.panelCast.length ? { panelCast: input.panelCast } : {}),
   });
   if (!composite) return null;
 

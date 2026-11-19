@@ -21,6 +21,7 @@ import {
   type BubbleRect,
   type PlanOptions,
 } from './bubbleTypes';
+import { slotIndexAt, type PanelSlot } from './panelSlots';
 
 export type { AvoidZone } from './bubbleTypes';
 
@@ -69,6 +70,11 @@ export function wrapText(text: string, maxWidth: number, measure: (s: string) =>
   }
   if (current.trim()) lines.push(current.trim());
   return lines;
+}
+
+/** 有框气泡的字号（文档 §4.3：max(15, min(44, min(w,h)*0.034))）。 */
+export function bubbleFontSize(page: { width: number; height: number }): number {
+  return Math.max(15, Math.min(44, Math.round(Math.min(page.width, page.height) * 0.034)));
 }
 
 export function blendFontSize(page: { width: number; height: number }): number {
@@ -315,6 +321,197 @@ function placeRect(
 }
 
 // ============================================================
+// 格内排版：气泡不许离开自己那一格
+// ============================================================
+
+interface Inner { x: number; y: number; width: number; height: number }
+
+function pageBox(zone: AvoidZone, page: { width: number; height: number }) {
+  return {
+    x: zone.x * page.width,
+    y: zone.y * page.height,
+    width: zone.width * page.width,
+    height: zone.height * page.height,
+  };
+}
+
+/** 格内可用区域（扣掉内边距）。 */
+function innerOf(slot: PanelSlot, page: { width: number; height: number }, pad: number): Inner {
+  return {
+    x: slot.x * page.width + pad,
+    y: slot.y * page.height + pad,
+    width: Math.max(24, slot.width * page.width - pad * 2),
+    height: Math.max(24, slot.height * page.height - pad * 2),
+  };
+}
+
+/**
+ * 一格里的脸区：横向中间 44%、纵向靠上 40%。
+ *
+ * 之所以按格算而不是按整页算：一格里的人基本是「头在上半」，两格页的两个人
+ * 脸分别在自己那格的上方；用整页的那个框去避让，只会把两张脸都算错。
+ */
+function faceZoneInSlot(slot: PanelSlot, page: { width: number; height: number }): Inner {
+  return {
+    x: (slot.x + slot.width * 0.30) * page.width,
+    y: (slot.y + slot.height * 0.14) * page.height,
+    width: slot.width * 0.40 * page.width,
+    height: slot.height * 0.32 * page.height,
+  };
+}
+
+/** 出界面积占比。格内排版不允许出格，这是硬约束（打分只是兜底）。 */
+function outsideRatio(rect: BubbleRect, inner: Inner): number {
+  const area = Math.max(1, rect.width * rect.height);
+  const inside = overlapArea(rect, inner);
+  return Math.max(0, area - inside) / area;
+}
+
+/** 候选点：格内网格 + 已放气泡的上/下方（自然形成竖排串）。 */
+function candidatesInSlot(rect: BubbleRect, inner: Inner, placed: BubbleRect[]): Point[] {
+  const freeW = Math.max(0, inner.width - rect.width);
+  const freeH = Math.max(0, inner.height - rect.height);
+  const out: Point[] = [];
+  for (const fy of [0, 0.18, 0.42, 0.68, 0.94]) {
+    for (const fx of [0, 0.5, 1]) {
+      out.push({ x: inner.x + fx * freeW, y: inner.y + fy * freeH });
+    }
+  }
+  for (const p of placed) {
+    const gap = Math.max(4, rect.height * 0.14);
+    const below = p.y + p.height + gap;
+    const above = p.y - rect.height - gap;
+    for (const x of [p.x, inner.x, inner.x + freeW]) {
+      if (below <= inner.y + freeH) out.push({ x, y: below });
+      if (above >= inner.y) out.push({ x, y: above });
+    }
+  }
+  return out;
+}
+
+function scoreInSlot(
+  rect: BubbleRect,
+  point: Point,
+  inner: Inner,
+  slot: PanelSlot,
+  item: PanelDialogueItem,
+  page: { width: number; height: number },
+  placed: BubbleRect[],
+  noGo: readonly AvoidZone[],
+): number {
+  const probe: BubbleRect = { ...rect, x: point.x, y: point.y };
+  const area = Math.max(1, rect.width * rect.height);
+  let score = 0;
+
+  // 压别的气泡最难看，权最高
+  for (const other of placed) {
+    score += (overlapArea(probe, other) / area) * 400;
+    // 阅读顺序：已经放过一颗之后，新的不许跑到它**上方**——
+    // 否则读者先看到后面那句（真实表现就是「位置错乱」）。
+    if (probe.y + probe.height <= other.y + 1) score += 34;
+  }
+  // 压本格的脸
+  score += (overlapArea(probe, faceZoneInSlot(slot, page)) / area) * 95;
+  // 压特写格/顶部脸条（页面级禁区）
+  for (const zone of noGo) {
+    score += (overlapArea(probe, pageBox(zone, page)) / area) * 120 * (zone.weight ?? 1);
+  }
+  // 漫画从上往下读：越靠本格顶部越自然（允许一点余量，不是硬贴边）
+  score += ((probe.y - inner.y) / Math.max(1, inner.height)) * 7;
+  // 出格兜底
+  score += outsideRatio(probe, inner) * 300;
+
+  // 模型给的 area：只当横向偏好（它不知道格线，纵向交给「靠上」这条）
+  if (item.area) {
+    const left = item.area.endsWith('l');
+    const right = item.area.endsWith('r');
+    const centerX = probe.x + probe.width / 2;
+    const slotMid = (slot.x + slot.width / 2) * page.width;
+    if (left && centerX > slotMid) score += 5;
+    if (right && centerX < slotMid) score += 5;
+  }
+  return score;
+}
+
+/** 先把台词分到格：显式 panel > area 反查 > 均分（没有任何线索时）。 */
+/** 名字比对用：去空白/标点、忽略大小写（与别处的 normalizeName 同口径）。 */
+function nameKey(v: string): string {
+  return String(v ?? '').replace(/[\s（）()「」『』【】·.,，。:：!！?？~～\-—_]/g, '').toLowerCase();
+}
+
+/**
+ * 说话人 → 格号。
+ *
+ * 只在「这个人只出现在一格里」时才认：两人同框的多格页里，说话人本身
+ * 不足以区分是哪一格，硬猜会把对白放到别人脸上。
+ */
+function slotBySpeaker(
+  item: PanelDialogueItem,
+  casts: readonly (readonly string[])[] | undefined,
+): number {
+  const speaker = nameKey(item.speaker ?? '');
+  if (!speaker || !casts?.length) return -1;
+  const hits: number[] = [];
+  casts.forEach((names, i) => {
+    if ((names ?? []).some(name => {
+      const key = nameKey(name);
+      return key.length > 0 && (key === speaker || key.includes(speaker) || speaker.includes(key));
+    })) hits.push(i);
+  });
+  return hits.length === 1 ? hits[0] : -1;
+}
+
+export function assignDialogueToSlots(
+  items: readonly PanelDialogueItem[],
+  slots: readonly PanelSlot[],
+  casts?: readonly (readonly string[])[],
+): number[] {
+  const n = slots.length;
+  if (!n) return items.map(() => 0);
+  // 模型看到 panels[].index 是 0 起，常把 panel 也写成 0 起。
+  // 出现过 0 就按 0 起解释整份，避免整体错一格（最典型的「台词跑到上一格」）。
+  const zeroBased = items.some(item => Number(item.panel) === 0);
+  const explicit = (item: PanelDialogueItem): number => {
+    const raw = Number(item.panel);
+    if (!Number.isFinite(raw)) return -1;
+    const p = Math.round(zeroBased ? raw + 1 : raw);
+    return p >= 1 && p <= n ? p - 1 : -1;
+  };
+  const hasHint = items.some(item => explicit(item) >= 0 || !!item.area || slotBySpeaker(item, casts) >= 0);
+  if (!hasHint) {
+    // 一条线索都没有：按阅读顺序均分，别把四句全塞进第一格
+    return items.map((_, i) => Math.min(n - 1, Math.floor((i * n) / Math.max(1, items.length))));
+  }
+  let prev = 0;
+  return items.map(item => {
+    const p = explicit(item);
+    if (p >= 0) {
+      prev = p;
+      return p;
+    }
+    const bySpeaker = slotBySpeaker(item, casts);
+    if (bySpeaker >= 0) {
+      prev = bySpeaker;
+      return bySpeaker;
+    }
+    if (item.area && BUBBLE_ANCHORS[item.area]) {
+      const a = BUBBLE_ANCHORS[item.area];
+      prev = slotIndexAt(slots, a.x, a.y);
+      return prev;
+    }
+    return prev; // 没写的跟着上一句，免得同一段对话被拆到两格
+  });
+}
+
+function setTailInSlot(rect: BubbleRect, slot: PanelSlot, page: { width: number; height: number }): void {
+  const midY = (slot.y + slot.height / 2) * page.height;
+  const midX = (slot.x + slot.width / 2) * page.width;
+  rect.tail = rect.y + rect.height / 2 < midY ? 'down' : 'up';
+  // 尾巴朝本格中轴：气泡偏左就把尾巴放右下，偏右就放左下
+  rect.tailX = rect.x + rect.width / 2 < midX ? rect.x + rect.width * 0.74 : rect.x + rect.width * 0.26;
+}
+
+// ============================================================
 // 入口
 // ============================================================
 
@@ -327,9 +524,16 @@ export function planBubbles(
 ): BubbleRect[] {
   if (!page.width || !page.height) return [];
   const style = normalizeBubbleStyle(opts.style);
-  const zones = opts.avoidFace === false ? [] : (opts.avoid ?? FACE_AVOID_ZONES);
-  if (isBlendStyle(style)) return planBlend(items, page, measure, style, zones);
-  return planBubbleBox(items, page, measure, style, zones);
+  const slots = opts.panels && opts.panels.length ? opts.panels : [];
+  // 格内排版时，页面级 zones 只留给“特写格 / 顶部脸条”这类禁区；
+  // 脸区改由每格自己算，不能再套整页那个框。
+  const zones = opts.avoidFace === false
+    ? []
+    : (opts.avoid ?? (slots.length ? [] : FACE_AVOID_ZONES));
+  if (isBlendStyle(style)) {
+    return planBlend(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
+  }
+  return planBubbleBox(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
 }
 
 /** 有框气泡的正文最大宽度：0.34 页宽。再宽就会伸到中轴的人脸上。 */
@@ -348,12 +552,14 @@ function measureBox(
   measure: (s: string) => number,
   fontSize: number,
   variant: string,
+  maxWidth?: number,
+  maxHeight?: number,
 ): BoxMetrics | null {
   const padX = fontSize * 0.7;
   const padY = fontSize * 0.55;
   if (variant === 'vertical') {
     const step = fontSize * 1.15;
-    const perCol = Math.max(3, Math.floor((page.height * 0.5) / step));
+    const perCol = Math.max(3, Math.floor((maxHeight ?? page.height * 0.5) / step));
     const chars = [...item.text];
     const cols: string[] = [];
     for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(''));
@@ -364,7 +570,8 @@ function measureBox(
       vertical: true,
     };
   }
-  const lines = wrapText(item.text, page.width * MAX_BUBBLE_RATIO - padX * 2, measure);
+  const wrapWidth = Math.max(fontSize * 2, (maxWidth ?? page.width * MAX_BUBBLE_RATIO) - padX * 2);
+  const lines = wrapText(item.text, wrapWidth, measure);
   if (!lines.length) return null;
   return {
     lines,
@@ -374,18 +581,129 @@ function measureBox(
   };
 }
 
+/** 格内画字的最大宽度（占格内可用宽度的比例）：留出气泡自身的边距。 */
+const PANEL_TEXT_RATIO = 0.88;
+
+/**
+ * 格内排版。
+ *
+ * 三条硬约束（真漫画的排版语法，不是审美偏好）：
+ * 1. 气泡**完整落在自己那一格里**——不出格、不骑 gutter。放不下就缩字号，不是溢出；
+ * 2. 每句跟着自己那一格排，同一格里的几句从上往下叠；
+ * 3. 尾巴朝本格中轴，不朝整页中轴（朝整页会指向别的格）。
+ */
+function planBubbleBoxPanel(
+  items: PanelDialogueItem[],
+  page: { width: number; height: number },
+  measure: (s: string) => number,
+  variant: string,
+  slots: readonly PanelSlot[],
+  noGo: readonly AvoidZone[],
+  paddingRatio?: number,
+  casts?: readonly (readonly string[])[],
+): BubbleRect[] {
+  const baseFont = bubbleFontSize(page);
+  const pad = Math.max(3, Math.round(page.width * (paddingRatio ?? 0.012)));
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter(item => item.text.trim());
+  const groups = assignDialogueToSlots(capped, slots, casts);
+  const out: Array<BubbleRect | null> = capped.map(() => null);
+  const placedAll: BubbleRect[] = [];
+
+  slots.forEach((slot, si) => {
+    const inner = innerOf(slot, page, pad);
+    const placedHere: BubbleRect[] = [];
+    // 小格里字号必须跟着格走，否则两行的气泡就顶满整格
+    const fontCap = Math.max(12, Math.round(Math.min(inner.width, inner.height) * 0.13));
+    const startFont = Math.min(baseFont, fontCap);
+
+    capped.forEach((item, idx) => {
+      if (groups[idx] !== si) return;
+
+      let best: { rect: BubbleRect; score: number } | null = null;
+      for (const scale of [1, 0.88, 0.76, 0.64]) {
+        const fontSize = Math.max(11, Math.round(startFont * scale));
+        const metrics = measureBox(
+          item, page, measure, fontSize, variant,
+          inner.width * PANEL_TEXT_RATIO,
+          inner.height * 0.8,
+        );
+        if (!metrics) continue;
+        if (metrics.width > inner.width || metrics.height > inner.height * 0.85) continue;
+        const rect: BubbleRect = {
+          x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines,
+          ...(metrics.vertical ? { vertical: true } : {}),
+        };
+        let point: Point = { x: inner.x, y: inner.y };
+        let score = Infinity;
+        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedHere, noGo);
+          if (s < score) {
+            score = s;
+            point = candidate;
+          }
+        }
+        // 缩字号本身有代价：能大字就大字，差不太多才缩
+        const total = score + (1 - scale) * 5;
+        if (!best || total < best.score) {
+          best = { rect: { ...rect, x: point.x, y: point.y, fontSize }, score: total };
+        }
+      }
+      if (!best) return;
+      setTailInSlot(best.rect, slot, page);
+      best.rect.itemIndex = idx;
+      placedHere.push(best.rect);
+      placedAll.push(best.rect);
+      out[idx] = best.rect;
+    });
+  });
+
+  return out.filter((r): r is BubbleRect => !!r);
+}
+
 function planBubbleBox(
   items: PanelDialogueItem[],
   page: { width: number; height: number },
   measure: (s: string) => number,
   style: string,
   zones: readonly AvoidZone[],
+  slots: readonly PanelSlot[] = [],
+  panelPadding?: number,
+  panelCasts?: readonly (readonly string[])[],
 ): BubbleRect[] {
   const variant = bubbleVariantOf(style as Parameters<typeof bubbleVariantOf>[0]);
-  const baseFont = Math.max(15, Math.min(38, Math.round(Math.min(page.width, page.height) * 0.030)));
+  const baseFont = bubbleFontSize(page);
   const margin = Math.round(page.width * 0.02);
   const placed: BubbleRect[] = [];
   const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter(item => item.text.trim());
+
+  // 漫画页（多格）：除字幕条外一律进格内排版
+  if (slots.length && variant !== 'subtitle') {
+    const casts = panelCasts;
+    const pinned = capped.filter(item => typeof item.x === 'number' && typeof item.y === 'number');
+    const flowed = capped.filter(item => !(typeof item.x === 'number' && typeof item.y === 'number'));
+    const byPanel = planBubbleBoxPanel(flowed, page, measure, variant, slots, zones, panelPadding, casts);
+    // 手动钉的位置照旧原地不动（用户说放哪就放哪），只是画在最上层
+    const manual: BubbleRect[] = [];
+    for (const item of pinned) {
+      const metrics = measureBox(item, page, measure, baseFont, variant);
+      if (!metrics) continue;
+      const rect: BubbleRect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...(metrics.vertical ? { vertical: true } : {}) };
+      rect.x = Math.min(Math.max(margin, (item.x as number) * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.y = Math.min(Math.max(margin, (item.y as number) * page.height - rect.height / 2), page.height - rect.height - margin);
+      rect.tail = (item.y as number) < 0.5 ? 'down' : 'up';
+      rect.itemIndex = capped.indexOf(item);
+      manual.push(rect);
+    }
+    // 恢复原始顺序：融入式按 index 取 item，顺序错了会张冠李戴
+    const merged: Array<BubbleRect | null> = capped.map(() => null);
+    let i = 0;
+    let j = 0;
+    capped.forEach((item, idx) => {
+      const isPinned = typeof item.x === 'number' && typeof item.y === 'number';
+      merged[idx] = isPinned ? (manual[j++] ?? null) : (byPanel[i++] ?? null);
+    });
+    return merged.filter((r): r is BubbleRect => !!r);
+  }
 
   capped.forEach(item => {
     // 手动坐标：原地钉死，不参与打分（用户/模型明确指定了位置）
@@ -430,6 +748,7 @@ function planBubbleBox(
       const { point, score } = bestPoint(rect, item, page, margin, placed, zones);
       rect.x = point.x;
       rect.y = point.y;
+      rect.fontSize = fontSize;
       const cover = faceCoverRatio(rect, page, zones);
       if (!chosen || cover < 0.02 || score < chosen.score) {
         chosen = { rect, score };
@@ -451,13 +770,87 @@ function planBlend(
   measure: (s: string) => number,
   style: string,
   zones: readonly AvoidZone[],
+  slots: readonly PanelSlot[] = [],
+  panelPadding?: number,
+  casts?: readonly (readonly string[])[],
 ): BubbleRect[] {
-  const fontSize = blendFontSize(page);
+  const baseFont = blendFontSize(page);
   const margin = Math.round(page.width * 0.02);
-  const maxW = page.width * (style === 'blend-subtitle' ? 0.86 : 0.42);
-  const maxH = page.height * 0.42;
   const forceVertical = style === 'blend-vertical';
   const subtitle = style === 'blend-subtitle';
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter(item => item.text.trim());
+
+  // 漫画页：融入式文字同样按格排——字压在两格之间的 gutter 上比压脸更明显
+  if (slots.length && !subtitle) {
+    const pad = Math.max(3, Math.round(page.width * (panelPadding ?? 0.012)));
+    const groups = assignDialogueToSlots(capped, slots, casts);
+    const out: Array<BubbleRect | null> = capped.map(() => null);
+    const placedAll: BubbleRect[] = [];
+    slots.forEach((slot, si) => {
+      const inner = innerOf(slot, page, pad);
+      const placedHere: BubbleRect[] = [];
+      const fontSize = Math.max(11, Math.min(baseFont, Math.round(Math.min(inner.width, inner.height) * 0.09)));
+      capped.forEach((item, idx) => {
+        if (groups[idx] !== si) return;
+        if (typeof item.x === 'number' && typeof item.y === 'number') return; // 钉死的走下面整页路径
+        const vertical = forceVertical || item.dir === 'v';
+        let rect: BubbleRect;
+        if (vertical) {
+          const { cols, width, height } = layoutBlendV(item.text, inner.height * 0.85, fontSize);
+          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+        } else {
+          const { lines, width, height } = layoutBlendH(item.text, inner.width * 0.9, fontSize, measure);
+          if (!lines.length) return;
+          rect = { x: 0, y: 0, width, height, lines };
+        }
+        if (rect.width > inner.width || rect.height > inner.height * 0.9) return;
+        let point: Point = { x: inner.x, y: inner.y };
+        let score = Infinity;
+        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedAll, zones);
+          if (s < score) {
+            score = s;
+            point = candidate;
+          }
+        }
+        rect.x = point.x;
+        rect.y = point.y;
+        rect.fontSize = fontSize;
+        rect.itemIndex = idx;
+        placedHere.push(rect);
+        placedAll.push(rect);
+        out[idx] = rect;
+      });
+    });
+    // 手动钉的位置退回整页路径单独处理
+    const pinned = capped.filter(item => typeof item.x === 'number' && typeof item.y === 'number');
+    if (pinned.length) {
+      const manual: BubbleRect[] = [];
+      for (const item of pinned) {
+        const vertical = forceVertical || item.dir === 'v';
+        let rect: BubbleRect;
+        if (vertical) {
+          const { cols, width, height } = layoutBlendV(item.text, page.height * 0.42, baseFont);
+          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+        } else {
+          const { lines, width, height } = layoutBlendH(item.text, page.width * 0.42, baseFont, measure);
+          if (!lines.length) continue;
+          rect = { x: 0, y: 0, width, height, lines };
+        }
+        rect.x = Math.min(Math.max(margin, (item.x as number) * page.width - rect.width / 2), page.width - rect.width - margin);
+        rect.y = Math.min(Math.max(margin, (item.y as number) * page.height - rect.height / 2), page.height - rect.height - margin);
+        manual.push(rect);
+      }
+      let j = 0;
+      capped.forEach((item, idx) => {
+        if (typeof item.x === 'number' && typeof item.y === 'number') out[idx] = manual[j++] ?? null;
+      });
+    }
+    return out.filter((r): r is BubbleRect => !!r);
+  }
+
+  const maxW = page.width * (subtitle ? 0.86 : 0.42);
+  const maxH = page.height * 0.42;
   const placed: BubbleRect[] = [];
 
   items.slice(0, PANEL_DIALOGUE_MAX).forEach((item, index) => {
@@ -465,10 +858,10 @@ function planBlend(
     const vertical = forceVertical || (!subtitle && item.dir === 'v');
     let rect: BubbleRect;
     if (vertical) {
-      const { cols, width, height } = layoutBlendV(item.text, maxH, fontSize);
+      const { cols, width, height } = layoutBlendV(item.text, maxH, baseFont);
       rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
     } else {
-      const { lines, width, height } = layoutBlendH(item.text, maxW, fontSize, measure);
+      const { lines, width, height } = layoutBlendH(item.text, maxW, baseFont, measure);
       if (!lines.length) return;
       rect = { x: 0, y: 0, width, height, lines };
     }
@@ -478,7 +871,7 @@ function planBlend(
       for (let guard = 0; guard < 8; guard += 1) {
         const hit = placed.find(o => overlapArea(rect, o) > 0);
         if (!hit) break;
-        rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.25);
+        rect.y = Math.max(margin, hit.y - rect.height - baseFont * 0.25);
       }
       placed.push(rect);
       return;

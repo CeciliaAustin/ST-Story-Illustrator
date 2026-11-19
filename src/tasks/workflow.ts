@@ -35,6 +35,7 @@ import { resolvePanelsPerPage } from '../manga/panelPlan';
 import { hasStoryContent } from '../manga/panelRelevance';
 import { composePagePrompt } from '../manga/pageCompose';
 import { bakeDialogueIntoImage } from '../manga/bubbleBake';
+import { panelSlots, layoutNoGoZones } from '../manga/panelSlots';
 import { createArtifactId, appendArtifact } from '../storage/repository';
 import { mountFloor } from '../ui/floorCards';
 import {
@@ -355,11 +356,20 @@ async function runComic(
     let imagePath = waited.entry.path;
     let bakedPath = '';
     if (showComposite && composed.dialogue.length) {
+      // 气泡要落进「自己那一格」：格位由我们自己下发的版面反推（真漫画的第一条排版语法）
+      const panelCount = resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage) || page.panels.length;
+      const slots = panelSlots(page.layout, panelCount, modeSettings.comicPageType ?? 'auto');
+      const noGo = layoutNoGoZones(page.layout, modeSettings.comicPageType ?? 'auto');
       const baked = await bakeDialogueIntoImage({
         imagePath,
         dialogue: composed.dialogue,
         style: bubbleStyle,
         font: bubbleFont,
+        ...(slots.length ? { slots } : {}),
+        ...(noGo.length ? { noGo } : {}),
+        ...(slots.length ? {
+          panelCast: page.panels.map(panel => (panel.characters ?? []).map(c => c.name).filter(Boolean)),
+        } : {}),
       });
       if (baked && (await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked))) {
         bakedPath = baked;

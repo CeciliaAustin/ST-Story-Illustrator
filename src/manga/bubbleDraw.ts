@@ -16,6 +16,7 @@ import {
 } from './bubbleTypes';
 import {
   planBubbles,
+  bubbleFontSize,
   blendFontSize,
   blendSpacing,
   blendInkFor,
@@ -72,26 +73,29 @@ export function drawBubbles(
   const style = normalizeBubbleStyle(opts.style);
   const fontStack = BUBBLE_FONT_STACKS[normalizeBubbleFont(opts.font)];
   if (isBlendStyle(style)) {
-    drawBlend(ctx, items, fontStack, width, height, style);
+    drawBlend(ctx, items, fontStack, width, height, style, opts);
     return canvas;
   }
 
-  const fontSize = Math.max(15, Math.min(44, Math.round(Math.min(width, height) * 0.034)));
-  const font = (w: string) => `${w} ${fontSize}px ${fontStack}`;
-  ctx.font = font('400');
+  const fontSize = bubbleFontSize({ width, height });
+  ctx.font = `400 ${fontSize}px ${fontStack}`;
   const bubbles = planBubbles(items, { width, height }, s => ctx.measureText(s).width, opts);
-  const lineWidth = Math.max(2, Math.round(fontSize * 0.09));
-  const tailSize = fontSize * 0.5;
   const ink = boxInkFor(style);
 
   for (const bubble of bubbles) {
+    // 排版时为了塞进小格会缩小字号；绘制必须跟着小，否则字会挤出气泡
+    const fs = bubble.fontSize ?? fontSize;
+    const font = (w: string) => `${w} ${fs}px ${fontStack}`;
+    const lineWidth = Math.max(2, Math.round(fs * 0.09));
+    const tailSize = fs * 0.5;
     if (bubble.tail) {
       const baseY = bubble.tail === 'down' ? bubble.y + bubble.height : bubble.y;
       const tipY = bubble.tail === 'down' ? baseY + tailSize : baseY - tailSize;
       // 尾巴朝向人物：气泡在左半边就把尾巴放右下角、指向画面中轴，反之亦然。
       // 原来固定 0.28，气泡靠右时尾巴会翘到画面外，读起来像别人的台词。
+      // 格内排版时 tailX 已经按「本格中轴」算好，直接用。
       const towardCenter = bubble.x + bubble.width / 2 < width / 2 ? 0.72 : 0.28;
-      const baseX = bubble.x + bubble.width * towardCenter;
+      const baseX = typeof bubble.tailX === 'number' ? bubble.tailX : bubble.x + bubble.width * towardCenter;
       const inner = lineWidth / 2;
       ctx.beginPath();
       ctx.moveTo(baseX - tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
@@ -103,7 +107,7 @@ export function drawBubbles(
       ctx.lineJoin = 'round';
       ctx.stroke();
       ctx.fill();
-      roundRectPath(ctx, bubble, fontSize * 0.45);
+      roundRectPath(ctx, bubble, fs * 0.45);
       ctx.fillStyle = '#ffffff';
       ctx.fill();
       ctx.strokeStyle = '#1a1a1a';
@@ -111,33 +115,33 @@ export function drawBubbles(
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(baseX - tailSize * 0.5, bubble.tail === 'down' ? bubble.y + bubble.height - lineWidth : bubble.y, tailSize, lineWidth + 1);
     } else {
-      roundRectPath(ctx, bubble, fontSize * 0.35);
+      roundRectPath(ctx, bubble, fs * 0.35);
       ctx.fillStyle = 'rgba(18,16,15,0.82)';
       ctx.fill();
       ctx.strokeStyle = '#e8e4dc';
-      ctx.lineWidth = Math.max(1.5, fontSize * 0.06);
+      ctx.lineWidth = Math.max(1.5, fs * 0.06);
       ctx.stroke();
     }
 
     ctx.fillStyle = ink.color;
+    ctx.font = font('400');
     if (ink.glow) {
       ctx.shadowColor = ink.glow;
-      ctx.shadowBlur = fontSize * 0.7;
+      ctx.shadowBlur = fs * 0.7;
     }
     ctx.textBaseline = 'top';
     if (bubble.vertical) {
-      const step = fontSize * 1.15;
-      const colSpacing = fontSize * 0.26;
-      const colX = (ci: number) => bubble.x + bubble.width - fontSize * 0.7 - (ci + 1) * fontSize - ci * colSpacing;
+      const step = fs * 1.15;
+      const colSpacing = fs * 0.26;
+      const colX = (ci: number) => bubble.x + bubble.width - fs * 0.7 - (ci + 1) * fs - ci * colSpacing;
       const totalH = Math.min(perColOf(bubble.lines), bubble.lines[0]?.length ?? 0) * step;
       bubble.lines.forEach((col, ci) => [...col].forEach((ch, ri) => ctx.fillText(ch, colX(ci), bubble.y + (bubble.height - totalH) / 2 + ri * step)));
     } else {
-      const textHeight = bubble.lines.length * fontSize * 1.4;
-      let cursorY = bubble.y + (bubble.height - textHeight) / 2 + fontSize * 0.08;
+      const textHeight = bubble.lines.length * fs * 1.4;
+      let cursorY = bubble.y + (bubble.height - textHeight) / 2 + fs * 0.08;
       for (const line of bubble.lines) {
-        ctx.font = font('400');
-        ctx.fillText(line, bubble.x + fontSize * 0.7, cursorY);
-        cursorY += fontSize * 1.4;
+        ctx.fillText(line, bubble.x + fs * 0.7, cursorY);
+        cursorY += fs * 1.4;
       }
     }
     ctx.shadowBlur = 0; // 必须清，否则 whisper 的小爱心也带光（坑 9）
@@ -152,20 +156,25 @@ function drawBlend(
   width: number,
   height: number,
   style: string,
+  opts: PlanOptions = {},
 ): void {
-  const fontSize = blendFontSize({ width, height });
-  const spacing = style === 'blend-subtitle' ? fontSize * 0.1 : blendSpacing(fontSize);
+  const baseFont = blendFontSize({ width, height });
   ctx.textBaseline = 'top';
-  ctx.font = `400 ${fontSize}px ${fontStack}`;
+  ctx.font = `400 ${baseFont}px ${fontStack}`;
   ctx.lineJoin = 'round';
   const measure = (s: string) => ctx.measureText(s).width;
-  const rects = planBubbles(items, { width, height }, measure, { style: style as import('../types').BubbleStyleId });
+  const rects = planBubbles(items, { width, height }, measure, { ...opts, style: style as import('../types').BubbleStyleId });
   const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter(i => i.text.trim());
   const needsSampling = style === 'blend' || style === 'blend-vertical';
 
   rects.forEach((rect, index) => {
-    const item = capped[index];
+    // 格内排版会按格重排顺序，不能再按数组下标配对
+    const item = capped[typeof rect.itemIndex === 'number' ? rect.itemIndex : index];
     if (!item) return;
+    // 小格里的融入式文字在排版时已经缩过字号，绘制跟着缩
+    const fontSize = rect.fontSize ?? baseFont;
+    const spacing = style === 'blend-subtitle' ? fontSize * 0.1 : blendSpacing(fontSize);
+    ctx.font = `400 ${fontSize}px ${fontStack}`;
     let avg = { r: 246, g: 238, b: 236 };
     if (needsSampling) {
       try {

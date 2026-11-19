@@ -91,10 +91,13 @@ export function buildPageNl(page: ComicPagePlan): string {
 export function collectPageDialogue(page: ComicPagePlan): ComicDialogue[] {
   if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
   const out: ComicDialogue[] = [];
-  for (const panel of page.panels ?? []) {
-    for (const item of panel.dialogue ?? []) {
+  const panels = page.panels ?? [];
+  for (let i = 0; i < panels.length; i += 1) {
+    for (const item of panels[i].dialogue ?? []) {
       if (out.length >= 4) return out;
-      out.push(item);
+      // 从某一格自己的 dialogue 里捞出来的台词，天然知道自己在第几格——
+      // 这是合成气泡时最可靠的位置线索，模型漏写 panel 时靠它补齐。
+      out.push(item.panel ? item : { ...item, panel: i + 1 });
     }
   }
   return out;

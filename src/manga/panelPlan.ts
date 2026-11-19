@@ -150,6 +150,13 @@ export function normalizeDialogueItems(value: unknown): NormalizedDialogue[] {
     const x = clamp01(item.x);
     const y = clamp01(item.y);
 
+    // 第几格。约定是 1 起，但模型看到 panels[].index 是 0 起，写成 0 很常见——
+    // 这里把 0 也收下，由合成阶段统一判断整份是 0 起还是 1 起。
+    const panelRaw = typeof item.panel === 'string' ? Number(item.panel) : item.panel;
+    const panel = typeof panelRaw === 'number' && Number.isFinite(panelRaw) && panelRaw >= 0 && panelRaw <= 8
+      ? Math.round(panelRaw)
+      : undefined;
+
     const dirRaw = typeof item.dir === 'string' ? item.dir.trim().toLowerCase() : '';
     const dir = dirRaw === 'v' || dirRaw === 'h' ? (dirRaw as 'h' | 'v') : undefined;
     const moodRaw = typeof item.mood === 'string' ? item.mood.trim().toLowerCase() : '';
@@ -160,6 +167,7 @@ export function normalizeDialogueItems(value: unknown): NormalizedDialogue[] {
     items.push({
       ...(speaker ? { speaker } : {}),
       ...(area ? { area } : {}),
+      ...(panel ? { panel } : {}),
       ...(x !== undefined ? { x } : {}),
       ...(y !== undefined ? { y } : {}),
       ...(dir ? { dir } : {}),
@@ -252,11 +260,14 @@ export function panelDialogueClause(
   policy: DialoguePolicy = 'auto',
 ): string {
   const format = mode === 'json'
-    ? '页对象上加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","area":"tl"}]`'
-    : '在该条生图标签里写子标签 `<dialogue>[{"text":"放学一起走吗？","area":"tl"}]</dialogue>`';
+    ? '页对象上加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","speaker":"旁白里的名字","panel":2,"area":"tl"}]`'
+    : '在该条生图标签里写子标签 `<dialogue>[{"text":"放学一起走吗？","speaker":"名字","panel":2,"area":"tl"}]</dialogue>`';
   return `【对白气泡】这一张是漫画页，剧情里「谁说了什么」值得画进图时，${format}。
    - text：简短中文口语，一条不超过 20 个字；最多 4 条，${DIALOGUE_POLICY_TEXT[policy]}；
-   - area：气泡锚点（tl/tc/tr/ml/mr/bl/bc/br），按说话人位置挑，可省略；
+   - panel：这一句出现在**第几格**（1 起，按阅读顺序）。气泡只会画在这一格里，
+     所以必须和该格 characters 里说话的人对得上；分不清就省略，省略时按顺序分配；
+   - speaker：说话人的名字（照抄 characters 里的写法）。不会画进气泡，只用来定位；
+   - area：气泡在本格里的粗略方位（tl/tc/tr/ml/mr/bl/bc/br），按说话人位置挑，可省略；
    - dir：排版方向——「v」竖排（独白、呢喃），缺省横排，可省略；
    - mood：语气——calm 缺省 / shout 喊叫 / whisper 轻声呢喃（带小爱心），可省略；
    - 想竖排轻声效果写成 {"text":"……","dir":"v","mood":"whisper"}，dir 与 mood 都带；

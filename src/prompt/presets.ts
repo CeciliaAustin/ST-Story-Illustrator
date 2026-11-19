@@ -99,7 +99,7 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 
 const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
 硬要求：
 1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
 2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
@@ -107,7 +107,7 @@ const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布
 4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），各格远近只写在 nl 里。
 5. page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。
 6. panels 数组只用来标「每一格画了什么」：{{#fixedPanels}}**每页固定 {{panelsPerPage}} 格**——panels 必须正好 {{panelsPerPage}} 条，nl 必须按 {{panelsPerPage}} 格分区写，版面也必须真的切出 {{panelsPerPage}} 格。{{/fixedPanels}}{{^fixedPanels}}2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致；**版面必须真的切出这么多格**——说 three panels 就要画三格，不能拿两格模板套四段内容。{{/fixedPanels}}
-7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。
+7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。panel 字段是这句出现在第几格（1 起，按阅读顺序）——气泡只会画在那**一格**里，所以必须与该格 characters 里说话的人对得上；对不上就别写这句。speaker 写说话人名字（照抄 characters 里的名字）：它不会被画进气泡，只用来定位，写对了气泡才会贴着说话的人。
 8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。
 9. 有台词的页，nl 里要让人物偏下、上方留出干净空间给气泡；人物头顶顶到页边时气泡只能盖在脸上。
 {{#hasRule}}

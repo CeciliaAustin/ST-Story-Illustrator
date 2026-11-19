@@ -2760,7 +2760,7 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 {{/hasFlags}}`;
 const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
 硬要求：
 1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
 2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
@@ -2768,7 +2768,7 @@ const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布
 4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），各格远近只写在 nl 里。
 5. page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。
 6. panels 数组只用来标「每一格画了什么」：{{#fixedPanels}}**每页固定 {{panelsPerPage}} 格**——panels 必须正好 {{panelsPerPage}} 条，nl 必须按 {{panelsPerPage}} 格分区写，版面也必须真的切出 {{panelsPerPage}} 格。{{/fixedPanels}}{{^fixedPanels}}2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致；**版面必须真的切出这么多格**——说 three panels 就要画三格，不能拿两格模板套四段内容。{{/fixedPanels}}
-7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。
+7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。panel 字段是这句出现在第几格（1 起，按阅读顺序）——气泡只会画在那**一格**里，所以必须与该格 characters 里说话的人对得上；对不上就别写这句。speaker 写说话人名字（照抄 characters 里的名字）：它不会被画进气泡，只用来定位，写对了气泡才会贴着说话的人。
 8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。
 9. 有台词的页，nl 里要让人物偏下、上方留出干净空间给气泡；人物头顶顶到页边时气泡只能盖在脸上。
 {{#hasRule}}
@@ -4215,6 +4215,8 @@ function normalizeDialogueItems(value) {
     const area = PANEL_BUBBLE_AREAS.includes(areaRaw) ? areaRaw : void 0;
     const x = clamp01(item.x);
     const y = clamp01(item.y);
+    const panelRaw = typeof item.panel === "string" ? Number(item.panel) : item.panel;
+    const panel = typeof panelRaw === "number" && Number.isFinite(panelRaw) && panelRaw >= 0 && panelRaw <= 8 ? Math.round(panelRaw) : void 0;
     const dirRaw = typeof item.dir === "string" ? item.dir.trim().toLowerCase() : "";
     const dir = dirRaw === "v" || dirRaw === "h" ? dirRaw : void 0;
     const moodRaw = typeof item.mood === "string" ? item.mood.trim().toLowerCase() : "";
@@ -4222,6 +4224,7 @@ function normalizeDialogueItems(value) {
     items.push({
       ...speaker ? { speaker } : {},
       ...area ? { area } : {},
+      ...panel ? { panel } : {},
       ...x !== void 0 ? { x } : {},
       ...y !== void 0 ? { y } : {},
       ...dir ? { dir } : {},
@@ -4287,10 +4290,13 @@ const DIALOGUE_POLICY_TEXT = {
   eager: "有对话、呼喊、惊讶时必须写；只有独处、风景镜头才允许省略"
 };
 function panelDialogueClause(mode, policy = "auto") {
-  const format = mode === "json" ? '页对象上加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","area":"tl"}]`' : '在该条生图标签里写子标签 `<dialogue>[{"text":"放学一起走吗？","area":"tl"}]</dialogue>`';
+  const format = mode === "json" ? '页对象上加 `dialogue` 字段，形如 `[{"text":"放学一起走吗？","speaker":"旁白里的名字","panel":2,"area":"tl"}]`' : '在该条生图标签里写子标签 `<dialogue>[{"text":"放学一起走吗？","speaker":"名字","panel":2,"area":"tl"}]</dialogue>`';
   return `【对白气泡】这一张是漫画页，剧情里「谁说了什么」值得画进图时，${format}。
    - text：简短中文口语，一条不超过 20 个字；最多 4 条，${DIALOGUE_POLICY_TEXT[policy]}；
-   - area：气泡锚点（tl/tc/tr/ml/mr/bl/bc/br），按说话人位置挑，可省略；
+   - panel：这一句出现在**第几格**（1 起，按阅读顺序）。气泡只会画在这一格里，
+     所以必须和该格 characters 里说话的人对得上；分不清就省略，省略时按顺序分配；
+   - speaker：说话人的名字（照抄 characters 里的写法）。不会画进气泡，只用来定位；
+   - area：气泡在本格里的粗略方位（tl/tc/tr/ml/mr/bl/bc/br），按说话人位置挑，可省略；
    - dir：排版方向——「v」竖排（独白、呢喃），缺省横排，可省略；
    - mood：语气——calm 缺省 / shout 喊叫 / whisper 轻声呢喃（带小爱心），可省略；
    - 想竖排轻声效果写成 {"text":"……","dir":"v","mood":"whisper"}，dir 与 mood 都带；
@@ -5451,6 +5457,91 @@ const BUBBLE_FONT_STACKS = {
   kai: '"KaiTi", "STKaiti", "Kaiti SC", "DFKai-SB", serif',
   round: '"Yuanti SC", "HYQiHei", "Microsoft YaHei", "PingFang SC", sans-serif'
 };
+const GAP = 0.024;
+function panelSlots(layout, count, pageType = "auto") {
+  const n = Math.min(4, Math.max(0, Math.round(Number(count) || 0)));
+  if (layout === "regular") {
+    if (n <= 1) return [{ x: 0, y: 0, width: 1, height: 1 }];
+    if (n === 2) {
+      const h2 = (1 - GAP) / 2;
+      return [
+        { x: 0, y: 0, width: 1, height: h2 },
+        { x: 0, y: h2 + GAP, width: 1, height: h2 }
+      ];
+    }
+    if (n === 3) {
+      const top = 0.378;
+      const botY = top + GAP;
+      const botH = 1 - botY;
+      const w2 = (1 - GAP) / 2;
+      return [
+        { x: 0, y: 0, width: 1, height: top },
+        { x: 0, y: botY, width: w2, height: botH },
+        { x: w2 + GAP, y: botY, width: w2, height: botH }
+      ];
+    }
+    const w = (1 - GAP) / 2;
+    const h = (1 - GAP) / 2;
+    return [
+      { x: 0, y: 0, width: w, height: h },
+      { x: w + GAP, y: 0, width: w, height: h },
+      { x: 0, y: h + GAP, width: w, height: h },
+      { x: w + GAP, y: h + GAP, width: w, height: h }
+    ];
+  }
+  if (layout === "irregular") return [];
+  if (layout === "inset") {
+    return [{ x: 0.02, y: 0.19, width: 0.96, height: 0.78 }];
+  }
+  switch (pageType) {
+    case "c":
+      return [{ x: 0.02, y: 0.02, width: 0.65, height: 0.96 }];
+    case "d":
+      return [{ x: 0.02, y: 0.02, width: 0.96, height: 0.96 }];
+    case "a":
+    case "b":
+    default:
+      return [{ x: 0.02, y: 0.21, width: 0.96, height: 0.77 }];
+  }
+}
+function layoutNoGoZones(layout, pageType = "auto") {
+  if (layout === "inset") {
+    return [
+      { x: 0, y: 0, width: 1, height: 0.19, weight: 3 },
+      { x: 0.6, y: 0.66, width: 0.4, height: 0.34, weight: 3 }
+    ];
+  }
+  if (layout === "unframed") {
+    if (pageType === "d") {
+      return [{ x: 0.66, y: 0.74, width: 0.34, height: 0.26, weight: 3 }];
+    }
+    if (pageType === "c") {
+      return [{ x: 0.66, y: 0, width: 0.34, height: 1, weight: 3 }];
+    }
+    return [{ x: 0.33, y: 0.71, width: 0.65, height: 0.27, weight: 3 }];
+  }
+  return [];
+}
+function slotIndexAt(slots, px, py) {
+  if (!slots.length) return 0;
+  let inside = -1;
+  slots.forEach((s, i) => {
+    if (px >= s.x && px <= s.x + s.width && py >= s.y && py <= s.y + s.height) inside = i;
+  });
+  if (inside >= 0) return inside;
+  let best = 0;
+  let bestDist = Infinity;
+  slots.forEach((s, i) => {
+    const dx = s.x + s.width / 2 - px;
+    const dy = s.y + s.height / 2 - py;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  });
+  return best;
+}
 const PANEL_DIALOGUE_MAX = 4;
 const BUBBLE_ANCHORS = {
   tl: { x: 0.24, y: 0.15 },
@@ -5485,6 +5576,9 @@ function wrapText(text, maxWidth, measure) {
   }
   if (current.trim()) lines.push(current.trim());
   return lines;
+}
+function bubbleFontSize(page) {
+  return Math.max(15, Math.min(44, Math.round(Math.min(page.width, page.height) * 0.034)));
 }
 function blendFontSize(page) {
   return Math.max(13, Math.min(36, Math.round(Math.min(page.width, page.height) * 0.028)));
@@ -5637,21 +5731,152 @@ function placeRect(rect, item, index2, page, margin, zones, placed, withTail) {
   rect.y = point.y;
   placed.push(rect);
 }
+function pageBox(zone, page) {
+  return {
+    x: zone.x * page.width,
+    y: zone.y * page.height,
+    width: zone.width * page.width,
+    height: zone.height * page.height
+  };
+}
+function innerOf(slot, page, pad) {
+  return {
+    x: slot.x * page.width + pad,
+    y: slot.y * page.height + pad,
+    width: Math.max(24, slot.width * page.width - pad * 2),
+    height: Math.max(24, slot.height * page.height - pad * 2)
+  };
+}
+function faceZoneInSlot(slot, page) {
+  return {
+    x: (slot.x + slot.width * 0.3) * page.width,
+    y: (slot.y + slot.height * 0.14) * page.height,
+    width: slot.width * 0.4 * page.width,
+    height: slot.height * 0.32 * page.height
+  };
+}
+function outsideRatio(rect, inner) {
+  const area = Math.max(1, rect.width * rect.height);
+  const inside = overlapArea(rect, inner);
+  return Math.max(0, area - inside) / area;
+}
+function candidatesInSlot(rect, inner, placed) {
+  const freeW = Math.max(0, inner.width - rect.width);
+  const freeH = Math.max(0, inner.height - rect.height);
+  const out = [];
+  for (const fy of [0, 0.18, 0.42, 0.68, 0.94]) {
+    for (const fx of [0, 0.5, 1]) {
+      out.push({ x: inner.x + fx * freeW, y: inner.y + fy * freeH });
+    }
+  }
+  for (const p of placed) {
+    const gap = Math.max(4, rect.height * 0.14);
+    const below = p.y + p.height + gap;
+    const above = p.y - rect.height - gap;
+    for (const x of [p.x, inner.x, inner.x + freeW]) {
+      if (below <= inner.y + freeH) out.push({ x, y: below });
+      if (above >= inner.y) out.push({ x, y: above });
+    }
+  }
+  return out;
+}
+function scoreInSlot(rect, point, inner, slot, item, page, placed, noGo) {
+  const probe2 = { ...rect, x: point.x, y: point.y };
+  const area = Math.max(1, rect.width * rect.height);
+  let score = 0;
+  for (const other of placed) {
+    score += overlapArea(probe2, other) / area * 400;
+    if (probe2.y + probe2.height <= other.y + 1) score += 34;
+  }
+  score += overlapArea(probe2, faceZoneInSlot(slot, page)) / area * 95;
+  for (const zone of noGo) {
+    score += overlapArea(probe2, pageBox(zone, page)) / area * 120 * (zone.weight ?? 1);
+  }
+  score += (probe2.y - inner.y) / Math.max(1, inner.height) * 7;
+  score += outsideRatio(probe2, inner) * 300;
+  if (item.area) {
+    const left = item.area.endsWith("l");
+    const right = item.area.endsWith("r");
+    const centerX = probe2.x + probe2.width / 2;
+    const slotMid = (slot.x + slot.width / 2) * page.width;
+    if (left && centerX > slotMid) score += 5;
+    if (right && centerX < slotMid) score += 5;
+  }
+  return score;
+}
+function nameKey(v) {
+  return String(v ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～\-—_]/g, "").toLowerCase();
+}
+function slotBySpeaker(item, casts) {
+  const speaker = nameKey(item.speaker ?? "");
+  if (!speaker || !(casts == null ? void 0 : casts.length)) return -1;
+  const hits = [];
+  casts.forEach((names, i) => {
+    if ((names ?? []).some((name) => {
+      const key = nameKey(name);
+      return key.length > 0 && (key === speaker || key.includes(speaker) || speaker.includes(key));
+    })) hits.push(i);
+  });
+  return hits.length === 1 ? hits[0] : -1;
+}
+function assignDialogueToSlots(items, slots, casts) {
+  const n = slots.length;
+  if (!n) return items.map(() => 0);
+  const zeroBased = items.some((item) => Number(item.panel) === 0);
+  const explicit = (item) => {
+    const raw = Number(item.panel);
+    if (!Number.isFinite(raw)) return -1;
+    const p = Math.round(zeroBased ? raw + 1 : raw);
+    return p >= 1 && p <= n ? p - 1 : -1;
+  };
+  const hasHint = items.some((item) => explicit(item) >= 0 || !!item.area || slotBySpeaker(item, casts) >= 0);
+  if (!hasHint) {
+    return items.map((_, i) => Math.min(n - 1, Math.floor(i * n / Math.max(1, items.length))));
+  }
+  let prev = 0;
+  return items.map((item) => {
+    const p = explicit(item);
+    if (p >= 0) {
+      prev = p;
+      return p;
+    }
+    const bySpeaker = slotBySpeaker(item, casts);
+    if (bySpeaker >= 0) {
+      prev = bySpeaker;
+      return bySpeaker;
+    }
+    if (item.area && BUBBLE_ANCHORS[item.area]) {
+      const a = BUBBLE_ANCHORS[item.area];
+      prev = slotIndexAt(slots, a.x, a.y);
+      return prev;
+    }
+    return prev;
+  });
+}
+function setTailInSlot(rect, slot, page) {
+  const midY = (slot.y + slot.height / 2) * page.height;
+  const midX = (slot.x + slot.width / 2) * page.width;
+  rect.tail = rect.y + rect.height / 2 < midY ? "down" : "up";
+  rect.tailX = rect.x + rect.width / 2 < midX ? rect.x + rect.width * 0.74 : rect.x + rect.width * 0.26;
+}
 function planBubbles(items, page, measure, opts = {}) {
   if (!page.width || !page.height) return [];
   const style = normalizeBubbleStyle(opts.style);
-  const zones = opts.avoidFace === false ? [] : opts.avoid ?? FACE_AVOID_ZONES;
-  if (isBlendStyle(style)) return planBlend(items, page, measure, style, zones);
-  return planBubbleBox(items, page, measure, style, zones);
+  const slots = opts.panels && opts.panels.length ? opts.panels : [];
+  const zones = opts.avoidFace === false ? [] : opts.avoid ?? (slots.length ? [] : FACE_AVOID_ZONES);
+  if (isBlendStyle(style)) {
+    return planBlend(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
+  }
+  return planBubbleBox(items, page, measure, style, zones, slots, opts.panelPadding, opts.panelCast);
 }
 const MAX_BUBBLE_RATIO = 0.34;
-function measureBox(item, page, measure, fontSize, variant) {
+function measureBox(item, page, measure, fontSize, variant, maxWidth, maxHeight) {
   var _a;
   const padX = fontSize * 0.7;
   const padY = fontSize * 0.55;
   if (variant === "vertical") {
     const step = fontSize * 1.15;
-    const perCol = Math.max(3, Math.floor(page.height * 0.5 / step));
+    const perCol = Math.max(3, Math.floor((maxHeight ?? page.height * 0.5) / step));
     const chars = [...item.text];
     const cols = [];
     for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
@@ -5662,7 +5887,8 @@ function measureBox(item, page, measure, fontSize, variant) {
       vertical: true
     };
   }
-  const lines = wrapText(item.text, page.width * MAX_BUBBLE_RATIO - padX * 2, measure);
+  const wrapWidth = Math.max(fontSize * 2, (maxWidth ?? page.width * MAX_BUBBLE_RATIO) - padX * 2);
+  const lines = wrapText(item.text, wrapWidth, measure);
   if (!lines.length) return null;
   return {
     lines,
@@ -5671,12 +5897,98 @@ function measureBox(item, page, measure, fontSize, variant) {
     vertical: false
   };
 }
-function planBubbleBox(items, page, measure, style, zones) {
+const PANEL_TEXT_RATIO = 0.88;
+function planBubbleBoxPanel(items, page, measure, variant, slots, noGo, paddingRatio, casts) {
+  const baseFont = bubbleFontSize(page);
+  const pad = Math.max(3, Math.round(page.width * (paddingRatio ?? 0.012)));
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((item) => item.text.trim());
+  const groups = assignDialogueToSlots(capped, slots, casts);
+  const out = capped.map(() => null);
+  const placedAll = [];
+  slots.forEach((slot, si) => {
+    const inner = innerOf(slot, page, pad);
+    const placedHere = [];
+    const fontCap = Math.max(12, Math.round(Math.min(inner.width, inner.height) * 0.13));
+    const startFont = Math.min(baseFont, fontCap);
+    capped.forEach((item, idx) => {
+      if (groups[idx] !== si) return;
+      let best = null;
+      for (const scale of [1, 0.88, 0.76, 0.64]) {
+        const fontSize = Math.max(11, Math.round(startFont * scale));
+        const metrics = measureBox(
+          item,
+          page,
+          measure,
+          fontSize,
+          variant,
+          inner.width * PANEL_TEXT_RATIO,
+          inner.height * 0.8
+        );
+        if (!metrics) continue;
+        if (metrics.width > inner.width || metrics.height > inner.height * 0.85) continue;
+        const rect = {
+          x: 0,
+          y: 0,
+          width: metrics.width,
+          height: metrics.height,
+          lines: metrics.lines,
+          ...metrics.vertical ? { vertical: true } : {}
+        };
+        let point = { x: inner.x, y: inner.y };
+        let score = Infinity;
+        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedHere, noGo);
+          if (s < score) {
+            score = s;
+            point = candidate;
+          }
+        }
+        const total = score + (1 - scale) * 5;
+        if (!best || total < best.score) {
+          best = { rect: { ...rect, x: point.x, y: point.y, fontSize }, score: total };
+        }
+      }
+      if (!best) return;
+      setTailInSlot(best.rect, slot, page);
+      best.rect.itemIndex = idx;
+      placedHere.push(best.rect);
+      placedAll.push(best.rect);
+      out[idx] = best.rect;
+    });
+  });
+  return out.filter((r) => !!r);
+}
+function planBubbleBox(items, page, measure, style, zones, slots = [], panelPadding, panelCasts) {
   const variant = bubbleVariantOf(style);
-  const baseFont = Math.max(15, Math.min(38, Math.round(Math.min(page.width, page.height) * 0.03)));
+  const baseFont = bubbleFontSize(page);
   const margin = Math.round(page.width * 0.02);
   const placed = [];
   const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((item) => item.text.trim());
+  if (slots.length && variant !== "subtitle") {
+    const casts = panelCasts;
+    const pinned = capped.filter((item) => typeof item.x === "number" && typeof item.y === "number");
+    const flowed = capped.filter((item) => !(typeof item.x === "number" && typeof item.y === "number"));
+    const byPanel = planBubbleBoxPanel(flowed, page, measure, variant, slots, zones, panelPadding, casts);
+    const manual = [];
+    for (const item of pinned) {
+      const metrics = measureBox(item, page, measure, baseFont, variant);
+      if (!metrics) continue;
+      const rect = { x: 0, y: 0, width: metrics.width, height: metrics.height, lines: metrics.lines, ...metrics.vertical ? { vertical: true } : {} };
+      rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+      rect.tail = item.y < 0.5 ? "down" : "up";
+      rect.itemIndex = capped.indexOf(item);
+      manual.push(rect);
+    }
+    const merged = capped.map(() => null);
+    let i = 0;
+    let j = 0;
+    capped.forEach((item, idx) => {
+      const isPinned = typeof item.x === "number" && typeof item.y === "number";
+      merged[idx] = isPinned ? manual[j++] ?? null : byPanel[i++] ?? null;
+    });
+    return merged.filter((r) => !!r);
+  }
   capped.forEach((item) => {
     if (typeof item.x === "number" && typeof item.y === "number") {
       const metrics = measureBox(item, page, measure, baseFont, variant === "subtitle" ? "normal" : variant);
@@ -5719,6 +6031,7 @@ function planBubbleBox(items, page, measure, style, zones) {
       const { point, score } = bestPoint(rect, item, page, margin, placed, zones);
       rect.x = point.x;
       rect.y = point.y;
+      rect.fontSize = fontSize;
       const cover = faceCoverRatio(rect, page, zones);
       if (!chosen || cover < 0.02 || score < chosen.score) {
         chosen = { rect, score };
@@ -5731,23 +6044,90 @@ function planBubbleBox(items, page, measure, style, zones) {
   });
   return placed;
 }
-function planBlend(items, page, measure, style, zones) {
-  const fontSize = blendFontSize(page);
+function planBlend(items, page, measure, style, zones, slots = [], panelPadding, casts) {
+  const baseFont = blendFontSize(page);
   const margin = Math.round(page.width * 0.02);
-  const maxW = page.width * (style === "blend-subtitle" ? 0.86 : 0.42);
-  const maxH = page.height * 0.42;
   const forceVertical = style === "blend-vertical";
   const subtitle = style === "blend-subtitle";
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((item) => item.text.trim());
+  if (slots.length && !subtitle) {
+    const pad = Math.max(3, Math.round(page.width * (panelPadding ?? 0.012)));
+    const groups = assignDialogueToSlots(capped, slots, casts);
+    const out = capped.map(() => null);
+    const placedAll = [];
+    slots.forEach((slot, si) => {
+      const inner = innerOf(slot, page, pad);
+      const placedHere = [];
+      const fontSize = Math.max(11, Math.min(baseFont, Math.round(Math.min(inner.width, inner.height) * 0.09)));
+      capped.forEach((item, idx) => {
+        if (groups[idx] !== si) return;
+        if (typeof item.x === "number" && typeof item.y === "number") return;
+        const vertical = forceVertical || item.dir === "v";
+        let rect;
+        if (vertical) {
+          const { cols, width, height } = layoutBlendV(item.text, inner.height * 0.85, fontSize);
+          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+        } else {
+          const { lines, width, height } = layoutBlendH(item.text, inner.width * 0.9, fontSize, measure);
+          if (!lines.length) return;
+          rect = { x: 0, y: 0, width, height, lines };
+        }
+        if (rect.width > inner.width || rect.height > inner.height * 0.9) return;
+        let point = { x: inner.x, y: inner.y };
+        let score = Infinity;
+        for (const candidate of candidatesInSlot(rect, inner, placedHere)) {
+          const s = scoreInSlot(rect, candidate, inner, slot, item, page, placedAll, zones);
+          if (s < score) {
+            score = s;
+            point = candidate;
+          }
+        }
+        rect.x = point.x;
+        rect.y = point.y;
+        rect.fontSize = fontSize;
+        rect.itemIndex = idx;
+        placedHere.push(rect);
+        placedAll.push(rect);
+        out[idx] = rect;
+      });
+    });
+    const pinned = capped.filter((item) => typeof item.x === "number" && typeof item.y === "number");
+    if (pinned.length) {
+      const manual = [];
+      for (const item of pinned) {
+        const vertical = forceVertical || item.dir === "v";
+        let rect;
+        if (vertical) {
+          const { cols, width, height } = layoutBlendV(item.text, page.height * 0.42, baseFont);
+          rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+        } else {
+          const { lines, width, height } = layoutBlendH(item.text, page.width * 0.42, baseFont, measure);
+          if (!lines.length) continue;
+          rect = { x: 0, y: 0, width, height, lines };
+        }
+        rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+        rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+        manual.push(rect);
+      }
+      let j = 0;
+      capped.forEach((item, idx) => {
+        if (typeof item.x === "number" && typeof item.y === "number") out[idx] = manual[j++] ?? null;
+      });
+    }
+    return out.filter((r) => !!r);
+  }
+  const maxW = page.width * (subtitle ? 0.86 : 0.42);
+  const maxH = page.height * 0.42;
   const placed = [];
   items.slice(0, PANEL_DIALOGUE_MAX).forEach((item, index2) => {
     if (!item.text.trim()) return;
     const vertical = forceVertical || !subtitle && item.dir === "v";
     let rect;
     if (vertical) {
-      const { cols, width, height } = layoutBlendV(item.text, maxH, fontSize);
+      const { cols, width, height } = layoutBlendV(item.text, maxH, baseFont);
       rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
     } else {
-      const { lines, width, height } = layoutBlendH(item.text, maxW, fontSize, measure);
+      const { lines, width, height } = layoutBlendH(item.text, maxW, baseFont, measure);
       if (!lines.length) return;
       rect = { x: 0, y: 0, width, height, lines };
     }
@@ -5757,7 +6137,7 @@ function planBlend(items, page, measure, style, zones) {
       for (let guard = 0; guard < 8; guard += 1) {
         const hit = placed.find((o) => overlapArea(rect, o) > 0);
         if (!hit) break;
-        rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.25);
+        rect.y = Math.max(margin, hit.y - rect.height - baseFont * 0.25);
       }
       placed.push(rect);
       return;
@@ -5807,22 +6187,23 @@ function drawBubbles(image, items, opts = {}) {
   const style = normalizeBubbleStyle(opts.style);
   const fontStack = BUBBLE_FONT_STACKS[normalizeBubbleFont(opts.font)];
   if (isBlendStyle(style)) {
-    drawBlend(ctx, items, fontStack, width, height, style);
+    drawBlend(ctx, items, fontStack, width, height, style, opts);
     return canvas;
   }
-  const fontSize = Math.max(15, Math.min(44, Math.round(Math.min(width, height) * 0.034)));
-  const font = (w) => `${w} ${fontSize}px ${fontStack}`;
-  ctx.font = font("400");
+  const fontSize = bubbleFontSize({ width, height });
+  ctx.font = `400 ${fontSize}px ${fontStack}`;
   const bubbles = planBubbles(items, { width, height }, (s) => ctx.measureText(s).width, opts);
-  const lineWidth = Math.max(2, Math.round(fontSize * 0.09));
-  const tailSize = fontSize * 0.5;
   const ink = boxInkFor(style);
   for (const bubble of bubbles) {
+    const fs = bubble.fontSize ?? fontSize;
+    const font = (w) => `${w} ${fs}px ${fontStack}`;
+    const lineWidth = Math.max(2, Math.round(fs * 0.09));
+    const tailSize = fs * 0.5;
     if (bubble.tail) {
       const baseY = bubble.tail === "down" ? bubble.y + bubble.height : bubble.y;
       const tipY = bubble.tail === "down" ? baseY + tailSize : baseY - tailSize;
       const towardCenter = bubble.x + bubble.width / 2 < width / 2 ? 0.72 : 0.28;
-      const baseX = bubble.x + bubble.width * towardCenter;
+      const baseX = typeof bubble.tailX === "number" ? bubble.tailX : bubble.x + bubble.width * towardCenter;
       const inner = lineWidth / 2;
       ctx.beginPath();
       ctx.moveTo(baseX - tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
@@ -5834,7 +6215,7 @@ function drawBubbles(image, items, opts = {}) {
       ctx.lineJoin = "round";
       ctx.stroke();
       ctx.fill();
-      roundRectPath(ctx, bubble, fontSize * 0.45);
+      roundRectPath(ctx, bubble, fs * 0.45);
       ctx.fillStyle = "#ffffff";
       ctx.fill();
       ctx.strokeStyle = "#1a1a1a";
@@ -5842,51 +6223,53 @@ function drawBubbles(image, items, opts = {}) {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(baseX - tailSize * 0.5, bubble.tail === "down" ? bubble.y + bubble.height - lineWidth : bubble.y, tailSize, lineWidth + 1);
     } else {
-      roundRectPath(ctx, bubble, fontSize * 0.35);
+      roundRectPath(ctx, bubble, fs * 0.35);
       ctx.fillStyle = "rgba(18,16,15,0.82)";
       ctx.fill();
       ctx.strokeStyle = "#e8e4dc";
-      ctx.lineWidth = Math.max(1.5, fontSize * 0.06);
+      ctx.lineWidth = Math.max(1.5, fs * 0.06);
       ctx.stroke();
     }
     ctx.fillStyle = ink.color;
+    ctx.font = font("400");
     if (ink.glow) {
       ctx.shadowColor = ink.glow;
-      ctx.shadowBlur = fontSize * 0.7;
+      ctx.shadowBlur = fs * 0.7;
     }
     ctx.textBaseline = "top";
     if (bubble.vertical) {
-      const step = fontSize * 1.15;
-      const colSpacing = fontSize * 0.26;
-      const colX = (ci) => bubble.x + bubble.width - fontSize * 0.7 - (ci + 1) * fontSize - ci * colSpacing;
+      const step = fs * 1.15;
+      const colSpacing = fs * 0.26;
+      const colX = (ci) => bubble.x + bubble.width - fs * 0.7 - (ci + 1) * fs - ci * colSpacing;
       const totalH = Math.min(perColOf(bubble.lines), ((_a = bubble.lines[0]) == null ? void 0 : _a.length) ?? 0) * step;
       bubble.lines.forEach((col, ci) => [...col].forEach((ch, ri) => ctx.fillText(ch, colX(ci), bubble.y + (bubble.height - totalH) / 2 + ri * step)));
     } else {
-      const textHeight = bubble.lines.length * fontSize * 1.4;
-      let cursorY = bubble.y + (bubble.height - textHeight) / 2 + fontSize * 0.08;
+      const textHeight = bubble.lines.length * fs * 1.4;
+      let cursorY = bubble.y + (bubble.height - textHeight) / 2 + fs * 0.08;
       for (const line of bubble.lines) {
-        ctx.font = font("400");
-        ctx.fillText(line, bubble.x + fontSize * 0.7, cursorY);
-        cursorY += fontSize * 1.4;
+        ctx.fillText(line, bubble.x + fs * 0.7, cursorY);
+        cursorY += fs * 1.4;
       }
     }
     ctx.shadowBlur = 0;
   }
   return canvas;
 }
-function drawBlend(ctx, items, fontStack, width, height, style) {
-  const fontSize = blendFontSize({ width, height });
-  const spacing = style === "blend-subtitle" ? fontSize * 0.1 : blendSpacing(fontSize);
+function drawBlend(ctx, items, fontStack, width, height, style, opts = {}) {
+  const baseFont = blendFontSize({ width, height });
   ctx.textBaseline = "top";
-  ctx.font = `400 ${fontSize}px ${fontStack}`;
+  ctx.font = `400 ${baseFont}px ${fontStack}`;
   ctx.lineJoin = "round";
   const measure = (s) => ctx.measureText(s).width;
-  const rects = planBubbles(items, { width, height }, measure, { style });
+  const rects = planBubbles(items, { width, height }, measure, { ...opts, style });
   const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((i) => i.text.trim());
   const needsSampling = style === "blend" || style === "blend-vertical";
   rects.forEach((rect, index2) => {
-    const item = capped[index2];
+    const item = capped[typeof rect.itemIndex === "number" ? rect.itemIndex : index2];
     if (!item) return;
+    const fontSize = rect.fontSize ?? baseFont;
+    const spacing = style === "blend-subtitle" ? fontSize * 0.1 : blendSpacing(fontSize);
+    ctx.font = `400 ${fontSize}px ${fontStack}`;
     let avg = { r: 246, g: 238, b: 236 };
     if (needsSampling) {
       try {
@@ -6053,7 +6436,10 @@ async function bakeDialogueIntoImage(input) {
   if (!items.length || !input.imagePath) return null;
   const composite = await compositeDialogue(input.imagePath, items, {
     ...input.style ? { style: input.style } : {},
-    ...input.font ? { font: input.font } : {}
+    ...input.font ? { font: input.font } : {},
+    ...input.slots && input.slots.length ? { panels: input.slots } : {},
+    ...input.noGo && input.noGo.length ? { avoid: input.noGo } : {},
+    ...input.panelCast && input.panelCast.length ? { panelCast: input.panelCast } : {}
   });
   if (!composite) return null;
   try {
@@ -7387,10 +7773,11 @@ function buildPageNl(page) {
 function collectPageDialogue(page) {
   if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
   const out = [];
-  for (const panel of page.panels ?? []) {
-    for (const item of panel.dialogue ?? []) {
+  const panels = page.panels ?? [];
+  for (let i = 0; i < panels.length; i += 1) {
+    for (const item of panels[i].dialogue ?? []) {
       if (out.length >= 4) return out;
-      out.push(item);
+      out.push(item.panel ? item : { ...item, panel: i + 1 });
     }
   }
   return out;
@@ -7852,11 +8239,19 @@ async function runComic(task, ctx, deps) {
     let imagePath = waited.entry.path;
     let bakedPath = "";
     if (showComposite && composed.dialogue.length) {
+      const panelCount = resolvePanelsPerPage(page.layout, modeSettings.comicPanelsPerPage) || page.panels.length;
+      const slots = panelSlots(page.layout, panelCount, modeSettings.comicPageType ?? "auto");
+      const noGo = layoutNoGoZones(page.layout, modeSettings.comicPageType ?? "auto");
       const baked = await bakeDialogueIntoImage({
         imagePath,
         dialogue: composed.dialogue,
         style: bubbleStyle,
-        font: bubbleFont
+        font: bubbleFont,
+        ...slots.length ? { slots } : {},
+        ...noGo.length ? { noGo } : {},
+        ...slots.length ? {
+          panelCast: page.panels.map((panel) => (panel.characters ?? []).map((c) => c.name).filter(Boolean))
+        } : {}
       });
       if (baked && await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked)) {
         bakedPath = baked;
