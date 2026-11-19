@@ -9678,15 +9678,13 @@ const LAYOUT_GAP_NOTE = {
 function panelNlBody(panel) {
   const nl = String(panel.nl ?? "").trim();
   const shot = String(panel.shot ?? "").trim();
-  const subject = String(panel.subject ?? "").trim();
   const acts = (panel.characters ?? []).map((c) => [String(c.name ?? "").trim(), String(c.act ?? "").trim()].filter(Boolean).join(" ")).filter(Boolean).join("; ");
-  const detail = subject || acts || String(panel.title ?? "").trim();
   if (nl) {
     if (shot && !nl.toLowerCase().includes(shot.toLowerCase())) return `${shot}: ${nl}`;
     return nl;
   }
-  if (!detail) return "";
-  return shot ? `${shot}: ${detail}` : detail;
+  if (acts) return shot ? `${shot}: ${acts}` : acts;
+  return shot;
 }
 function layoutNlHead(layout, count) {
   if (layout !== "regular" || count < 3) return LAYOUT_NL_HEAD[layout] ?? LAYOUT_NL_HEAD.regular;
@@ -9734,8 +9732,7 @@ function buildPageNl(page) {
   });
   parts.push(LAYOUT_GAP_NOTE[page.layout] ?? LAYOUT_GAP_NOTE.regular);
   if (!wrote) {
-    const titles = (page.panels ?? []).map((p) => p.title).filter(Boolean);
-    if (titles.length > 0) parts.push(`The panels in reading order: ${titles.join(" / ")}.`);
+    parts.push("Each panel shows a different moment of the same scene, with a different shot distance.");
   }
   return parts.join(" ");
 }

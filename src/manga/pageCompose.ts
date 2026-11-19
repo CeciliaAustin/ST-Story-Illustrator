@@ -43,24 +43,25 @@ export const LAYOUT_GAP_NOTE: Record<PanelLayout, string> = {
     'Only the small inset panels have thin black borders, and each floats on clean white space with a wide empty margin; the main illustration has no frame at all and its white margins stay completely empty.',
 };
 
-/** 单格的画面内容：模型给了 nl 就用它，没有就用 shot/subject/act 拼一句。 */
+/** 单格的画面内容：模型给了 nl 就用它，没有就用 shot + 动作拼一句。 */
 export function panelNlBody(panel: ComicPanelPlan): string {
   const nl = String(panel.nl ?? '').trim();
   const shot = String(panel.shot ?? '').trim();
-  const subject = String(panel.subject ?? '').trim();
+  // 只拼英文：nl 是直接进 NAI 的自然语言通道，中文写进去等于噪声。
+  // subject / title 是中文辅助信息（给模型自己组织 nl 用），不能进 nl。
   const acts = (panel.characters ?? [])
     .map(c => [String(c.name ?? '').trim(), String(c.act ?? '').trim()].filter(Boolean).join(' '))
     .filter(Boolean)
     .join('; ');
-  const detail = subject || acts || String(panel.title ?? '').trim();
   if (nl) {
     // 模型写的 nl 里常忘了镜头距离（写一句「两人在桌边」，两个格就长得一样）。
     // shot 是独立字段，补在最前面不会重复。
     if (shot && !nl.toLowerCase().includes(shot.toLowerCase())) return `${shot}: ${nl}`;
     return nl;
   }
-  if (!detail) return '';
-  return shot ? `${shot}: ${detail}` : detail;
+  if (acts) return shot ? `${shot}: ${acts}` : acts;
+  // 连动作都没有：至少把景别写出来，别让空格和上一格共用一套描述
+  return shot;
 }
 
 
@@ -127,8 +128,8 @@ export function buildPageNl(page: ComicPagePlan): string {
   parts.push(LAYOUT_GAP_NOTE[page.layout] ?? LAYOUT_GAP_NOTE.regular);
 
   if (!wrote) {
-    const titles = (page.panels ?? []).map(p => p.title).filter(Boolean);
-    if (titles.length > 0) parts.push(`The panels in reading order: ${titles.join(' / ')}.`);
+    // 一格都没写出内容：给一句中性的分区提示，绝不把中文标题塞进英文 nl
+    parts.push('Each panel shows a different moment of the same scene, with a different shot distance.');
   }
   return parts.join(' ');
 }

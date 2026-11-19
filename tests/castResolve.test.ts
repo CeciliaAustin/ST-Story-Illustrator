@@ -190,18 +190,20 @@ describe('panelNlBody：每格都要有可画的信息', () => {
     expect(body).toBe('close-up: Elias leans across the table, right hand raised.');
   });
 
-  it('没有 nl 时用 subject 兜底', () => {
+  it('没有 nl 时用 shot + 英文动作兜底（中文 subject 不进 nl）', () => {
     const body = panelNlBody({
-      index: 0, title: '', characters: [], mood: '', tags: '',
+      index: 0, title: '', characters: [{ name: 'Elias', act: 'holding the napkin' }], mood: '', tags: '',
       shot: 'wide shot',
       subject: '两人隔着甜点桌对坐，右侧留出空椅',
     });
-    expect(body).toContain('wide shot');
-    expect(body).toContain('两人隔着甜点桌对坐');
+    expect(body).toBe('wide shot: Elias holding the napkin');
+    expect(body).not.toContain('空椅');
   });
 
-  it('什么都没有时退回标题', () => {
-    expect(panelNlBody({ index: 0, title: '擦嘴角', characters: [], mood: '', tags: '' })).toBe('擦嘴角');
+  it('只剩景别时也要和上一格区分开', () => {
+    expect(panelNlBody({
+      index: 0, title: '', characters: [], mood: '', tags: '', shot: 'extreme close-up',
+    })).toBe('extreme close-up');
   });
 });
 
