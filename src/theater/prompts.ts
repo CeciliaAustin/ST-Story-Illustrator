@@ -12,6 +12,7 @@
 import type { StoryKind } from '../types';
 import { STATUS_MAX_PANELS } from './parseReply';
 import { renderPromptDoc, type PromptDocId, type PromptOverrideMap } from '../prompt/presets';
+import { stripMangaColorTags, MANGA_BW_POSITIVE } from './safeFilter';
 
 const BODY_LIMIT = 2400;
 const BODY_LIMIT_STORY = 3600;
@@ -111,12 +112,19 @@ export function buildStatusPrompt(appearances: string[], tags: string, chibi = t
   return [chibi ? CHIBI_STYLE_STRONG : '', looks, body, framing].filter(Boolean).join(', ');
 }
 
-/** 黑白漫出图词：正常比例，景别兜底 cowboy shot。 */
-export function buildMangaPrompt(appearances: string[], tags: string): string {
+/**
+ * 黑白漫出图词：正常比例，景别兜底 cowboy shot。
+ *
+ * `mono` 默认 true —— 黑白漫本来就该是黑白。以前黑白完全交给画师串：
+ * 提示词层还专门把模型写的 monochrome / greyscale 删掉（见 parseReply 的
+ * MANGA_STYLE_BLOCKLIST），于是方案里的画师串一偏彩色，整页就出全彩。
+ * 现在正向上锁 monochrome + greyscale，并把彩色语义词洗掉；画师串本身不动。
+ */
+export function buildMangaPrompt(appearances: string[], tags: string, mono = true): string {
   const looks = appearances.map(t => t.trim()).filter(Boolean).join(', ');
-  const body = tags.trim();
+  const body = mono ? stripMangaColorTags(tags).tags : String(tags ?? '').trim();
   const framing = body && !MANGA_FRAMING_RE.test(body) ? 'cowboy shot' : '';
-  return [looks, body, framing].filter(Boolean).join(', ');
+  return [mono ? MANGA_BW_POSITIVE : '', looks, body, framing].filter(Boolean).join(', ');
 }
 
 /**
@@ -133,14 +141,29 @@ export function buildMangaNl(nl: string): string {
   return `One single comic panel filling the whole frame, no panel borders. ${text}`;
 }
 
-/** 按 kind 分派出图 prompt。 */
+/**
+ * 给「已经存下来的旧出图词」补上黑白锁。
+ *
+ * 卡片里存的是当时真正发出去的正向词。黑白锁定上线前生成的卡片没有
+ * monochrome/greyscale，直接 ↻ 重画仍然是彩色。这里只在缺失时补一次，
+ * 已经写过的不重复加（权重会翻倍，画面会糊成灰块）。
+ */
+export function withMangaMono(prompt: string): string {
+  const text = String(prompt ?? '').trim();
+  if (!text) return text;
+  if (/\b(?:monochrome|greyscale|grayscale)\b/i.test(text)) return text;
+  return `${MANGA_BW_POSITIVE}, ${text}`;
+}
+
+/** 按 kind 分派出图 prompt。`mono` 只对黑白漫生效（关掉 = 回到旧行为）。 */
 export function buildTheaterImagePrompt(
   kind: StoryKind,
   appearances: string[],
   tags: string,
   chibi: boolean,
+  mono = true,
 ): string {
   return kind === 'manga'
-    ? buildMangaPrompt(appearances, tags)
+    ? buildMangaPrompt(appearances, tags, mono)
     : buildStatusPrompt(appearances, tags, chibi);
 }

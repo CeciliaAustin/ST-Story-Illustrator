@@ -546,6 +546,7 @@ function defaultModeSettings(mode) {
       return {
         ...base,
         bwMangaSafeMode: true,
+        bwMangaMono: true,
         bwMangaArtistId: "",
         bwMangaDialogue: true,
         bwMangaBubbleStyle: "classic"
@@ -3295,7 +3296,7 @@ function renderTheaterSettings() {
   ));
   b.appendChild(planSelectRow("chibi-bonus"));
   group.appendChild(b);
-  const c = section("③ 黑白漫小剧场", "正常比例、黑白画风；画风由出图方案里的画师串决定。");
+  const c = section("③ 黑白漫小剧场", "正常比例；黑白由「黑白锁定」与出图方案里的画师串共同决定。");
   c.appendChild(selectRow(
     "每条格数",
     String((manga == null ? void 0 : manga.shots) ?? 1),
@@ -3306,13 +3307,21 @@ function renderTheaterSettings() {
     })
   ));
   c.appendChild(toggleRow(
-    "安全洗（去掉写实/彩色相关词）",
+    "黑白锁定（正向 monochrome / greyscale）",
+    (manga == null ? void 0 : manga.bwMangaMono) !== false,
+    (v) => patchSettings((st) => {
+      st.modes["bw-manga"].bwMangaMono = v;
+    }),
+    "正向上锁黑白、洗掉提示词里的彩色语义词（colorful / vivid / full color），负面再压 color 一类词。不动你的画师串。关掉 = 完全交给画师串。"
+  ));
+  c.appendChild(toggleRow(
+    "安全模式（避开露点/性描写）",
     (manga == null ? void 0 : manga.bwMangaSafeMode) !== false,
     (v) => patchSettings((st) => {
       st.modes["bw-manga"].bwMangaSafeMode = v;
       st.mangaSafe = v;
     }),
-    "只改负面词与冲突词，不改你的画师串。"
+    "只洗露点/性描写相关的 tag 与动作，并补一串 nsfw 负面词；不管黑白，也不动你的画师串。"
   ));
   c.appendChild(planSelectRow("bw-manga"));
   c.appendChild(toggleRow(
@@ -4945,6 +4954,140 @@ function clampMangaShots(raw) {
   const value = Math.round(Number(raw) || 1);
   return Math.min(Math.max(value, 1), STATUS_MAX_PANELS);
 }
+const MANGA_SAFE_NEGATIVE = "nsfw, nude, naked, completely nude, topless, bottomless, nipples, areolae, underwear, panties, lingerie, braless, see-through, cleavage, underboob, sideboob, pussy, penis, genitals, anus, buttocks, sex, intercourse, fellatio, cunnilingus, paizuri, handjob, masturbation, cum, semen, creampie, ahegao, spread legs";
+const UNSAFE_RE = new RegExp(
+  `\\b(?:${[
+    "nsfw",
+    "nudes?",
+    "naked",
+    "topless",
+    "bottomless",
+    "nipples?",
+    "areolae?",
+    "underwear",
+    "panties?",
+    "lingerie",
+    "braless",
+    "see[ -]through",
+    "cleavage",
+    "underboob",
+    "sideboob",
+    "downblouse",
+    "upskirt",
+    "pussy",
+    "penis",
+    "genitals?",
+    "anus",
+    "buttocks?",
+    "ass",
+    "groin",
+    "breasts?",
+    "sex",
+    "sexual",
+    "intercourse",
+    "fellatio",
+    "cunnilingus",
+    "paizuri",
+    "handjob",
+    "masturbation",
+    "orgasm",
+    "ejaculat\\w*",
+    "cum",
+    "semen",
+    "creampie",
+    "ahegao",
+    "spread legs",
+    "exposed breasts?"
+  ].join("|")})\\b`,
+  "i"
+);
+const MANGA_BW_POSITIVE = "monochrome, greyscale";
+const MANGA_BW_NEGATIVE = "color, colorful, full color, vivid colors, saturated, chromatic, rainbow, multicolored";
+const COLOR_STYLE_RE = new RegExp(
+  `\\b(?:${[
+    "colorful",
+    "colou?red",
+    "full[ -]?color",
+    "multi[ -]?colou?red",
+    "technicolou?r",
+    "vivid",
+    "vibrant",
+    "saturated",
+    "saturation",
+    "chromatic",
+    "rainbow",
+    "pastel colors?",
+    "neon colors?",
+    "colou?r palette",
+    "colou?r scheme"
+  ].join("|")})\\b`,
+  "i"
+);
+function stripMangaColorTags(tags) {
+  const hits = [];
+  const kept = String(tags ?? "").split(/[,，]/).map((p) => p.trim()).filter(Boolean).filter((part) => {
+    if (!COLOR_STYLE_RE.test(part)) return true;
+    hits.push(part);
+    return false;
+  });
+  return { tags: kept.join(", "), hits };
+}
+function mergeNegative(...parts) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const part of parts) {
+    for (const piece of String(part ?? "").split(/[,，]/)) {
+      const tag = piece.trim();
+      if (!tag) continue;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(tag);
+    }
+  }
+  return out.join(", ");
+}
+function stripMangaUnsafeTags(tags) {
+  const hits = [];
+  const kept = String(tags ?? "").split(/[,，]/).map((p) => p.trim()).filter(Boolean).filter((part) => {
+    if (!UNSAFE_RE.test(part)) return true;
+    hits.push(part);
+    return false;
+  });
+  return { tags: kept.join(", "), hits };
+}
+function scrubMangaReading(reading) {
+  const hits = [];
+  const scrubFrame = (frame) => {
+    const tags = stripMangaUnsafeTags(frame.tags);
+    hits.push(...tags.hits);
+    const roles = frame.roles.map((role) => {
+      if (!role.act || !UNSAFE_RE.test(role.act)) return role;
+      hits.push(`${role.name} 的动作描写`);
+      return { ...role, act: "" };
+    });
+    let nl = frame.nl;
+    if (nl && UNSAFE_RE.test(nl)) {
+      hits.push(`${frame.title || "一格"} 的自然语言描述`);
+      nl = "";
+    }
+    return { ...frame, tags: tags.tags, roles, nl };
+  };
+  const panels = reading.panels.map(scrubFrame).filter((f) => !!f.tags);
+  const outfits = (reading.outfits ?? []).filter((item) => {
+    if (!UNSAFE_RE.test(item.outfit)) return true;
+    hits.push(`${item.name} 的服装描写`);
+    return false;
+  });
+  const kept = { ...reading };
+  if (outfits.length) kept.outfits = outfits;
+  else delete kept.outfits;
+  const head = panels[0];
+  if (!head) {
+    return { reading: { ...kept, panels, tags: "", roles: [], characters: [], nl: "" }, hits };
+  }
+  return { reading: { ...kept, ...head, title: reading.title, panels }, hits };
+}
 const BODY_LIMIT = 2400;
 const BODY_LIMIT_STORY = 3600;
 const FRAMING_RE = /\b(?:upper body|cowboy shot|close[- ]?up|portrait|headshot)\b/i;
@@ -5009,107 +5152,25 @@ function buildStatusPrompt(appearances, tags, chibi = true) {
   const framing = body && !FRAMING_RE.test(body) ? "upper body" : "";
   return [chibi ? CHIBI_STYLE_STRONG : "", looks, body, framing].filter(Boolean).join(", ");
 }
-function buildMangaPrompt(appearances, tags) {
+function buildMangaPrompt(appearances, tags, mono = true) {
   const looks = appearances.map((t) => t.trim()).filter(Boolean).join(", ");
-  const body = tags.trim();
+  const body = mono ? stripMangaColorTags(tags).tags : String(tags ?? "").trim();
   const framing = body && !MANGA_FRAMING_RE.test(body) ? "cowboy shot" : "";
-  return [looks, body, framing].filter(Boolean).join(", ");
+  return [mono ? MANGA_BW_POSITIVE : "", looks, body, framing].filter(Boolean).join(", ");
 }
 function buildMangaNl(nl) {
   const text = String(nl ?? "").trim();
   if (!text) return "";
   return `One single comic panel filling the whole frame, no panel borders. ${text}`;
 }
-function buildTheaterImagePrompt(kind, appearances, tags, chibi) {
-  return kind === "manga" ? buildMangaPrompt(appearances, tags) : buildStatusPrompt(appearances, tags, chibi);
+function withMangaMono(prompt) {
+  const text = String(prompt ?? "").trim();
+  if (!text) return text;
+  if (/\b(?:monochrome|greyscale|grayscale)\b/i.test(text)) return text;
+  return `${MANGA_BW_POSITIVE}, ${text}`;
 }
-const MANGA_SAFE_NEGATIVE = "nsfw, nude, naked, completely nude, topless, bottomless, nipples, areolae, underwear, panties, lingerie, braless, see-through, cleavage, underboob, sideboob, pussy, penis, genitals, anus, buttocks, sex, intercourse, fellatio, cunnilingus, paizuri, handjob, masturbation, cum, semen, creampie, ahegao, spread legs";
-const UNSAFE_RE = new RegExp(
-  `\\b(?:${[
-    "nsfw",
-    "nudes?",
-    "naked",
-    "topless",
-    "bottomless",
-    "nipples?",
-    "areolae?",
-    "underwear",
-    "panties?",
-    "lingerie",
-    "braless",
-    "see[ -]through",
-    "cleavage",
-    "underboob",
-    "sideboob",
-    "downblouse",
-    "upskirt",
-    "pussy",
-    "penis",
-    "genitals?",
-    "anus",
-    "buttocks?",
-    "ass",
-    "groin",
-    "breasts?",
-    "sex",
-    "sexual",
-    "intercourse",
-    "fellatio",
-    "cunnilingus",
-    "paizuri",
-    "handjob",
-    "masturbation",
-    "orgasm",
-    "ejaculat\\w*",
-    "cum",
-    "semen",
-    "creampie",
-    "ahegao",
-    "spread legs",
-    "exposed breasts?"
-  ].join("|")})\\b`,
-  "i"
-);
-function stripMangaUnsafeTags(tags) {
-  const hits = [];
-  const kept = String(tags ?? "").split(/[,，]/).map((p) => p.trim()).filter(Boolean).filter((part) => {
-    if (!UNSAFE_RE.test(part)) return true;
-    hits.push(part);
-    return false;
-  });
-  return { tags: kept.join(", "), hits };
-}
-function scrubMangaReading(reading) {
-  const hits = [];
-  const scrubFrame = (frame) => {
-    const tags = stripMangaUnsafeTags(frame.tags);
-    hits.push(...tags.hits);
-    const roles = frame.roles.map((role) => {
-      if (!role.act || !UNSAFE_RE.test(role.act)) return role;
-      hits.push(`${role.name} 的动作描写`);
-      return { ...role, act: "" };
-    });
-    let nl = frame.nl;
-    if (nl && UNSAFE_RE.test(nl)) {
-      hits.push(`${frame.title || "一格"} 的自然语言描述`);
-      nl = "";
-    }
-    return { ...frame, tags: tags.tags, roles, nl };
-  };
-  const panels = reading.panels.map(scrubFrame).filter((f) => !!f.tags);
-  const outfits = (reading.outfits ?? []).filter((item) => {
-    if (!UNSAFE_RE.test(item.outfit)) return true;
-    hits.push(`${item.name} 的服装描写`);
-    return false;
-  });
-  const kept = { ...reading };
-  if (outfits.length) kept.outfits = outfits;
-  else delete kept.outfits;
-  const head = panels[0];
-  if (!head) {
-    return { reading: { ...kept, panels, tags: "", roles: [], characters: [], nl: "" }, hits };
-  }
-  return { reading: { ...kept, ...head, title: reading.title, panels }, hits };
+function buildTheaterImagePrompt(kind, appearances, tags, chibi, mono = true) {
+  return kind === "manga" ? buildMangaPrompt(appearances, tags, mono) : buildStatusPrompt(appearances, tags, chibi);
 }
 function statusSeedFor(name) {
   const text = (Array.isArray(name) ? name : [name]).map((s) => String(s ?? "").trim()).filter(Boolean).join("|");
@@ -5365,10 +5426,15 @@ async function runTheaterOne(input) {
         input.kind,
         appearances,
         baseTags,
-        input.chibi
+        input.chibi,
+        input.mangaBw !== false
       );
       const nl = input.kind === "manga" ? buildMangaNl(panel.nl) : panel.nl;
-      const negative = input.kind === "manga" && input.mangaSafe ? MANGA_SAFE_NEGATIVE : void 0;
+      const negativeText = input.kind === "manga" ? mergeNegative(
+        input.mangaBw !== false ? MANGA_BW_NEGATIVE : "",
+        input.mangaSafe ? MANGA_SAFE_NEGATIVE : ""
+      ) : "";
+      const negative = negativeText || void 0;
       const seed = decideSeed(input.backend, void 0, fixedSeed);
       const result = await input.generate(
         {
@@ -6569,6 +6635,7 @@ async function runTheaterTask(input) {
     shots: modeSettings.shots,
     chibi: kind !== "manga" && modeSettings.chibiStyle !== "thumb",
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
+    mangaBw: modeSettings.bwMangaMono !== false,
     dialogue: kind === "manga" && modeSettings.bwMangaDialogue !== false,
     roster: characters.characters.map((c) => c.name),
     ...libraryBlock ? { libraryBlock } : {},
@@ -6664,11 +6731,15 @@ async function rerollPanel(floor, kind, setId, index2, edit) {
   const set = getSets(floor, kind).find((s) => s.setId === setId);
   const panel = set == null ? void 0 : set.panels.find((p) => p.index === index2);
   if (!panel) return { ok: false, message: "找不到这一格。" };
-  const promptText = ((edit == null ? void 0 : edit.prompt) ?? panel.prompt ?? "").trim();
-  if (!promptText) {
+  if (!((edit == null ? void 0 : edit.prompt) ?? panel.prompt ?? "").trim()) {
     return { ok: false, message: "这一格没存下当时的出图词，请用「整条重出」。" };
   }
   const mode = modeOfKind(kind);
+  const mono = kind === "manga" && resolveModeSettings(settings2, "bw-manga").bwMangaMono !== false;
+  const rawPrompt = ((edit == null ? void 0 : edit.prompt) ?? panel.prompt ?? "").trim();
+  const promptText = mono ? withMangaMono(rawPrompt) : rawPrompt;
+  const negativeText = kind === "manga" ? mergeNegative(mono ? MANGA_BW_NEGATIVE : "", panel.negative) : panel.negative ?? "";
+  const negative = negativeText || void 0;
   acquirePlanGuard();
   const rawNl = edit ? edit.nl : panel.story ?? "";
   const seed = randomSeed();
@@ -6680,7 +6751,7 @@ async function rerollPanel(floor, kind, setId, index2, edit) {
       {
         prompt: promptText,
         ...nl ? { nl } : {},
-        ...panel.negative ? { negative: panel.negative } : {},
+        ...negative ? { negative } : {},
         // 外貌不再拼在 prompt 里，重画时必须把当时那几个人一起带上，
         // 否则重画出来的脸会换人（用户看到的就是「重画一次变了个角色」）。
         ...((_a = panel.characters) == null ? void 0 : _a.length) ? { characters: panel.characters } : {},
@@ -6699,7 +6770,7 @@ async function rerollPanel(floor, kind, setId, index2, edit) {
       plan: readOutConfig().activePlanName,
       prompt: promptText,
       ...nl ? { nl } : {},
-      ...panel.negative ? { negative: panel.negative } : {},
+      ...negative ? { negative } : {},
       ...((_b = panel.characters) == null ? void 0 : _b.length) ? { characters: panel.characters } : {},
       size: "portrait",
       ...typeof result.seed === "number" ? { seed: result.seed } : { seed },

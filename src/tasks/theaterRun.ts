@@ -221,6 +221,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     shots: modeSettings.shots,
     chibi: kind !== 'manga' && modeSettings.chibiStyle !== 'thumb',
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
+    mangaBw: modeSettings.bwMangaMono !== false,
     dialogue: kind === 'manga' && modeSettings.bwMangaDialogue !== false,
     roster: characters.characters.map(c => c.name),
     ...(libraryBlock ? { libraryBlock } : {}),

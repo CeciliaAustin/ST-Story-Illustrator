@@ -552,7 +552,7 @@ function renderTheaterSettings(): HTMLElement {
   group.appendChild(b);
 
   // ③ 黑白漫
-  const c = section('③ 黑白漫小剧场', '正常比例、黑白画风；画风由出图方案里的画师串决定。');
+  const c = section('③ 黑白漫小剧场', '正常比例；黑白由「黑白锁定」与出图方案里的画师串共同决定。');
   c.appendChild(selectRow(
     '每条格数',
     String(manga?.shots ?? 1),
@@ -560,10 +560,17 @@ function renderTheaterSettings(): HTMLElement {
     v => patchSettings(st => { st.modes['bw-manga'].shots = Number(v); st.mangaShots = Number(v); }),
   ));
   c.appendChild(toggleRow(
-    '安全洗（去掉写实/彩色相关词）',
+    '黑白锁定（正向 monochrome / greyscale）',
+    manga?.bwMangaMono !== false,
+    v => patchSettings(st => { st.modes['bw-manga'].bwMangaMono = v; }),
+    '正向上锁黑白、洗掉提示词里的彩色语义词（colorful / vivid / full color），'
+    + '负面再压 color 一类词。不动你的画师串。关掉 = 完全交给画师串。',
+  ));
+  c.appendChild(toggleRow(
+    '安全模式（避开露点/性描写）',
     manga?.bwMangaSafeMode !== false,
     v => patchSettings(st => { st.modes['bw-manga'].bwMangaSafeMode = v; st.mangaSafe = v; }),
-    '只改负面词与冲突词，不改你的画师串。',
+    '只洗露点/性描写相关的 tag 与动作，并补一串 nsfw 负面词；不管黑白，也不动你的画师串。',
   ));
   c.appendChild(planSelectRow('bw-manga'));
   c.appendChild(toggleRow(

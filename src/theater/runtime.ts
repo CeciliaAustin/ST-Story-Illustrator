@@ -11,7 +11,7 @@ import type { StoryKind, StatusReading, StatusFrame, BbiStatusInfo, VisualProfil
 import { buildTheaterPrompt, buildTheaterImagePrompt, buildMangaNl } from './prompts';
 import type { PromptOverrideMap } from '../prompt/presets';
 import { parseStatusReply, clampMangaShots } from './parseReply';
-import { scrubMangaReading, MANGA_SAFE_NEGATIVE } from './safeFilter';
+import { scrubMangaReading, MANGA_SAFE_NEGATIVE, MANGA_BW_NEGATIVE, mergeNegative } from './safeFilter';
 import { statusSeedFor, decideSeed } from './seed';
 import { speakersOf } from './store';
 import { normalizeName } from './library';
@@ -71,6 +71,11 @@ export interface RunOneInput {
   shots: number;
   chibi: boolean;
   mangaSafe: boolean;
+  /**
+   * 黑白锁定（默认 true）：正向上锁 monochrome + greyscale、洗彩色语义词，
+   * 负面补 color 一类词。与 mangaSafe 正交——safe 管 NSFW，这个管彩色。
+   */
+  mangaBw?: boolean;
   /** 黑白漫：要不要台词（要了才在 system 里问模型，并叠气泡） */
   dialogue?: boolean;
   /**
@@ -341,11 +346,20 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
         appearances,
         baseTags,
         input.chibi,
+        input.mangaBw !== false,
       );
       // nl 以前**整段丢掉**了：模型写的那句「谁在哪里做了什么」只有 nl 里有，
       // 而柏宝绘的公开接口本来支持 nl 通道。不带它，画面只能靠十几个 tag 猜。
       const nl = input.kind === 'manga' ? buildMangaNl(panel.nl) : panel.nl;
-      const negative = input.kind === 'manga' && input.mangaSafe ? MANGA_SAFE_NEGATIVE : undefined;
+      // 负面词两路合并：黑白（压彩色）+ 安全（压 NSFW）。两者互不替代——
+      // 只写 color 不会让画面变黑白，只写 nsfw 更不会；以前两者混在一个开关里。
+      const negativeText = input.kind === 'manga'
+        ? mergeNegative(
+            input.mangaBw !== false ? MANGA_BW_NEGATIVE : '',
+            input.mangaSafe ? MANGA_SAFE_NEGATIVE : '',
+          )
+        : '';
+      const negative = negativeText || undefined;
       const seed = decideSeed(input.backend, undefined, fixedSeed);
       const result = await input.generate(
         {

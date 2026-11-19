@@ -8,7 +8,7 @@
  */
 
 import type { BbiStatusInfo, StoryKind } from '../types';
-import { DEFAULT_SETTINGS } from '../types';
+import { DEFAULT_SETTINGS, resolveModeSettings } from '../types';
 import { getCurrentChatId, getSettings, getSwipeId, saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from '../tasks/modePlan';
@@ -16,7 +16,8 @@ import { bakeTheaterLines, fallbackProfile, modeOfKind, pickProfile, runTheaterT
 import { getSets, replaceSet, updatePanel } from './store';
 import { recordImageLog } from '../log/imageLog';
 import { readOutConfig } from '../baibai/planConfig';
-import { buildMangaNl } from './prompts';
+import { buildMangaNl, withMangaMono } from './prompts';
+import { MANGA_BW_NEGATIVE, mergeNegative } from './safeFilter';
 
 export interface RerollResult {
   ok: boolean;
@@ -45,12 +46,22 @@ export async function rerollPanel(
   const set = getSets(floor, kind).find(s => s.setId === setId);
   const panel = set?.panels.find(p => p.index === index);
   if (!panel) return { ok: false, message: '找不到这一格。' };
-  const promptText = (edit?.prompt ?? panel.prompt ?? '').trim();
-  if (!promptText) {
+  if (!(edit?.prompt ?? panel.prompt ?? '').trim()) {
     return { ok: false, message: '这一格没存下当时的出图词，请用「整条重出」。' };
   }
 
   const mode = modeOfKind(kind);
+  // 黑白锁定上线前生成的卡片，存下来的正向词里没有 monochrome → 直接 ↻ 还是彩色。
+  // 这里补上（已有就不重复加）。用户关掉黑白锁定时不动。
+  const mono = kind === 'manga'
+    && resolveModeSettings(settings, 'bw-manga').bwMangaMono !== false;
+  const rawPrompt = (edit?.prompt ?? panel.prompt ?? '').trim();
+  const promptText = mono ? withMangaMono(rawPrompt) : rawPrompt;
+  // 负面同理：老卡片只有 nsfw 那串，补上压彩色的部分（去重合并）
+  const negativeText = kind === 'manga'
+    ? mergeNegative(mono ? MANGA_BW_NEGATIVE : '', panel.negative)
+    : (panel.negative ?? '');
+  const negative = negativeText || undefined;
   // 重画也可能插在队列任务中间跑：先占位，最后一个交还的负责把方案还原
   acquirePlanGuard();
 
@@ -66,7 +77,7 @@ export async function rerollPanel(
       {
         prompt: promptText,
         ...(nl ? { nl } : {}),
-        ...(panel.negative ? { negative: panel.negative } : {}),
+        ...(negative ? { negative } : {}),
         // 外貌不再拼在 prompt 里，重画时必须把当时那几个人一起带上，
         // 否则重画出来的脸会换人（用户看到的就是「重画一次变了个角色」）。
         ...(panel.characters?.length ? { characters: panel.characters } : {}),
@@ -84,7 +95,7 @@ export async function rerollPanel(
       plan: readOutConfig().activePlanName,
       prompt: promptText,
       ...(nl ? { nl } : {}),
-      ...(panel.negative ? { negative: panel.negative } : {}),
+      ...(negative ? { negative } : {}),
       ...(panel.characters?.length ? { characters: panel.characters } : {}),
       size: 'portrait',
       ...(typeof result.seed === 'number' ? { seed: result.seed } : { seed }),

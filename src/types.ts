@@ -633,6 +633,11 @@ export interface ModeSettings {
   chibiStyle?: 'card' | 'thumb';
   chibiBonusChance?: number;
   bwMangaSafeMode?: boolean;
+  /**
+   * 黑白锁定：正向上锁 monochrome/greyscale + 洗彩色语义词，负面补 color。
+   * 与 bwMangaSafeMode 正交（那个只管 NSFW）。默认 true。
+   */
+  bwMangaMono?: boolean;
   bwMangaArtistId?: string;
   /** 黑白漫是否带对白气泡（文档原设计没有台词，这里做成可关的加分项） */
   bwMangaDialogue?: boolean;
@@ -727,7 +732,7 @@ function defaultModeSettings(mode: CreationMode): ModeSettings {
     case 'chibi-bonus':
       return { ...base, chibiBonusChance: 25 };
     case 'bw-manga':
-      return { ...base, bwMangaSafeMode: true, bwMangaArtistId: '',
+      return { ...base, bwMangaSafeMode: true, bwMangaMono: true, bwMangaArtistId: '',
         bwMangaDialogue: true, bwMangaBubbleStyle: 'classic' };
     default:
       return base;
