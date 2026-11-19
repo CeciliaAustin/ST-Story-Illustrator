@@ -29,6 +29,7 @@ const COMMON_RULES = [
   'characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other\'s sleeve, leaning against the door, holding a broken cup）。',
   '只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。',
   'characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。',
+  'characters[].name **必须照抄【角色固定外貌库】里的名字**。正文里用「你」「他」「那个金发男生」或另一个叫法时，先判断指的是库里哪一位，再写库里的名字——名字写错就等于这个人没有外貌，会被画成路人。',
   'nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。',
   // 这一条是照柏宝绘自己的规范写的：它要求模型补全「怎么拍」（景别/光线/色调），
   // 因为正文是散文，从来不会写机位。我们之前反过来禁止模型写景别与光线，
@@ -131,6 +132,10 @@ export interface TheaterPromptInput {
    * 名字对不上角色库，出图时就取不到那个人的外貌 tag（这是「人物不像」的常见来源）。
    */
   roster?: string[];
+  /** 角色固定外貌库全文（见 theater/library.ts）；有它时模型能看见发色瞳色，不再靠猜。 */
+  libraryBlock?: string;
+  /** 「谁是谁」：用户扮演谁、角色卡是谁（正文里的「你」才不会丢）。 */
+  castBlock?: string;
 }
 
 /** 构建读剧情的 system + user 文本（合成一条给 generateQuietPrompt）。 */
@@ -163,8 +168,13 @@ export function buildTheaterPrompt(input: TheaterPromptInput): { system: string;
     ? `可用角色（柏宝绘角色库；characters[].name 必须照抄其中一项，不要自己造人）：${roster.join('、')}\n`
     : '';
 
+  // 角色库与「谁是谁」放进 system：它们是规则与参照，不是剧情正文。
+  // 以前只给名字名单，模型看不到发色瞳色 → 名字对不上时它干脆自己编一个人，
+  // 用户看到的就是「这人是谁」。柏宝绘自己的做法就是把整份库发进去照抄。
+  const reference = [input.castBlock, input.libraryBlock].filter(Boolean).join('\n\n');
+
   return {
-    system,
+    system: reference ? `${system}\n\n${reference}` : system,
     user: `${rosterLine}角色：${name}\n${bodyLabel}\n${body}`,
   };
 }

@@ -509,12 +509,10 @@ function renderModeSelector(): HTMLElement {
     cb.addEventListener('change', () => {
       if (cb.checked) selectedModes.add(mode);
       else selectedModes.delete(mode);
-      // 至少保留一个
-      if (selectedModes.size === 0) {
-        selectedModes.add('illustration');
-        cb.checked = false;
-      }
       item.classList.toggle('active', selectedModes.has(mode));
+      // 点完就取消焦点：主题把 :focus 画成主题色描边（很多主题是粉红），
+      // 焦点留在框上看着就像「还勾着」，用户会以为没取消。
+      cb.blur();
       // 只需更新按钮状态，不重绘整个面板（避免丢失编辑中的文本）
       updateConfirmButton();
     });
@@ -534,6 +532,14 @@ function renderModeSelector(): HTMLElement {
     modeList.appendChild(item);
   }
   container.appendChild(modeList);
+
+  const hint = document.createElement('div');
+  hint.className = 'sti-mode-hint';
+  hint.id = 'sti-mode-hint';
+  hint.textContent = '至少选一个创作模式才能生成。';
+  hint.style.display = selectedModes.size === 0 ? '' : 'none';
+  container.appendChild(hint);
+
   return container;
 }
 
@@ -833,8 +839,17 @@ function renderActions(): HTMLElement {
 }
 
 function updateConfirmButton(): void {
-  const btn = document.getElementById('sti-confirm-btn');
-  if (btn) btn.textContent = `确认选段 · 生成 ${selectedModes.size} 份`;
+  const btn = document.getElementById('sti-confirm-btn') as HTMLButtonElement | null;
+  if (btn) {
+    btn.textContent = selectedModes.size > 0
+      ? `确认选段 · 生成 ${selectedModes.size} 份`
+      : '请至少选一个创作模式';
+    // 一个都没选时直接禁用：以前会偷偷把「正文插画」塞回去，
+    // 结果是行还高亮着（主题色边框，看着像勾着）却没真选中。
+    btn.disabled = !currentSegment || selectedModes.size === 0;
+  }
+  const hint = document.getElementById('sti-mode-hint');
+  if (hint) hint.style.display = selectedModes.size === 0 ? '' : 'none';
 }
 
 // ============================================================

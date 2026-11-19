@@ -19,7 +19,8 @@ import { getCharacters } from '../baibai/bridge';
 import { baiBaiAdapter, readBackendState } from '../baibai/imageAdapter';
 import { makeModeLlmCaller } from '../manga/planGenerator';
 import { runTheaterOne, type LookReader } from '../theater/runtime';
-import { recordImageLog, recordLlmError } from '../log/imageLog';
+import { buildCastBlock, buildLibraryBlock, readCastContext } from '../theater/library';
+import { recordImageLog, recordLlmError, recordNotice } from '../log/imageLog';
 import { bakeDialogueIntoImage } from '../manga/bubbleBake';
 import type { StatusLine } from '../types';
 import { ensureModeOutPlan } from './modePlan';
@@ -95,8 +96,10 @@ function normalizeName(name: string): string {
  */
 export function makeLookReader(
   characters: BaiBaiCharacter[],
-  primaryName = '',
+  primary: string | { cardName?: string; personaName?: string } = '',
 ): LookReader {
+  const cardName = typeof primary === 'string' ? primary : primary.cardName ?? '';
+  const personaName = typeof primary === 'string' ? '' : primary.personaName ?? '';
   const byNorm = new Map<string, BaiBaiCharacter>();
   for (const c of characters) {
     byNorm.set(normalizeName(c.name), c);
@@ -105,22 +108,45 @@ export function makeLookReader(
     const base = normalizeName(String(c.name ?? '').split(/[（(【\[]/)[0]);
     if (base && !byNorm.has(base)) byNorm.set(base, c);
   }
-  const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : undefined;
+  const card = cardName ? byNorm.get(normalizeName(cardName)) : undefined;
+  const persona = personaName ? byNorm.get(normalizeName(personaName)) : undefined;
   const onlyOne = characters.length === 1 ? characters[0] : undefined;
-  const pronoun = /^(他|她|它|他们|她们|你|我|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|you|i|the man|the woman)$/i;
+  // 「你/我」= 用户扮演的那个人；「他/她」= 角色卡那一方。两者不能混：
+  // 以前统一落到主角，用户说「你」时反而拿到了对方的金发外貌。
+  const userWord = /^(你|我|你们|我们|you|i|me|us)$/i;
+  const otherWord = /^(他|她|它|他们|她们|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|the man|the woman)$/i;
 
-  return names =>
-    names.map(name => {
+  return names => {
+    const out = names.map(name => {
       const key = normalizeName(name);
       const base = normalizeName(String(name ?? '').split(/[（(【\[]/)[0]);
       const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : undefined);
       if (hit) return { name, tag: hit.tag, ...(hit.nl ? { nl: hit.nl } : {}) };
-      // 代词 + 库里只有一个人 → 只能是这个人，兜底安全
-      const fallback = pronoun.test(String(name ?? '').trim()) ? (onlyOne ?? primary) : undefined;
+      const word = String(name ?? '').trim();
+      const fallback = userWord.test(word)
+        ? (persona ?? onlyOne)
+        : otherWord.test(word)
+          ? (card ?? onlyOne)
+          : undefined;
       return fallback
         ? { name, tag: fallback.tag, ...(fallback.nl ? { nl: fallback.nl } : {}) }
         : { name, tag: '' };
     });
+
+    // 一对一补位：一格里只有一个名字对不上、而库里正好只剩一条没被用掉，
+    // 那它只能是这个人（例如正文叫 Cecilia、库里叫 Sissy）。
+    // 只在「唯一解」时才补——两个都对不上就宁可不补，免得把两张脸画反。
+    const unresolved = out.filter(item => !item.tag);
+    if (unresolved.length === 1) {
+      const usedNames = new Set(out.filter(item => item.tag).map(item => item.name));
+      const free = characters.filter(entry => !usedNames.has(entry.name));
+      if (free.length === 1 && free[0].tag) {
+        unresolved[0].tag = free[0].tag;
+        if (free[0].nl) unresolved[0].nl = free[0].nl;
+      }
+    }
+    return out;
+  };
 }
 
 export interface TheaterTaskInput {
@@ -155,6 +181,25 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
   const backendState = await readBackendState().catch(() => null);
   const supportsCharacters = backendState?.supportsCharacters !== false;
 
+  // 柏宝绘自己读剧情时，会把整份角色库（发色/瞳色/体型/固定着装）与人设一起发进去，
+  // 让模型照抄——不是靠名字查表。我们照同一套做：名字与外貌都从这份文本里来，
+  // 「正文叫她 Cecilia、库里叫 Sissy」这类差异才可能被模型自己接上。
+  const cast = readCastContext(input.characterName);
+  const libraryBlock = buildLibraryBlock(characters.characters);
+  const castBlock = buildCastBlock(cast);
+
+  // 空库不是「小事」：读剧情时模型没有任何外貌可抄，出图只能自己编一个人，
+  // 用户看到的就是「这人是谁」。必须明说，别让它看起来像随机的 bug。
+  if (!libraryBlock) {
+    recordNotice({
+      mode,
+      floor,
+      text: '柏宝绘角色库是空的（或这一楼之前还没有档案）：这次出图没有任何外貌可抄，'
+        + '画出来的人不会是故事里的角色。请到柏宝绘 →「角色」里确认条目存在，'
+        + '或先用它的自动打标跑一楼建档。',
+    });
+  }
+
   const result = await runTheaterOne({
     kind,
     chatId: input.chatId,
@@ -167,6 +212,8 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     dialogue: kind === 'manga' && modeSettings.bwMangaDialogue !== false,
     roster: characters.characters.map(c => c.name),
+    ...(libraryBlock ? { libraryBlock } : {}),
+    ...(castBlock ? { castBlock } : {}),
     supportsCharacters,
     backend: 'nai',
     ...(profile ? { profile } : {}),
@@ -229,7 +276,10 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
         throw err;
       }
     },
-    readLooks: makeLookReader(characters.characters, input.characterName),
+    readLooks: makeLookReader(characters.characters, {
+      cardName: input.characterName,
+      personaName: cast.personaName,
+    }),
   });
 
   return {

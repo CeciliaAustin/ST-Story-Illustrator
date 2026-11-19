@@ -74,6 +74,10 @@ export interface RunOneInput {
    * 否则模型会写「Elias（他）」这类变体，出图时匹配不上角色库 → 没有外貌 tag。
    */
   roster?: string[];
+  /** 角色固定外貌库全文（发色/瞳色/体型…），柏宝绘自己出图时也是把它发进 prompt 的。 */
+  libraryBlock?: string;
+  /** 「谁是谁」：用户扮演谁 / 角色卡是谁。正文里的「你」靠它落到具体条目上。 */
+  castBlock?: string;
   /**
    * 后端是否支持原生多角色提示（NAI4.5/V5）。true = 外貌走 characters 通道；
    * false（NAI3/ComfyUI）= 只能回落成把外貌拼进正向词。
@@ -187,6 +191,8 @@ export async function readTheater(
     mangaSafe: input.mangaSafe,
     dialogue: input.dialogue === true,
     ...(input.roster?.length ? { roster: input.roster } : {}),
+    ...(input.libraryBlock ? { libraryBlock: input.libraryBlock } : {}),
+    ...(input.castBlock ? { castBlock: input.castBlock } : {}),
   });
   const finalSystem = extraInstruction ? `${system}\n\n【追加要求】${extraInstruction}` : system;
   const raw = await input.llm(finalSystem, user);
@@ -266,20 +272,42 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
       const resolvedNames = panelNames.length ? panelNames : names.size === 1 ? [...names] : [];
       const looks = input.readLooks(resolvedNames);
       for (const look of looks) if (!look.tag) missingLooks.add(look.name);
-      // 柏宝绘自己画多角色走的就是 v4_prompt.char_captions（公开接口的 characters）。
-      // 它的注释写得很清楚：不要把多份完整外貌拼进正向词，否则会重叠躯干 / 互相污染。
-      // 之前我们正是拼进正向词的——「人物不像我的人」有一半是这么来的。
+      // act 属于「这个人」，所以绑进他自己的角色块（柏宝绘也是这么要求的：
+      // Base 只写人数/场景/光线，角色的动作写在该角色自己的 tag 里）。
+      // 以前 act 被合进 Base，多角色时模型经常把 A 的动作安到 B 身上。
+      const acts = new Map<string, string>();
+      for (const role of panel.roles ?? []) {
+        const name = String(role.name ?? '').trim();
+        const act = String(role.act ?? '').trim();
+        if (name && act) acts.set(name, act);
+      }
       const characters = nativeCharacters
         ? looks
             .filter(look => look.tag)
-            .map(look => ({ name: look.name, tag: look.tag, ...(look.nl ? { nl: look.nl } : {}) }))
+            .map(look => {
+              const act = acts.get(look.name) ?? acts.get(look.name.trim()) ?? '';
+              return {
+                name: look.name,
+                tag: act ? `${look.tag}, ${act}` : look.tag,
+                ...(look.nl ? { nl: look.nl } : {}),
+              };
+            })
         : [];
+      // 走原生角色通道时 Base 只放「全局信息」；没有外貌的人把动作留在 Base，
+      // 至少人不会凭空消失（同时 missingLooks 已经告诉用户去补档）。
+      const missingActs = looks
+        .filter(look => !look.tag)
+        .map(look => acts.get(look.name) ?? '')
+        .filter(Boolean);
       const appearances = nativeCharacters ? [] : looks.map(look => look.tag).filter(Boolean);
+      const baseTags = nativeCharacters
+        ? [panel.tags, ...missingActs].filter(Boolean).join(', ')
+        : combinedPanelTags(panel);
       // tags + characters[].act 一起拼：act 才是「这个人在做什么」，上一版丢掉了它
       const prompt = buildTheaterImagePrompt(
         input.kind,
         appearances,
-        combinedPanelTags(panel),
+        baseTags,
         input.chibi,
       );
       // nl 以前**整段丢掉**了：模型写的那句「谁在哪里做了什么」只有 nl 里有，

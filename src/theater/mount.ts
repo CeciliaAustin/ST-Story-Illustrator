@@ -14,6 +14,7 @@
 import type { BbiStatusInfo, StoryKind } from '../types';
 import { getStories, getSets, removeSet, type TheaterSet } from './store';
 import { rerollPanel, rerollSet } from './reroll';
+import { openPromptEditor } from './promptEditor';
 import { openGallery, openLightbox } from '../ui/lightbox';
 import { saveChatSafe } from '../host/sillytavern';
 
@@ -190,7 +191,11 @@ function buildStripPanel(
 
   const cap = document.createElement('figcaption');
   cap.className = 'sti-cs-panel-cap';
-  cap.textContent = panel.title ?? '';
+  const capText = document.createElement('span');
+  capText.className = 'sti-cs-cap-text';
+  capText.textContent = panel.title ?? '';
+  cap.appendChild(capText);
+  if (panel.prompt) cap.appendChild(buildEditButton(floor, kind, set, panel));
   figure.appendChild(cap);
 
   return figure;
@@ -232,6 +237,11 @@ function buildSinglePanel(
   const title = document.createElement('div');
   title.className = 'sti-cs-caption';
   title.textContent = panel.title || set.title || '小剧场';
+  if (panel.prompt) {
+    const edit = buildEditButton(floor, kind, set, panel);
+    edit.classList.add('is-inline');
+    title.appendChild(edit);
+  }
   meta.appendChild(title);
 
   const sub = document.createElement('div');
@@ -328,8 +338,40 @@ function buildFoot(floor: number, kind: StoryKind, set: TheaterSet, total: numbe
   return foot;
 }
 
-/** 单格重画按钮（右下圆形 ↻）。 */
-function buildRerollButton(
+/**
+ * 「改词」按钮（✎）。
+ *
+ * 小剧场的图不挂在正文的 <bbi_image> tag 上（那是剧情插图的位置，见文档 §1B.7），
+ * 所以柏宝绘自己的提示词编辑弹窗管不到它。这个按钮补上等价物：
+ * 打开就能看见当时真正发出去的正向词与 nl，改完就地重画。
+ */
+function buildEditButton(
+  floor: number,
+  kind: StoryKind,
+  set: TheaterSet,
+  panel: BbiStatusInfo,
+): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'sti-cs-edit';
+  btn.title = '改词并重画（看得到这一格真正发出去的提示词）';
+  btn.setAttribute('aria-label', '改词');
+  btn.textContent = '改词';
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openPromptEditor({
+      floor,
+      kind,
+      setId: set.setId,
+      panel,
+      onSaved: () => mountTheater(floor),
+    });
+  });
+  return btn;
+}
+
+/** 单格重画按钮（右下圆形 ↻）。 */function buildRerollButton(
   floor: number,
   kind: StoryKind,
   set: TheaterSet,

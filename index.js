@@ -1696,11 +1696,8 @@ function renderModeSelector() {
     cb.addEventListener("change", () => {
       if (cb.checked) selectedModes.add(mode);
       else selectedModes.delete(mode);
-      if (selectedModes.size === 0) {
-        selectedModes.add("illustration");
-        cb.checked = false;
-      }
       item.classList.toggle("active", selectedModes.has(mode));
+      cb.blur();
       updateConfirmButton();
     });
     item.appendChild(cb);
@@ -1718,6 +1715,12 @@ function renderModeSelector() {
     modeList.appendChild(item);
   }
   container.appendChild(modeList);
+  const hint = document.createElement("div");
+  hint.className = "sti-mode-hint";
+  hint.id = "sti-mode-hint";
+  hint.textContent = "至少选一个创作模式才能生成。";
+  hint.style.display = selectedModes.size === 0 ? "" : "none";
+  container.appendChild(hint);
   return container;
 }
 function renderLlmChannelSelector() {
@@ -1940,7 +1943,12 @@ function renderActions() {
 }
 function updateConfirmButton() {
   const btn = document.getElementById("sti-confirm-btn");
-  if (btn) btn.textContent = `确认选段 · 生成 ${selectedModes.size} 份`;
+  if (btn) {
+    btn.textContent = selectedModes.size > 0 ? `确认选段 · 生成 ${selectedModes.size} 份` : "请至少选一个创作模式";
+    btn.disabled = !currentSegment || selectedModes.size === 0;
+  }
+  const hint = document.getElementById("sti-mode-hint");
+  if (hint) hint.style.display = selectedModes.size === 0 ? "" : "none";
 }
 function rebuildSegment() {
   const options = { includeHidden: includeHiddenFloors };
@@ -2424,17 +2432,17 @@ const MAX_ENTRIES = 80;
 const MAX_TEXT = 4e3;
 const entries = [];
 let nextId = 1;
-function clip(text) {
+function clip$1(text) {
   const value = String(text ?? "");
   return value.length <= MAX_TEXT ? value : `${value.slice(0, MAX_TEXT)}…（原长 ${value.length}）`;
 }
 function push(record) {
   const entry = {
     ...record,
-    prompt: clip(record.prompt),
-    ...record.nl ? { nl: clip(record.nl) } : {},
-    ...record.negative ? { negative: clip(record.negative) } : {},
-    ...record.error ? { error: clip(record.error) } : {},
+    prompt: clip$1(record.prompt),
+    ...record.nl ? { nl: clip$1(record.nl) } : {},
+    ...record.negative ? { negative: clip$1(record.negative) } : {},
+    ...record.error ? { error: clip$1(record.error) } : {},
     id: nextId,
     at: Date.now()
   };
@@ -2610,7 +2618,7 @@ function destroyRunStatus() {
   dotEl = null;
 }
 const PANEL_ID = "sti-config-panel";
-const OVERLAY_ID = "sti-config-overlay";
+const OVERLAY_ID$1 = "sti-config-overlay";
 const MODE_LABEL = {
   "illustration": "正文插画",
   "comic": "正文漫画分镜",
@@ -2626,7 +2634,7 @@ function ensurePanel() {
     return { panel: panelEl, overlay: overlayEl };
   }
   const overlay2 = document.createElement("div");
-  overlay2.id = OVERLAY_ID;
+  overlay2.id = OVERLAY_ID$1;
   overlay2.className = "sti-config-overlay";
   overlay2.addEventListener("click", () => hideConfigPanel());
   document.body.appendChild(overlay2);
@@ -4433,6 +4441,7 @@ const COMMON_RULES = [
   "characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other's sleeve, leaning against the door, holding a broken cup）。",
   "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
   "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
+  "characters[].name **必须照抄【角色固定外貌库】里的名字**。正文里用「你」「他」「那个金发男生」或另一个叫法时，先判断指的是库里哪一位，再写库里的名字——名字写错就等于这个人没有外貌，会被画成路人。",
   "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
   // 这一条是照柏宝绘自己的规范写的：它要求模型补全「怎么拍」（景别/光线/色调），
   // 因为正文是散文，从来不会写机位。我们之前反过来禁止模型写景别与光线，
@@ -4537,8 +4546,11 @@ function buildTheaterPrompt(input) {
   const roster = (input.roster ?? []).map((n) => String(n ?? "").trim()).filter(Boolean).slice(0, 12);
   const rosterLine = roster.length ? `可用角色（柏宝绘角色库；characters[].name 必须照抄其中一项，不要自己造人）：${roster.join("、")}
 ` : "";
+  const reference = [input.castBlock, input.libraryBlock].filter(Boolean).join("\n\n");
   return {
-    system,
+    system: reference ? `${system}
+
+${reference}` : system,
     user: `${rosterLine}角色：${name}
 ${bodyLabel}
 ${body}`
@@ -4734,7 +4746,9 @@ async function readTheater(input, extraInstruction = "") {
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe,
     dialogue: input.dialogue === true,
-    ...((_a = input.roster) == null ? void 0 : _a.length) ? { roster: input.roster } : {}
+    ...((_a = input.roster) == null ? void 0 : _a.length) ? { roster: input.roster } : {},
+    ...input.libraryBlock ? { libraryBlock: input.libraryBlock } : {},
+    ...input.castBlock ? { castBlock: input.castBlock } : {}
   });
   const finalSystem = extraInstruction ? `${system}
 
@@ -4792,12 +4806,27 @@ async function runTheaterOne(input) {
       const resolvedNames = panelNames.length ? panelNames : names.size === 1 ? [...names] : [];
       const looks = input.readLooks(resolvedNames);
       for (const look of looks) if (!look.tag) missingLooks.add(look.name);
-      const characters = nativeCharacters ? looks.filter((look) => look.tag).map((look) => ({ name: look.name, tag: look.tag, ...look.nl ? { nl: look.nl } : {} })) : [];
+      const acts = /* @__PURE__ */ new Map();
+      for (const role of panel.roles ?? []) {
+        const name = String(role.name ?? "").trim();
+        const act = String(role.act ?? "").trim();
+        if (name && act) acts.set(name, act);
+      }
+      const characters = nativeCharacters ? looks.filter((look) => look.tag).map((look) => {
+        const act = acts.get(look.name) ?? acts.get(look.name.trim()) ?? "";
+        return {
+          name: look.name,
+          tag: act ? `${look.tag}, ${act}` : look.tag,
+          ...look.nl ? { nl: look.nl } : {}
+        };
+      }) : [];
+      const missingActs = looks.filter((look) => !look.tag).map((look) => acts.get(look.name) ?? "").filter(Boolean);
       const appearances = nativeCharacters ? [] : looks.map((look) => look.tag).filter(Boolean);
+      const baseTags = nativeCharacters ? [panel.tags, ...missingActs].filter(Boolean).join(", ") : combinedPanelTags(panel);
       const prompt = buildTheaterImagePrompt(
         input.kind,
         appearances,
-        combinedPanelTags(panel),
+        baseTags,
         input.chibi
       );
       const nl = input.kind === "manga" ? buildMangaNl(panel.nl) : panel.nl;
@@ -4854,6 +4883,91 @@ async function runTheaterOne(input) {
       hits: []
     };
   }
+}
+const FIELD_LABELS = [
+  ["fandom", "同人身份"],
+  ["sex", "性别"],
+  ["hair", "头发"],
+  ["eyes", "眼睛"],
+  ["skin", "肤色"],
+  ["body", "体型"],
+  ["extra", "标志特征"],
+  ["outfit", "固定着装"]
+];
+function formatLibraryEntry(entry, locked = entry.scope === "global") {
+  const parts = [];
+  const fields = entry.fields ?? {};
+  for (const [key, label] of FIELD_LABELS) {
+    const value = String(fields[key] ?? "").trim();
+    if (value) parts.push(`${label}=${value}`);
+  }
+  if (!parts.length) {
+    const tag = String(entry.tag ?? "").trim();
+    if (tag) parts.push(`外貌=${tag}`);
+  }
+  const nl = String(entry.nl ?? "").trim();
+  if (nl) parts.push(`外观句=${nl}`);
+  return `- ${entry.name}${locked ? "［全局］" : ""}: ${parts.join(", ") || "(本条目没有数据，请到柏宝绘补全)"}`;
+}
+function buildLibraryBlock(entries2) {
+  const usable = entries2.filter((entry) => String(entry.name ?? "").trim());
+  if (!usable.length) return "";
+  const lines = usable.map((entry) => formatLibraryEntry(entry, entry.scope === "global"));
+  return [
+    "【角色固定外貌库 · 来自柏宝绘，只读】",
+    "以下名字是**唯一合法**的 characters[].name。正文里的称呼与这里不同（「你」「Cecilia」「那个金发男生」）时，",
+    "先判断指的是库里哪一位，再照抄库里的名字；判不出来才用正文叫法。",
+    "外貌（发色/瞳色/体型/标志特征/固定着装）由本库提供，**不要自己编**，也不要把外貌写进 tags。",
+    ...lines
+  ].join("\n");
+}
+function clip(text, limit) {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+function buildCastBlock(ctx) {
+  const lines = [];
+  if (ctx.personaName) {
+    lines.push(`- 用户扮演：${ctx.personaName}（正文里的「你」指的就是这一位，出图必须画成这个人）`);
+  }
+  if (ctx.cardName) {
+    lines.push(`- 角色卡主角：${ctx.cardName}（正文里与他对话/互动的一方）`);
+  }
+  const persona = clip(ctx.personaText, 600);
+  const card = clip(ctx.cardText, 600);
+  if (persona) lines.push(`- 用户人设摘要：${persona}`);
+  if (card) lines.push(`- 角色卡摘要：${card}`);
+  if (!lines.length) return "";
+  return ["【本聊天的人物对应】", ...lines].join("\n");
+}
+function readCastContext(fallbackCardName = "") {
+  const ctx = getContext();
+  const personaName = String(ctx.name1 ?? "").trim();
+  const cardName = String(ctx.name2 ?? fallbackCardName ?? "").trim();
+  let personaText = "";
+  try {
+    const substitute = ctx.substituteParams;
+    if (typeof substitute === "function") {
+      personaText = String(substitute.call(ctx, "{{persona}}") ?? "");
+    }
+  } catch {
+    personaText = "";
+  }
+  if (!personaText) {
+    const powerUser = globalThis.power_user;
+    if (powerUser && typeof powerUser.persona_description === "string") {
+      personaText = powerUser.persona_description;
+    }
+  }
+  let cardText = "";
+  const characters = ctx.characters;
+  const characterId = typeof ctx.characterId === "number" ? ctx.characterId : -1;
+  const card = characters && characterId >= 0 ? characters[characterId] : void 0;
+  const data = card == null ? void 0 : card.data;
+  if (data) {
+    cardText = [data.description, data.personality].filter((v) => typeof v === "string" && !!v.trim()).join(" / ");
+  }
+  return { personaName, cardName, personaText, cardText };
 }
 const ALL_BUBBLE_STYLES = [
   "classic",
@@ -5424,24 +5538,41 @@ async function bakeTheaterLines(imagePath, lines, settings2, kind) {
 function normalizeName(name) {
   return String(name ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, "").toLowerCase();
 }
-function makeLookReader(characters, primaryName = "") {
+function makeLookReader(characters, primary = "") {
+  const cardName = typeof primary === "string" ? primary : primary.cardName ?? "";
+  const personaName = typeof primary === "string" ? "" : primary.personaName ?? "";
   const byNorm = /* @__PURE__ */ new Map();
   for (const c of characters) {
     byNorm.set(normalizeName(c.name), c);
     const base = normalizeName(String(c.name ?? "").split(/[（(【\[]/)[0]);
     if (base && !byNorm.has(base)) byNorm.set(base, c);
   }
-  const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : void 0;
+  const card = cardName ? byNorm.get(normalizeName(cardName)) : void 0;
+  const persona = personaName ? byNorm.get(normalizeName(personaName)) : void 0;
   const onlyOne = characters.length === 1 ? characters[0] : void 0;
-  const pronoun = /^(他|她|它|他们|她们|你|我|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|you|i|the man|the woman)$/i;
-  return (names) => names.map((name) => {
-    const key = normalizeName(name);
-    const base = normalizeName(String(name ?? "").split(/[（(【\[]/)[0]);
-    const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0);
-    if (hit) return { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} };
-    const fallback = pronoun.test(String(name ?? "").trim()) ? onlyOne ?? primary : void 0;
-    return fallback ? { name, tag: fallback.tag, ...fallback.nl ? { nl: fallback.nl } : {} } : { name, tag: "" };
-  });
+  const userWord = /^(你|我|你们|我们|you|i|me|us)$/i;
+  const otherWord = /^(他|她|它|他们|她们|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|the man|the woman)$/i;
+  return (names) => {
+    const out = names.map((name) => {
+      const key = normalizeName(name);
+      const base = normalizeName(String(name ?? "").split(/[（(【\[]/)[0]);
+      const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0);
+      if (hit) return { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} };
+      const word = String(name ?? "").trim();
+      const fallback = userWord.test(word) ? persona ?? onlyOne : otherWord.test(word) ? card ?? onlyOne : void 0;
+      return fallback ? { name, tag: fallback.tag, ...fallback.nl ? { nl: fallback.nl } : {} } : { name, tag: "" };
+    });
+    const unresolved = out.filter((item) => !item.tag);
+    if (unresolved.length === 1) {
+      const usedNames = new Set(out.filter((item) => item.tag).map((item) => item.name));
+      const free = characters.filter((entry) => !usedNames.has(entry.name));
+      if (free.length === 1 && free[0].tag) {
+        unresolved[0].tag = free[0].tag;
+        if (free[0].nl) unresolved[0].nl = free[0].nl;
+      }
+    }
+    return out;
+  };
 }
 async function runTheaterTask(input) {
   var _a;
@@ -5452,6 +5583,16 @@ async function runTheaterTask(input) {
   const profile = pickProfile(settings2.profiles ?? [], mode);
   const backendState = await readBackendState().catch(() => null);
   const supportsCharacters = (backendState == null ? void 0 : backendState.supportsCharacters) !== false;
+  const cast = readCastContext(input.characterName);
+  const libraryBlock = buildLibraryBlock(characters.characters);
+  const castBlock = buildCastBlock(cast);
+  if (!libraryBlock) {
+    recordNotice({
+      mode,
+      floor,
+      text: "柏宝绘角色库是空的（或这一楼之前还没有档案）：这次出图没有任何外貌可抄，画出来的人不会是故事里的角色。请到柏宝绘 →「角色」里确认条目存在，或先用它的自动打标跑一楼建档。"
+    });
+  }
   const result = await runTheaterOne({
     kind,
     chatId: input.chatId,
@@ -5464,6 +5605,8 @@ async function runTheaterTask(input) {
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     dialogue: kind === "manga" && modeSettings.bwMangaDialogue !== false,
     roster: characters.characters.map((c) => c.name),
+    ...libraryBlock ? { libraryBlock } : {},
+    ...castBlock ? { castBlock } : {},
     supportsCharacters,
     backend: "nai",
     ...profile ? { profile } : {},
@@ -5533,7 +5676,10 @@ ${user}`
         throw err;
       }
     },
-    readLooks: makeLookReader(characters.characters, input.characterName)
+    readLooks: makeLookReader(characters.characters, {
+      cardName: input.characterName,
+      personaName: cast.personaName
+    })
   });
   return {
     ok: result.ok,
@@ -5545,24 +5691,26 @@ ${user}`
 function randomSeed() {
   return Math.floor(Math.random() * 4294967295);
 }
-async function rerollPanel(floor, kind, setId, index2) {
+async function rerollPanel(floor, kind, setId, index2, edit) {
   var _a, _b, _c;
   const settings2 = getSettings(DEFAULT_SETTINGS);
   const set = getSets(floor, kind).find((s) => s.setId === setId);
   const panel = set == null ? void 0 : set.panels.find((p) => p.index === index2);
   if (!panel) return { ok: false, message: "找不到这一格。" };
-  if (!panel.prompt) {
+  const promptText = ((edit == null ? void 0 : edit.prompt) ?? panel.prompt ?? "").trim();
+  if (!promptText) {
     return { ok: false, message: "这一格没存下当时的出图词，请用「整条重出」。" };
   }
   const mode = modeOfKind(kind);
   await ensureModeOutPlan(mode, settings2);
+  const rawNl = edit ? edit.nl : panel.story ?? "";
   const seed = randomSeed();
   const startedAt = Date.now();
   try {
-    const nl = kind === "manga" ? buildMangaNl(panel.story ?? "") : panel.story ?? "";
+    const nl = kind === "manga" ? buildMangaNl(rawNl) : rawNl;
     const result = await baiBaiAdapter.generate(
       {
-        prompt: panel.prompt,
+        prompt: promptText,
         ...nl ? { nl } : {},
         ...panel.negative ? { negative: panel.negative } : {},
         // 外貌不再拼在 prompt 里，重画时必须把当时那几个人一起带上，
@@ -5581,7 +5729,7 @@ async function rerollPanel(floor, kind, setId, index2) {
       floor,
       source: "api",
       plan: readOutConfig().activePlanName,
-      prompt: panel.prompt,
+      prompt: promptText,
       ...nl ? { nl } : {},
       ...panel.negative ? { negative: panel.negative } : {},
       ...((_b = panel.characters) == null ? void 0 : _b.length) ? { characters: panel.characters } : {},
@@ -5603,7 +5751,9 @@ async function rerollPanel(floor, kind, setId, index2) {
       imagePath: path,
       ...originalPath ? { originalPath } : {},
       seed: result.seed ?? seed,
-      storyAt: Date.now()
+      storyAt: Date.now(),
+      // 改过的词写回这一格：不改的话下次 ↻ 又把旧词画一遍，用户会以为改词没生效
+      ...edit ? { prompt: promptText, story: edit.nl } : {}
     });
     await saveChatSafe();
     return { ok: true };
@@ -5613,7 +5763,7 @@ async function rerollPanel(floor, kind, setId, index2) {
       mode,
       floor,
       source: "api",
-      prompt: panel.prompt ?? "",
+      prompt: promptText,
       size: "portrait",
       status: "error",
       error: message,
@@ -5676,6 +5826,108 @@ async function rerollSet(floor, kind, setId) {
   replaceSet(floor, kind, setId, stories);
   await saveChatSafe();
   return { ok: true };
+}
+const OVERLAY_ID = "sti-pe-overlay";
+function closeEditor() {
+  var _a;
+  (_a = document.getElementById(OVERLAY_ID)) == null ? void 0 : _a.remove();
+}
+function openPromptEditor(options) {
+  var _a;
+  closeEditor();
+  const { panel } = options;
+  const overlay2 = document.createElement("div");
+  overlay2.className = "sti-pe-overlay";
+  overlay2.id = OVERLAY_ID;
+  overlay2.addEventListener("mousedown", (e) => {
+    if (e.target === overlay2) closeEditor();
+  });
+  const box = document.createElement("div");
+  box.className = "sti-pe-box";
+  const head = document.createElement("div");
+  head.className = "sti-pe-head";
+  const title = document.createElement("h3");
+  title.textContent = `改词 · 第 ${panel.index + 1} 格`;
+  head.appendChild(title);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "sti-pe-x";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "关闭");
+  close.addEventListener("click", closeEditor);
+  head.appendChild(close);
+  box.appendChild(head);
+  const tip = document.createElement("p");
+  tip.className = "sti-pe-tip";
+  tip.textContent = "下面两段就是出图时真正发给柏宝绘的内容。正向是 danbooru 短 tag，nl 是自然语言描述；画风、画师串、模型由柏宝绘的方案决定，不在这里。";
+  box.appendChild(tip);
+  const promptLabel = document.createElement("label");
+  promptLabel.className = "sti-pe-label";
+  promptLabel.textContent = "正向 tag";
+  const promptInput = document.createElement("textarea");
+  promptInput.className = "sti-pe-input";
+  promptInput.rows = 4;
+  promptInput.value = panel.prompt ?? "";
+  promptLabel.appendChild(promptInput);
+  box.appendChild(promptLabel);
+  const nlLabel = document.createElement("label");
+  nlLabel.className = "sti-pe-label";
+  nlLabel.textContent = "nl（自然语言描述）";
+  const nlInput = document.createElement("textarea");
+  nlInput.className = "sti-pe-input";
+  nlInput.rows = 3;
+  nlInput.value = panel.story ?? "";
+  nlLabel.appendChild(nlInput);
+  box.appendChild(nlLabel);
+  if ((_a = panel.characters) == null ? void 0 : _a.length) {
+    const cast = document.createElement("div");
+    cast.className = "sti-pe-cast";
+    cast.textContent = `外貌来自柏宝绘角色库：${panel.characters.map((c) => c.name).join("、")}（要改外貌请去柏宝绘 →「角色」改档，这里改了也会被覆盖）`;
+    box.appendChild(cast);
+  }
+  const foot = document.createElement("div");
+  foot.className = "sti-pe-foot";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "sti-pe-btn";
+  cancel.textContent = "取消";
+  cancel.addEventListener("click", closeEditor);
+  foot.appendChild(cancel);
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "sti-pe-btn is-main";
+  save.textContent = "保存并重画";
+  save.addEventListener("click", async () => {
+    var _a2;
+    const prompt = promptInput.value.trim();
+    if (!prompt) {
+      promptInput.focus();
+      return;
+    }
+    save.disabled = true;
+    save.textContent = "重画中…";
+    const result = await rerollPanel(options.floor, options.kind, options.setId, panel.index, {
+      prompt,
+      nl: nlInput.value.trim()
+    });
+    save.disabled = false;
+    save.textContent = "保存并重画";
+    if (!result.ok) {
+      const err = document.createElement("div");
+      err.className = "sti-pe-error";
+      err.textContent = result.message ?? "重画失败。";
+      box.appendChild(err);
+      return;
+    }
+    closeEditor();
+    (_a2 = options.onSaved) == null ? void 0 : _a2.call(options);
+  });
+  foot.appendChild(save);
+  box.appendChild(foot);
+  overlay2.appendChild(box);
+  document.body.appendChild(overlay2);
+  promptInput.focus();
+  promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
 }
 const AREA_ID = "sti-theater-area-";
 const AREA_CLASS = "sti-cs-bar";
@@ -5808,7 +6060,11 @@ function buildStripPanel(floor, kind, set, panel, total) {
   figure.appendChild(shot);
   const cap = document.createElement("figcaption");
   cap.className = "sti-cs-panel-cap";
-  cap.textContent = panel.title ?? "";
+  const capText = document.createElement("span");
+  capText.className = "sti-cs-cap-text";
+  capText.textContent = panel.title ?? "";
+  cap.appendChild(capText);
+  if (panel.prompt) cap.appendChild(buildEditButton(floor, kind, set, panel));
   figure.appendChild(cap);
   return figure;
 }
@@ -5838,6 +6094,11 @@ function buildSinglePanel(floor, kind, set, panel) {
   const title = document.createElement("div");
   title.className = "sti-cs-caption";
   title.textContent = panel.title || set.title || "小剧场";
+  if (panel.prompt) {
+    const edit = buildEditButton(floor, kind, set, panel);
+    edit.classList.add("is-inline");
+    title.appendChild(edit);
+  }
   meta.appendChild(title);
   const sub = document.createElement("div");
   sub.className = "sti-cs-cast";
@@ -5919,6 +6180,26 @@ function buildFoot(floor, kind, set, total) {
   });
   foot.appendChild(del);
   return foot;
+}
+function buildEditButton(floor, kind, set, panel) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sti-cs-edit";
+  btn.title = "改词并重画（看得到这一格真正发出去的提示词）";
+  btn.setAttribute("aria-label", "改词");
+  btn.textContent = "改词";
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openPromptEditor({
+      floor,
+      kind,
+      setId: set.setId,
+      panel,
+      onSaved: () => mountTheater(floor)
+    });
+  });
+  return btn;
 }
 function buildRerollButton(floor, kind, set, panel) {
   const btn = document.createElement("button");
