@@ -1058,6 +1058,194 @@
   background: rgba(255, 255, 255, 0.28);
 }
 
+/* ── 漫画灯箱：气泡开关 / 台词面板 / 移动气泡 / 下载 ── */
+.sti-lightbox.is-comic .sti-lb-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 94vw;
+  max-height: 88vh;
+}
+.sti-lightbox.is-comic .sti-lightbox-img {
+  cursor: crosshair;
+}
+
+.sti-lb-toolbar {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  display: flex;
+  gap: 8px;
+  z-index: 3;
+}
+.sti-lb-btn {
+  padding: 5px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.9);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.sti-lb-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.44);
+}
+.sti-lb-btn.is-on {
+  background: rgba(100, 150, 255, 0.32);
+  border-color: rgba(130, 170, 255, 0.7);
+  color: #fff;
+}
+
+.sti-lb-chips {
+  position: absolute;
+  bottom: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 92vw;
+  flex-wrap: wrap;
+  z-index: 3;
+}
+.sti-lb-chip-hint {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+}
+.sti-lb-chip {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sti-lb-chip.is-on {
+  color: #fff;
+  border-color: rgba(130, 170, 255, 0.8);
+  background: rgba(100, 150, 255, 0.3);
+}
+.sti-lb-chip.is-done {
+  border-style: dashed;
+}
+
+/* 台词编辑面板（灯箱左下） */
+.sti-lb-dlg {
+  position: absolute;
+  left: 20px;
+  bottom: 64px;
+  z-index: 4;
+  width: min(400px, calc(100vw - 40px));
+  max-height: 68%;
+  display: none;
+  flex-direction: column;
+  padding: 10px 12px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(18, 20, 26, 0.96);
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
+.sti-lb-dlg__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.sti-lb-dlg__name {
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+}
+.sti-lb-dlg__x {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  cursor: pointer;
+}
+.sti-lb-dlg__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sti-lb-dlg__row {
+  display: grid;
+  grid-template-columns: 16px 1fr 22px;
+  align-items: center;
+  gap: 4px 6px;
+}
+.sti-lb-dlg__no {
+  color: rgba(255, 255, 255, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+.sti-lb-dlg__text {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 12px;
+}
+.sti-lb-dlg__text:focus {
+  outline: 1px solid rgba(130, 170, 255, 0.7);
+}
+.sti-lb-dlg__del {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+}
+.sti-lb-dlg__del:hover {
+  background: rgba(200, 80, 80, 0.35);
+}
+.sti-lb-dlg__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.sti-lb-dlg__btn {
+  padding: 3px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  cursor: pointer;
+}
+.sti-lb-dlg__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.sti-lb-dlg__btn--main {
+  background: rgba(100, 150, 255, 0.4);
+  border-color: rgba(130, 170, 255, 0.8);
+  color: #fff;
+}
+
 /* ── 模式 API 渠道指派 ── */
 .sti-api-channel-selector {
   padding: 10px 16px;

@@ -479,6 +479,12 @@ export interface ComicDialogue {
   panel?: number;
   dir?: 'h' | 'v';
   mood?: 'calm' | 'shout' | 'whisper';
+  /**
+   * 手动钉的位置（页面相对 0~1，气泡中心）。用户在灯箱里拖出来写回的，
+   * 模型不写——有 x/y 的气泡原地钉死，不参与自动排版、不被避让挪动。
+   */
+  x?: number;
+  y?: number;
 }
 
 export interface ComicPanelPlan {

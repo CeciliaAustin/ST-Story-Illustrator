@@ -37,8 +37,6 @@ import { enforceForGeneration } from '../manga/panelEnforce';
 import { resolvePanelsPerPage } from '../manga/panelPlan';
 import { hasStoryContent } from '../manga/panelRelevance';
 import { composePagePrompt } from '../manga/pageCompose';
-import { bakeDialogueIntoImage } from '../manga/bubbleBake';
-import { panelSlots, layoutNoGoZones } from '../manga/panelSlots';
 import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
 import {
   buildManwaTag,
@@ -285,8 +283,6 @@ async function runComic(
   // 版面档位：默认「自动」，由模型按每页剧情挑（用户钉死则以用户为准）
   const layout = modeSettings.comicLayout ?? 'auto';
   const dialoguePolicy = modeSettings.comicDialoguePolicy ?? deps.fullSettings.dialoguePolicy ?? 'auto';
-  const bubbleStyle = modeSettings.comicBubbleStyle ?? deps.fullSettings.bubbleStyle;
-  const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
   const showComposite = modeSettings.comicShowComposite !== false;
   // 这套漫画方案要不要写自然语言（读剧情与出图必须是同一个答案）
   const wantComicNl = nlForMode(deps.fullSettings, 'comic');
@@ -465,31 +461,12 @@ async function runComic(
     });
     if (!rawPath) continue;
 
-    // 对白气泡：落盘无字原图，本地合成一张带字版给卡片显示（原图留在图库里）
-    let imagePath = rawPath;
-    let bakedPath = '';
-    const pageBubble = showComposite && composed.dialogue.length;
-    if (pageBubble) {
-      // 气泡要落进「自己那一格」：格位由我们自己下发的版面反推（真漫画的第一条排版语法）
-      const panelCount = resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage) || page.panels.length;
-      const slots = panelSlots(pageLayout, panelCount, modeSettings.comicPageType ?? 'auto');
-      const noGo = layoutNoGoZones(pageLayout, modeSettings.comicPageType ?? 'auto');
-      const baked = await bakeDialogueIntoImage({
-        imagePath: rawPath,
-        dialogue: composed.dialogue,
-        style: bubbleStyle,
-        font: bubbleFont,
-        ...(slots.length ? { slots } : {}),
-        ...(noGo.length ? { noGo } : {}),
-        ...(slots.length ? {
-          panelCast: page.panels.map(panel => (panel.characters ?? []).map(c => c.name).filter(Boolean)),
-        } : {}),
-      });
-      if (baked) {
-        bakedPath = baked;
-        imagePath = baked;
-      }
-    }
+    // 对白气泡走柏宝绘原版架构：**落盘无字原图，显示时才本地合成**。
+    // 图库不再多出「ST创作_带字」烧录副本；改台词 / 挪气泡 / 换形态都在显示层做，
+    // 不用重出图。台词与当时的版面元数据一起存进 artifact，显示层按它重放——
+    // 合成失败就显示无字原图，绝不升级成生成失败。
+    const panelCount = resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage) || page.panels.length;
+    const pageType = modeSettings.comicPageType ?? 'auto';
 
     const artifact: VisualArtifact = {
       id: createArtifactId(),
@@ -502,22 +479,24 @@ async function runComic(
       mountMode: 'inline',
       ...(inlineAnchor ? { textAnchor: inlineAnchor } : {}),
       pageIndex: page.pageIndex,
-      imagePath,
-      ...(bakedPath ? { originalImagePath: rawPath } : {}),
+      imagePath: rawPath,
       prompt: enforced.prompt,
       ...(enforced.nl ? { nl: enforced.nl } : {}),
-      ...(composed.dialogue.length ? { dialogue: composed.dialogue } : {}),
+      ...(showComposite && composed.dialogue.length ? { dialogue: composed.dialogue } : {}),
       metadata: {
         // 重画要靠它还原「当时画的是谁」：没有角色块，重画一次就换人
         ...(composed.characters.length ? { characters: composed.characters } : {}),
-        // 无字原图（带字版由本地合成）：重画/改台词时都从它重来
+        // 无字原图路径（带字版只在显示层合成，不落盘第二份）
         rawImagePath: rawPath,
         ...(characterName ? { characterName } : {}),
         pageTitle: page.title,
+        // 版面元数据：显示层合成气泡要按「当时下发的格位」排，不能按今天的设置猜
         layout: pageLayout,
+        pageType,
+        panelCount,
         panelTitles: composed.panelTitles,
-        panelCount: page.panels.length,
-        ...(bakedPath ? { bubbleBakedPath: bakedPath } : {}),
+        // 每格出场的人：显示层靠它把台词反查到正确的格（说话人证据 > 模型写的格号）
+        panelCast: page.panels.map(panel => (panel.characters ?? []).map(c => c.name).filter(Boolean)),
         ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
       },
       createdAt: Date.now(),

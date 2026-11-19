@@ -26,16 +26,29 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 /**
  * 加载可安全绘制的图片。云端 URL 先 fetch 成字节转 blob URL（同源派生）。
  * data:/blob: 地址直接用（不会污染画布）。
+ *
+ * 相对路径兜底：柏宝绘条目里的 path 可能不带前导斜杠（`user/images/x.png`），
+ * 直接 fetch 会按当前页面 URL 解析成 404——原版文档坑清单里的「同一路径多种写法」。
+ * 失败时补一个前导斜杠再试一次。
  */
+async function fetchBytes(src: string): Promise<Blob> {
+  try {
+    const response = await fetch(src, { mode: 'cors' });
+    if (response.ok) return await response.blob();
+  } catch { /* 落到下面的补斜杠重试 */ }
+  const aliased = `/${src.replace(/^\/+/, '')}`;
+  const response = await fetch(aliased, { mode: 'cors' });
+  if (!response.ok) throw new Error(`fetch 失败: ${response.status}`);
+  return await response.blob();
+}
+
 async function loadDrawableImage(
   src: string,
 ): Promise<{ image: HTMLImageElement; cleanup: () => void }> {
   if (/^(blob|data):/i.test(src)) {
     return { image: await loadImage(src), cleanup: () => {} };
   }
-  const response = await fetch(src, { mode: 'cors' });
-  if (!response.ok) throw new Error(`fetch 失败: ${response.status}`);
-  const blob = await response.blob();
+  const blob = await fetchBytes(src);
   const url = URL.createObjectURL(blob);
   try {
     return { image: await loadImage(url), cleanup: () => URL.revokeObjectURL(url) };

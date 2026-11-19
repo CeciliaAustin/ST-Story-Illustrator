@@ -10,13 +10,11 @@
  * 想重新分镜就重新选段生成——那是另一件事。
  */
 
-import type { BubbleStyleId, BubbleFontId, PanelPageType, PanelLayout } from '../types';
+import type { PanelPageType } from '../types';
 import { DEFAULT_SETTINGS, resolveModeSettings } from '../types';
 import { getSettings, saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { getArtifacts, updateArtifact } from '../storage/repository';
-import { bakeDialogueIntoImage } from './bubbleBake';
-import { panelSlots, layoutNoGoZones } from './panelSlots';
 import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from '../tasks/modePlan';
 import { pickProfile, fallbackProfile } from '../tasks/theaterRun';
 import { recordImageLog } from '../log/imageLog';
@@ -32,13 +30,9 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 4294967295);
 }
 
-function asLayout(v: unknown): PanelLayout {
-  return v === 'irregular' || v === 'inset' || v === 'unframed' ? v : 'regular';
-}
-
 /**
- * 重画某一页漫画。原位更新 artifact（图片路径 + 种子 + 带字版路径），
- * 调用方负责 saveChatSafe 与 mountFloor。
+ * 重画某一页漫画。原位更新 artifact（图片路径 + 种子），
+ * 调用方负责 saveChatSafe 与 mountFloor；气泡由显示层重新合成。
  */
 export async function rerollComicPage(floor: number, artifactId: string): Promise<ComicRerollResult> {
   const artifact = getArtifacts(floor).find(a => a.id === artifactId);
@@ -52,12 +46,8 @@ export async function rerollComicPage(floor: number, artifactId: string): Promis
   const characters = Array.isArray(meta.characters)
     ? (meta.characters as Array<{ name: string; tag: string; nl?: string }>)
     : [];
-  const layout = asLayout(meta.layout);
-  const panelCount = typeof meta.panelCount === 'number' ? meta.panelCount : 0;
-  const pageType = (comic.comicPageType ?? 'auto') as PanelPageType;
-  const style = (comic.comicBubbleStyle ?? settings.bubbleStyle) as BubbleStyleId | undefined;
-  const font = (comic.comicBubbleFont ?? settings.bubbleFont) as BubbleFontId | undefined;
-  const showComposite = comic.comicShowComposite !== false;
+  // 页型优先用这一页自己的元数据：显示层合成按它重放，改全局设置不影响历史页
+  const pageType = (meta.pageType ?? comic.comicPageType ?? 'auto') as PanelPageType;
 
   const seed = randomSeed();
   const startedAt = Date.now();
@@ -92,33 +82,17 @@ export async function rerollComicPage(floor: number, artifactId: string): Promis
       return { ok: false, message: '出图没有返回图片。' };
     }
 
-    // 台词跟着一起重画：否则重画出来的这一页会突然变成无字版
-    let imagePath = rawPath;
-    let bakedPath = '';
-    if (showComposite && artifact.dialogue?.length) {
-      const slots = panelSlots(layout, panelCount, pageType);
-      const noGo = layoutNoGoZones(layout, pageType);
-      const baked = await bakeDialogueIntoImage({
-        imagePath: rawPath,
-        dialogue: artifact.dialogue,
-        ...(style ? { style } : {}),
-        ...(font ? { font } : {}),
-        ...(slots.length ? { slots } : {}),
-        ...(noGo.length ? { noGo } : {}),
-      });
-      if (baked) {
-        bakedPath = baked;
-        imagePath = baked;
-      }
-    }
-
+    // 台词气泡不再烧录进图：落盘的永远是无字原图，显示层按 artifact.dialogue
+    // 与版面元数据重放合成（改台词 / 挪气泡不消耗额度，正是原版架构的收益）。
+    // 重画也不换样式：样式在显示层生效，换形态对历史图同样有效。
     updateArtifact(floor, artifactId, {
-      imagePath,
-      ...(bakedPath ? { originalImagePath: rawPath } : {}),
+      imagePath: rawPath,
+      originalImagePath: undefined,
       metadata: {
         ...meta,
         rawImagePath: rawPath,
-        ...(bakedPath ? { bubbleBakedPath: bakedPath } : {}),
+        bubbleBakedPath: undefined,
+        ...(meta.pageType ? {} : { pageType }),
         ...(typeof result.seed === 'number' ? { seed: result.seed } : { seed }),
       },
     });

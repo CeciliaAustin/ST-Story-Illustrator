@@ -10,17 +10,35 @@
  */
 
 import type { VisualArtifact, CreationMode } from '../types';
-import { getArtifacts } from '../storage/repository';
-import { getMessage } from '../host/sillytavern';
+import { DEFAULT_SETTINGS } from '../types';
+import { getArtifacts, updateArtifact } from '../storage/repository';
+import { getMessage, getSettings, saveChatSafe } from '../host/sillytavern';
 import { manwaAnchors, parseManwaTags } from '../baibai/manwaTag';
 import { extractPlainText, findAnchorRange } from '../selection/anchor';
-import { openLightbox } from './lightbox';
+import { comicOverlayPlan } from '../manga/bubbleOverlay';
+import { compositeDialogue } from '../manga/bubbleComposite';
+import { openLightbox, openComicLightbox } from './lightbox';
 import { rerollComicPage } from '../manga/rerollPage';
 
 const INLINE_CLASS = 'sti-inline-card';
 const TRAILING_AREA_CLASS = 'sti-trailing-area';
 const TRAILING_AREA_ID = 'sti-trailing-area-';
 const MOUNTED_ATTR = 'data-sti-mounted';
+
+/**
+ * 漫画卡片的气泡合成句柄（显示层持有 blob，卡片被拆掉时释放）。
+ *
+ * 与原版同款的三条纪律：
+ * - 卡片 <img> 永远先指向无字原图，合成成功后才换成带字 blob；
+ * - 合成失败保持无字原图，不升级成错误（原版坑 11）；
+ * - 同一张卡重复合成前先 revoke 旧 blob，避免内存泄漏。
+ */
+const cardOverlays = new WeakMap<HTMLElement, { revoke: () => void }>();
+
+function revokeCardOverlay(card: HTMLElement): void {
+  cardOverlays.get(card)?.revoke();
+  cardOverlays.delete(card);
+}
 
 const MODE_LABELS: Record<CreationMode, string> = {
   'illustration': '插画',
@@ -99,7 +117,10 @@ export function unmountFloor(floor: number): void {
   const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
   if (!mes) return;
   const cards = mes.querySelectorAll(`[${MOUNTED_ATTR}="${floor}"]`);
-  for (const card of Array.from(cards)) card.remove();
+  for (const card of Array.from(cards)) {
+    revokeCardOverlay(card as HTMLElement); // 释放显示层持有的带字 blob
+    card.remove();
+  }
 }
 
 /** 重挂所有已渲染楼层的卡片（聊天切换 / swipe 后用）。 */
@@ -268,10 +289,17 @@ function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HT
 
   const img = document.createElement('img');
   img.className = 'sti-card-image';
+  // 永远先显示无字原图：气泡是显示层合成的（对齐柏宝绘原版架构），
+  // artifact.imagePath 落盘的就是无字原图，图库里也只有这一份
   img.src = artifact.imagePath;
   img.alt = `${MODE_LABELS[artifact.mode] || artifact.mode} 作品`;
   img.loading = 'lazy';
-  img.addEventListener('click', () => openLightbox(artifact.imagePath, img.alt));
+  if (comic) {
+    attachBubbleOverlay(card, img, artifact);
+    img.addEventListener('click', () => openComicCardLightbox(floor, artifact.id, img.alt));
+  } else {
+    img.addEventListener('click', () => openLightbox(artifact.imagePath, img.alt));
+  }
   card.appendChild(img);
 
   const caption = document.createElement('div');
@@ -327,6 +355,66 @@ function buildComicActions(artifact: VisualArtifact, floor: number): HTMLElement
   row.appendChild(button);
   row.appendChild(status);
   return row;
+}
+
+// ============================================================
+// 漫画气泡：显示层合成 + 灯箱上下文
+// ============================================================
+
+/**
+ * 给漫画卡接上「显示时合成」：落盘的无字原图先上屏，
+ * 气泡在后台合成、好了再换上去（原版柏宝绘同款，文档 §1B.4 路线 B）。
+ */
+function attachBubbleOverlay(card: HTMLElement, img: HTMLImageElement, artifact: VisualArtifact): void {
+  const settings = getSettings(DEFAULT_SETTINGS);
+  const plan = comicOverlayPlan(artifact, settings);
+  if (!plan) return; // 没台词：无字原图直接上，也不占合成资源
+
+  let generation = 0; // 每张卡一个代次令牌：同卡重复合成时旧的作废（原版坑：异步乱序）
+  const held: { current: { revoke: () => void } | null } = { current: null };
+  const myToken = ++generation;
+  void (async () => {
+    const result = await compositeDialogue(artifact.imagePath, plan.items, plan.opts);
+    if (myToken !== generation || !result) { result?.revoke(); return; }
+    held.current?.revoke();
+    held.current = result;
+    img.src = result.url;
+    card.setAttribute('data-sti-bubbled', '');
+  })();
+  cardOverlays.set(card, {
+    revoke: () => {
+      generation += 1; // 在途的合成回来即作废
+      held.current?.revoke();
+      held.current = null;
+    },
+  });
+}
+
+/** 打开某一页漫画的灯箱（气泡开关 / 台词编辑 / 移动定位 / 下载）。 */
+function openComicCardLightbox(floor: number, artifactId: string, alt: string): void {
+  const latest = getArtifacts(floor).find(a => a.id === artifactId);
+  if (!latest) return;
+  const settings = getSettings(DEFAULT_SETTINGS);
+  const plan = comicOverlayPlan(latest, settings);
+  if (!plan) {
+    openLightbox(latest.imagePath, alt);
+    return;
+  }
+  const pageTitle = typeof latest.metadata?.pageTitle === 'string' ? latest.metadata.pageTitle : '';
+  openComicLightbox({
+    baseSrc: latest.imagePath,
+    caption: pageTitle ? `${pageTitle}${alt ? ` · ${alt}` : ''}` : alt,
+    plan,
+    onSave: async items => {
+      // 写回 artifact（台词 + 手动钉的位置一起存），落盘、重挂卡片
+      updateArtifact(floor, artifactId, { dialogue: items ?? [] });
+      await saveChatSafe();
+      mountFloor(floor);
+      const fresh = getArtifacts(floor).find(a => a.id === artifactId);
+      if (!fresh) return null;
+      return comicOverlayPlan(fresh, settings);
+    },
+  });
 }
 
 // ============================================================
