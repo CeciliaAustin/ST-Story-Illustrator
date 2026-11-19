@@ -14,9 +14,11 @@ import type { GeneratePromptResponse, ComicPagePlan, BaiBaiCharacter, CreationMo
 import { generateQuietPrompt as stGenerateQuietPrompt } from '../host/sillytavern';
 import {
   generateViaSecondary,
+  readTagGenChannelId,
   generateViaChannelId,
   resolveChannelId,
   type ModeChannelMap,
+  generateViaChannelStrict,
 } from '../baibai/secondaryLlm';
 import {
   buildIllustrationSystemPrompt,
@@ -47,21 +49,16 @@ export const mainApiLlmCaller: LlmCaller = async (system, user) => {
  * 这样用户设好的副 API 渠道真正被用于写 tag，而不是每次都惊动主 API。
  */
 export const defaultLlmCaller: LlmCaller = async (system, user) => {
-  const viaSecondary = await generateViaSecondary(system, user);
-  if (viaSecondary !== null) return viaSecondary;
-  return await mainApiLlmCaller(system, user);
+  const tagGen = readTagGenChannelId();
+  if (!tagGen) return await mainApiLlmCaller(system, user);
+  return await generateViaChannelStrict('tagGen', system, user);
 };
 
 /** 按用户选择的来源构造调用器。 */
 export function makeLlmCaller(source: 'auto' | 'secondary' | 'main'): LlmCaller {
   if (source === 'main') return mainApiLlmCaller;
   if (source === 'secondary') {
-    return async (system, user) => {
-      const viaSecondary = await generateViaSecondary(system, user);
-      if (viaSecondary !== null) return viaSecondary;
-      // 强制副 API 但没配好时，明确报错，不偷偷用主 API
-      throw new Error('未配置柏宝绘副 API 渠道（或请求失败）。请在柏宝绘设置里指派 tagGen 渠道，或切换到主 API。');
-    };
+    return async (system, user) => generateViaChannelStrict('tagGen', system, user);
   }
   return defaultLlmCaller; // auto
 }
@@ -75,12 +72,9 @@ export function makeModeLlmCaller(
   mode: CreationMode,
 ): LlmCaller {
   const channelId = resolveChannelId(mode, settings.modeChannels, settings.llmSource);
+  // 指派了主 API 才算「用主 API」；指派了副渠道就**只走副渠道**，报错即停（不偷偷回退）
   if (channelId === 'main') return mainApiLlmCaller;
-  return async (system, user) => {
-    const viaChannel = await generateViaChannelId(channelId, system, user);
-    if (viaChannel !== null) return viaChannel;
-    return await mainApiLlmCaller(system, user);
-  };
+  return async (system, user) => generateViaChannelStrict(channelId, system, user);
 }
 
 // ============================================================

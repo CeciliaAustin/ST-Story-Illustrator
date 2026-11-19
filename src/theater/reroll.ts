@@ -14,6 +14,7 @@ import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { ensureModeOutPlan } from '../tasks/modePlan';
 import { fallbackProfile, modeOfKind, pickProfile, runTheaterTask } from '../tasks/theaterRun';
 import { getSets, replaceSet, updatePanel } from './store';
+import { recordImageLog } from '../log/imageLog';
 
 export interface RerollResult {
   ok: boolean;
@@ -44,6 +45,7 @@ export async function rerollPanel(
   await ensureModeOutPlan(mode, settings);
 
   const seed = randomSeed();
+  const startedAt = Date.now();
   try {
     const result = await baiBaiAdapter.generate(
       {
@@ -58,6 +60,16 @@ export async function rerollPanel(
     const path = result.path ?? result.dataUrl;
     if (!path) return { ok: false, message: '出图没有返回图片。' };
 
+    recordImageLog({
+      mode, floor, source: 'api',
+      prompt: panel.prompt,
+      ...(panel.negative ? { negative: panel.negative } : {}),
+      size: 'portrait',
+      ...(typeof result.seed === 'number' ? { seed: result.seed } : { seed }),
+      status: 'ok',
+      durationMs: Date.now() - startedAt,
+    });
+
     updatePanel(floor, kind, setId, index, {
       imagePath: path,
       seed: result.seed ?? seed,
@@ -66,7 +78,16 @@ export async function rerollPanel(
     await saveChatSafe();
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    const message = err instanceof Error ? err.message : String(err);
+    recordImageLog({
+      mode, floor, source: 'api',
+      prompt: panel.prompt ?? '',
+      size: 'portrait',
+      status: 'error',
+      error: message,
+      durationMs: Date.now() - startedAt,
+    });
+    return { ok: false, message };
   }
 }
 

@@ -430,25 +430,34 @@ function normalizePage(raw: unknown, pageIndex: number, warnings: string[]): Com
     return null;
   }
   const o = raw as Record<string, unknown>;
-  if (!Array.isArray(o.panels) || o.panels.length === 0) {
-    warnings.push(`第 ${pageIndex + 1} 页无 panels 数组，已跳过`);
-    return null;
-  }
+
+  // 页级字段：一张图 = 一页，tag / nl / 台词都写在页上（格只是内容索引）
+  const pageTags = typeof o.tags === 'string' ? o.tags.trim().slice(0, 4000) : '';
+  const pageNl = typeof o.nl === 'string' ? o.nl.trim().slice(0, 4000) : '';
+  const pageDialogue = normalizeDialogueItems(o.dialogue);
+
+  const rawPanels = Array.isArray(o.panels) ? o.panels : [];
   const panels: ComicPanelPlan[] = [];
-  for (let i = 0; i < Math.min(o.panels.length, 12); i += 1) {
-    const panel = normalizePanel(o.panels[i], i);
+  for (let i = 0; i < Math.min(rawPanels.length, 12); i += 1) {
+    const panel = normalizePanel(rawPanels[i], i);
     if (panel) panels.push(panel);
     else warnings.push(`第 ${pageIndex + 1} 页第 ${i + 1} 格数据无效，已跳过`);
   }
-  if (panels.length === 0) {
-    warnings.push(`第 ${pageIndex + 1} 页没有有效分格，已跳过`);
+
+  // 有页级 tag 才算有效页；只给空格子的页仍然跳过
+  if (!pageTags && panels.length === 0) {
+    warnings.push(`第 ${pageIndex + 1} 页既没有 tags 也没有有效分格，已跳过`);
     return null;
   }
+
   return {
     pageIndex: typeof o.pageIndex === 'number' && Number.isFinite(o.pageIndex)
       ? Math.max(0, Math.floor(o.pageIndex)) : pageIndex,
     title: typeof o.title === 'string' ? o.title.trim().slice(0, 120) : `第 ${pageIndex + 1} 页`,
     layout: normalizePanelLayout(o.layout),
+    ...(pageTags ? { tags: pageTags } : {}),
+    ...(pageNl ? { nl: pageNl } : {}),
+    ...(pageDialogue.length ? { dialogue: pageDialogue } : {}),
     panels,
   };
 }

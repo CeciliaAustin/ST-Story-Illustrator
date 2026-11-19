@@ -269,6 +269,73 @@ export async function generateViaChannelId(
   }
 }
 
+/**
+ * 严格版：副 API 失败就抛错，**绝不回退主 API**。
+ *
+ * 用户明确要求：副 API 报错就停下，让他自己决定要不要改用主 API——
+ * 悄悄换主 API 会让他以为副 API 还在工作，而且主 API 往往更贵/更慢。
+ */
+export async function generateViaChannelStrict(
+  channelId: string,
+  system: string,
+  user: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const id = (channelId || '').trim();
+  if (!id || id === 'main') {
+    throw new Error('这个模式没有指派副 API 渠道。请在「配图设置」里指派，或把来源切成主 API。');
+  }
+
+  const ctx = getContext();
+  const all = listSharedChannels();
+  const targetId = id === 'tagGen' ? readTagGenChannelId() : id;
+  if (!targetId) {
+    throw new Error('柏宝绘里没有指派 tagGen 渠道。请在柏宝绘设置里指派一个，或改用主 API。');
+  }
+  const channel = all.find(c => c.id === targetId);
+  if (!channel) {
+    throw new Error(`副 API 渠道已不存在（${targetId.slice(0, 8)}…）。请重新指派或改用主 API。`);
+  }
+  if (!channel.model) {
+    throw new Error(`副 API 渠道「${channel.name}」没有填模型名。`);
+  }
+
+  const headers = typeof ctx.getRequestHeaders === 'function' ? ctx.getRequestHeaders() : {};
+  const controller = new AbortController();
+  const timeoutMs = Math.max(5, channel.timeoutSec) * 1000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort);
+
+  try {
+    const resp = await fetch(CHAT_COMPLETIONS_URL, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildChannelRequestBody(channel, [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ])),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(`副 API「${channel.name}」请求失败 (${resp.status})：${detail.slice(0, 300)}`);
+    }
+    const data = await resp.json().catch(() => null);
+    const text = extractCompletionText(data);
+    if (!text || !text.trim()) {
+      throw new Error(`副 API「${channel.name}」返回了空内容。`);
+    }
+    return text;
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('副 API')) throw err;
+    throw new Error(`副 API「${channel.name}」不可用：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 /** 兼容旧调用：跟随柏宝绘 tagGen 指派渠道。 */
 export async function generateViaSecondary(
   system: string,

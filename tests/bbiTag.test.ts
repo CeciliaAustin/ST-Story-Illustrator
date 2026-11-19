@@ -3,6 +3,7 @@ import {
   buildBbiTag,
   sanitizeTagText,
   countImageTags,
+  hasImageTagAfter,
   promptHash,
 } from '../src/baibai/bbiTag';
 
@@ -74,5 +75,25 @@ describe('promptHash', () => {
 
   it('固定 14 位 hex', () => {
     expect(promptHash('')).toMatch(/^[0-9a-f]{14}$/);
+  });
+});
+
+describe('hasImageTagAfter（多图共存的前提）', () => {
+  const tag = '<bbi_image>1girl<size>portrait</size></bbi_image>';
+
+  it('锚点后面已有图片 tag 时必须判 true（新 tag 要改追加，不能插到它前面）', () => {
+    const mes = `正文选段${tag}后面的正文`;
+    const anchorEnd = '正文选段'.length;
+    expect(hasImageTagAfter(mes, anchorEnd)).toBe(true);
+  });
+
+  it('锚点后面没有图片 tag 时判 false（可以就地插入）', () => {
+    const mes = '正文选段后面的正文';
+    expect(hasImageTagAfter(mes, '正文选段'.length)).toBe(false);
+  });
+
+  it('图片 tag 在锚点之前不算（顺序不会被打乱）', () => {
+    const mes = `${tag}正文选段`;
+    expect(hasImageTagAfter(mes, mes.length)).toBe(false);
   });
 });

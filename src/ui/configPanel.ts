@@ -23,6 +23,7 @@ import { getSettings, saveSettings } from '../host/sillytavern';
 import { DEFAULT_SETTINGS, type CreationMode, type StoryIllustratorSettings } from '../types';
 import { buildStudioTabs } from './studio';
 import { destroyWandMenu, injectWandMenu } from './wandMenu';
+import { clearImageLog, getImageLog, type ImageLogEntry } from '../log/imageLog';
 
 const PANEL_ID = 'sti-config-panel';
 const OVERLAY_ID = 'sti-config-overlay';
@@ -133,6 +134,8 @@ function render(panel: HTMLElement): void {
   body.appendChild(renderComicSettings());
   // ── 显示与入口 ──
   body.appendChild(renderUiSettings());
+  // ── 出图日志 ──
+  body.appendChild(renderLogSection());
 
   // ── 各模式指定方案（只读，改在选段弹窗）──
   const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
@@ -540,6 +543,105 @@ function renderUiSettings(): HTMLElement {
   ));
 
   return group;
+}
+
+/**
+ * 出图日志
+ *
+ * 柏宝绘的「请求历史」是它模块内的内存 store，刻意不持久化、也没有写入接口；
+ * 小剧场三套走公开出图接口，天生不在它那条链路上。所以这里自己记一份，
+ * 重点是**失败时的错误原文**，那是排查时唯一有用的东西。
+ */
+function renderLogSection(): HTMLElement {
+  const entries = getImageLog();
+  const box = section(
+    '出图日志',
+    '本插件自己记的调用记录（内存级，刷新即清）。柏宝绘的「请求历史」不对外开放写入，小剧场进不去那里，看这里。',
+  );
+
+  const bar = document.createElement('div');
+  bar.className = 'sti-log-bar';
+  const count = document.createElement('span');
+  count.textContent = `最近 ${entries.length} 条（上限 80）`;
+  bar.appendChild(count);
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'sti-cs-regen';
+  clear.textContent = '清空';
+  clear.addEventListener('click', () => {
+    clearImageLog();
+    showConfigPanel();
+  });
+  bar.appendChild(clear);
+  box.appendChild(bar);
+
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'sti-config-empty';
+    empty.textContent = '还没有记录。生成一次图之后再回来看。';
+    box.appendChild(empty);
+    return box;
+  }
+
+  for (const entry of entries.slice(0, 30)) {
+    box.appendChild(buildLogRow(entry));
+  }
+  return box;
+}
+
+function buildLogRow(entry: ImageLogEntry): HTMLElement {
+  const row = document.createElement('details');
+  row.className = `sti-log-item ${entry.status === 'error' ? 'is-error' : ''}`;
+
+  const summary = document.createElement('summary');
+  summary.className = 'sti-log-summary';
+  summary.textContent = [
+    formatTime(entry.at),
+    entry.kind === 'llm' ? '读剧情' : '出图',
+    MODE_LABEL[entry.mode] ?? entry.mode,
+    `#${entry.floor}`,
+    entry.status === 'error' ? '失败' : '成功',
+    entry.durationMs !== undefined ? `${(entry.durationMs / 1000).toFixed(1)}s` : '',
+    entry.seed !== undefined ? `seed ${entry.seed}` : '',
+  ].filter(Boolean).join(' · ');
+  row.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'sti-log-body';
+
+  if (entry.error) {
+    const err = document.createElement('div');
+    err.className = 'sti-log-error';
+    err.textContent = entry.error;
+    body.appendChild(err);
+  }
+  body.appendChild(logField('正向', entry.prompt));
+  if (entry.nl) body.appendChild(logField('nl', entry.nl));
+  if (entry.negative) body.appendChild(logField('负面', entry.negative));
+  if (entry.source) body.appendChild(logField('来源', entry.source === 'card' ? '柏宝绘卡片' : '公开出图接口'));
+
+  row.appendChild(body);
+  return row;
+}
+
+function logField(label: string, value: string): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'sti-log-field';
+  const head = document.createElement('div');
+  head.className = 'sti-log-field-label';
+  head.textContent = label;
+  const text = document.createElement('div');
+  text.className = 'sti-log-field-value';
+  text.textContent = value;
+  wrap.appendChild(head);
+  wrap.appendChild(text);
+  return wrap;
+}
+
+function formatTime(at: number): string {
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function activeModel(snap: OutConfigSnapshot): string {

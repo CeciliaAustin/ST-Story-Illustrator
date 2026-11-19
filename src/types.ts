@@ -447,6 +447,16 @@ export interface ComicPagePlan {
   pageIndex: number;
   title: string;
   layout: PanelLayout;
+  /**
+   * 整页共用的一套英文 tag（一张图 = 一页，不是一格一张）。
+   * 新版模型输出才有；旧计划没有时由 pageCompose 从各格 tag 合并兜底。
+   */
+  tags?: string;
+  /** 整页英文分区描述：先总述版面，再逐格写（唯一能分区描述各格的通道）。 */
+  nl?: string;
+  /** 整页台词（气泡锚点按整页算）。 */
+  dialogue?: ComicDialogue[];
+  /** 各格只作为「这一格画了什么」的内容索引，不再一格一张图。 */
   panels: ComicPanelPlan[];
 }
 

@@ -1072,18 +1072,23 @@ function textFromContent(value) {
   }
   return null;
 }
-async function generateViaChannelId(channelId, system, user, signal) {
+async function generateViaChannelStrict(channelId, system, user, signal) {
   const id = (channelId || "").trim();
-  if (!id || id === "main") return null;
+  if (!id || id === "main") {
+    throw new Error("这个模式没有指派副 API 渠道。请在「配图设置」里指派，或把来源切成主 API。");
+  }
   const ctx = getContext();
   const all = listSharedChannels();
   const targetId = id === "tagGen" ? readTagGenChannelId() : id;
-  if (!targetId) return null;
+  if (!targetId) {
+    throw new Error("柏宝绘里没有指派 tagGen 渠道。请在柏宝绘设置里指派一个，或改用主 API。");
+  }
   const channel = all.find((c) => c.id === targetId);
-  if (!channel) return null;
+  if (!channel) {
+    throw new Error(`副 API 渠道已不存在（${targetId.slice(0, 8)}…）。请重新指派或改用主 API。`);
+  }
   if (!channel.model) {
-    console.warn(`[ST-Story-Illustrator] 渠道「${channel.name}」未填模型，跳过。`);
-    return null;
+    throw new Error(`副 API 渠道「${channel.name}」没有填模型名。`);
   }
   const headers = typeof ctx.getRequestHeaders === "function" ? ctx.getRequestHeaders() : {};
   const controller = new AbortController();
@@ -1101,22 +1106,20 @@ async function generateViaChannelId(channelId, system, user, signal) {
     });
     if (!resp.ok) {
       const detail = await resp.text().catch(() => "");
-      console.warn(`[ST-Story-Illustrator] 渠道「${channel.name}」请求失败 (${resp.status})：${detail.slice(0, 200)}`);
-      return null;
+      throw new Error(`副 API「${channel.name}」请求失败 (${resp.status})：${detail.slice(0, 300)}`);
     }
     const data = await resp.json().catch(() => null);
-    return extractCompletionText(data);
-  } catch (err) {
-    {
-      console.warn(`[ST-Story-Illustrator] 渠道「${channel.name}」不可用：`, err instanceof Error ? err.message : String(err));
+    const text = extractCompletionText(data);
+    if (!text || !text.trim()) {
+      throw new Error(`副 API「${channel.name}」返回了空内容。`);
     }
-    return null;
+    return text;
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("副 API")) throw err;
+    throw new Error(`副 API「${channel.name}」不可用：${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timer);
   }
-}
-async function generateViaSecondary(system, user, signal) {
-  return await generateViaChannelId("tagGen", system, user);
 }
 const IMAGE_SETTINGS_KEY = "baibai_image";
 function asRecord(v) {
@@ -2153,6 +2156,48 @@ function destroyWandMenu() {
     (_c = document.getElementById(spec.id)) == null ? void 0 : _c.remove();
   }
 }
+const MAX_ENTRIES = 80;
+const MAX_TEXT = 4e3;
+const entries = [];
+let nextId = 1;
+function clip(text) {
+  const value = String(text ?? "");
+  return value.length <= MAX_TEXT ? value : `${value.slice(0, MAX_TEXT)}…（原长 ${value.length}）`;
+}
+function push(record) {
+  const entry = {
+    ...record,
+    prompt: clip(record.prompt),
+    ...record.nl ? { nl: clip(record.nl) } : {},
+    ...record.negative ? { negative: clip(record.negative) } : {},
+    ...record.error ? { error: clip(record.error) } : {},
+    id: nextId,
+    at: Date.now()
+  };
+  nextId += 1;
+  entries.unshift(entry);
+  if (entries.length > MAX_ENTRIES) entries.length = MAX_ENTRIES;
+  return entry;
+}
+function recordImageLog(input) {
+  return push({ kind: "image", ...input });
+}
+function recordLlmError(input) {
+  return push({
+    kind: "llm",
+    mode: input.mode,
+    floor: input.floor,
+    prompt: input.prompt ?? "",
+    status: "error",
+    error: input.error
+  });
+}
+function getImageLog() {
+  return entries;
+}
+function clearImageLog() {
+  entries.length = 0;
+}
 const PANEL_ID = "sti-config-panel";
 const OVERLAY_ID = "sti-config-overlay";
 const MODE_LABEL = {
@@ -2240,6 +2285,7 @@ function render(panel) {
   body.appendChild(renderTheaterSettings());
   body.appendChild(renderComicSettings());
   body.appendChild(renderUiSettings());
+  body.appendChild(renderLogSection());
   const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
   const assigned = Object.entries(modePlans).filter(([, id]) => !!id);
   if (assigned.length > 0) {
@@ -2611,6 +2657,87 @@ function renderUiSettings() {
     "兼容把思维链写进正文的预设，避免把思考过程算进剧情。"
   ));
   return group;
+}
+function renderLogSection() {
+  const entries2 = getImageLog();
+  const box = section(
+    "出图日志",
+    "本插件自己记的调用记录（内存级，刷新即清）。柏宝绘的「请求历史」不对外开放写入，小剧场进不去那里，看这里。"
+  );
+  const bar = document.createElement("div");
+  bar.className = "sti-log-bar";
+  const count = document.createElement("span");
+  count.textContent = `最近 ${entries2.length} 条（上限 80）`;
+  bar.appendChild(count);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "sti-cs-regen";
+  clear.textContent = "清空";
+  clear.addEventListener("click", () => {
+    clearImageLog();
+    showConfigPanel();
+  });
+  bar.appendChild(clear);
+  box.appendChild(bar);
+  if (entries2.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sti-config-empty";
+    empty.textContent = "还没有记录。生成一次图之后再回来看。";
+    box.appendChild(empty);
+    return box;
+  }
+  for (const entry of entries2.slice(0, 30)) {
+    box.appendChild(buildLogRow(entry));
+  }
+  return box;
+}
+function buildLogRow(entry) {
+  const row = document.createElement("details");
+  row.className = `sti-log-item ${entry.status === "error" ? "is-error" : ""}`;
+  const summary = document.createElement("summary");
+  summary.className = "sti-log-summary";
+  summary.textContent = [
+    formatTime(entry.at),
+    entry.kind === "llm" ? "读剧情" : "出图",
+    MODE_LABEL[entry.mode] ?? entry.mode,
+    `#${entry.floor}`,
+    entry.status === "error" ? "失败" : "成功",
+    entry.durationMs !== void 0 ? `${(entry.durationMs / 1e3).toFixed(1)}s` : "",
+    entry.seed !== void 0 ? `seed ${entry.seed}` : ""
+  ].filter(Boolean).join(" · ");
+  row.appendChild(summary);
+  const body = document.createElement("div");
+  body.className = "sti-log-body";
+  if (entry.error) {
+    const err = document.createElement("div");
+    err.className = "sti-log-error";
+    err.textContent = entry.error;
+    body.appendChild(err);
+  }
+  body.appendChild(logField("正向", entry.prompt));
+  if (entry.nl) body.appendChild(logField("nl", entry.nl));
+  if (entry.negative) body.appendChild(logField("负面", entry.negative));
+  if (entry.source) body.appendChild(logField("来源", entry.source === "card" ? "柏宝绘卡片" : "公开出图接口"));
+  row.appendChild(body);
+  return row;
+}
+function logField(label, value) {
+  const wrap = document.createElement("div");
+  wrap.className = "sti-log-field";
+  const head = document.createElement("div");
+  head.className = "sti-log-field-label";
+  head.textContent = label;
+  const text = document.createElement("div");
+  text.className = "sti-log-field-value";
+  text.textContent = value;
+  wrap.appendChild(head);
+  wrap.appendChild(text);
+  return wrap;
+}
+function formatTime(at) {
+  const d = new Date(at);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 function activeModel(snap) {
   var _a;
@@ -3263,24 +3390,27 @@ function normalizePage(raw, pageIndex, warnings) {
     return null;
   }
   const o = raw;
-  if (!Array.isArray(o.panels) || o.panels.length === 0) {
-    warnings.push(`第 ${pageIndex + 1} 页无 panels 数组，已跳过`);
-    return null;
-  }
+  const pageTags = typeof o.tags === "string" ? o.tags.trim().slice(0, 4e3) : "";
+  const pageNl = typeof o.nl === "string" ? o.nl.trim().slice(0, 4e3) : "";
+  const pageDialogue = normalizeDialogueItems(o.dialogue);
+  const rawPanels = Array.isArray(o.panels) ? o.panels : [];
   const panels = [];
-  for (let i = 0; i < Math.min(o.panels.length, 12); i += 1) {
-    const panel = normalizePanel(o.panels[i], i);
+  for (let i = 0; i < Math.min(rawPanels.length, 12); i += 1) {
+    const panel = normalizePanel(rawPanels[i], i);
     if (panel) panels.push(panel);
     else warnings.push(`第 ${pageIndex + 1} 页第 ${i + 1} 格数据无效，已跳过`);
   }
-  if (panels.length === 0) {
-    warnings.push(`第 ${pageIndex + 1} 页没有有效分格，已跳过`);
+  if (!pageTags && panels.length === 0) {
+    warnings.push(`第 ${pageIndex + 1} 页既没有 tags 也没有有效分格，已跳过`);
     return null;
   }
   return {
     pageIndex: typeof o.pageIndex === "number" && Number.isFinite(o.pageIndex) ? Math.max(0, Math.floor(o.pageIndex)) : pageIndex,
     title: typeof o.title === "string" ? o.title.trim().slice(0, 120) : `第 ${pageIndex + 1} 页`,
     layout: normalizePanelLayout(o.layout),
+    ...pageTags ? { tags: pageTags } : {},
+    ...pageNl ? { nl: pageNl } : {},
+    ...pageDialogue.length ? { dialogue: pageDialogue } : {},
     panels
   };
 }
@@ -3436,19 +3566,18 @@ function parseIllustrationResponse(text) {
   if (typeof data.size === "string" && data.size.trim()) result.size = data.size.trim().slice(0, 40);
   return result;
 }
-const COMIC_SYSTEM_HEAD = `你是一位专业的漫画分镜编辑。根据给定剧情，把它排成漫画页，并以 JSON 输出分镜计划。
+const COMIC_SYSTEM_HEAD = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题","layout":"regular|irregular|inset|unframed","panels":[{"index":0,"title":"格标题","characters":[{"name":"角色","act":"动作"}],"mood":"氛围","tags":"英文构图与画面tag(逗号分隔)","nl":"英文分区描述","dialogue":[{"text":"简短中文台词","area":"tl|tc|tr|ml|mr|bl|bc|br","dir":"v(可选,竖排)","mood":"whisper(可选)"}]}]}]}。
-要求：
-- tags 必须是英文生图 tag（逗号分隔），可带权重；不要写任何中文进 tags/nl。
-- **tags 必须画出这一格正在发生的事**，至少要包含：① 出场角色的外观 tag（照抄角色快照里那串，一个角色 3~6 个即可，不要整串抄）；② 这个人正在做什么（动作/表情/姿势）；③ 在哪（室内外 + 一个具体地点）；④ 画面里的关键物件。**只写构图词的 tags 一律不合格**——那样的图与剧情毫无关系，是本次最严重的错误。
-- 反例（错误）："multiple views, split screen, white background, cinematic lighting" —— 没有人物、没有动作，出图必然与剧情无关。
-- 正例（正确）："1boy, short black hair, white shirt, leaning over a desk, holding a letter, nervous expression, classroom, afternoon, multiple views, split screen"。
-- tags 里不要出现 speech bubble / text / dialogue / caption / english text —— 台词由插件在出图后合成，画面里出现字必然是乱码。
-- nl 是英文自然语言描述，按格写（先总述版面，再逐格写）；台词是对白气泡用中文口语。
-- **台词字段必须写**：从本格剧情里挑最值得说的一两句话（可以是呼喊、拟声词「咚！」「……」），不得整页省略。
-- 一次只讲清楚每个格的一个瞬间；同一批角色在各格保持一致的着装与外貌。
-- 分格数量与版面严格遵循下面的【分镜规则】。`;
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
+硬要求：
+1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
+2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
+3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
+4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），各格远近只写在 nl 里。
+5. page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。
+6. panels 数组只用来标「每一格画了什么」：2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致。
+7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。
+8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。`;
 function buildComicSystemPrompt(options) {
   const ruleOptions = {
     backend: options.backend,
@@ -3479,7 +3608,7 @@ function buildComicUserPrompt(scene, characters, extraInstruction) {
     parts.push("【在场角色（保持外貌一致）】\n" + lines.join("\n"));
   }
   if (extraInstruction) parts.push("【本次特别要求】\n" + extraInstruction);
-  parts.push("请只输出一个 JSON 对象（pages 数组）。");
+  parts.push("请只输出一个 JSON 对象（pages 数组）；一页一张图，tag 写在 page.tags 上，nl 逐格分区写。");
   return parts.join("\n\n");
 }
 const mainApiLlmCaller = async (system, user) => {
@@ -3491,18 +3620,14 @@ ${user}`;
   return await generateQuietPrompt(prompt);
 };
 const defaultLlmCaller = async (system, user) => {
-  const viaSecondary = await generateViaSecondary(system, user);
-  if (viaSecondary !== null) return viaSecondary;
-  return await mainApiLlmCaller(system, user);
+  const tagGen = readTagGenChannelId();
+  if (!tagGen) return await mainApiLlmCaller(system, user);
+  return await generateViaChannelStrict("tagGen", system, user);
 };
 function makeModeLlmCaller(settings2, mode) {
   const channelId = resolveChannelId(mode, settings2.modeChannels, settings2.llmSource);
   if (channelId === "main") return mainApiLlmCaller;
-  return async (system, user) => {
-    const viaChannel = await generateViaChannelId(channelId, system, user);
-    if (viaChannel !== null) return viaChannel;
-    return await mainApiLlmCaller(system, user);
-  };
+  return async (system, user) => generateViaChannelStrict(channelId, system, user);
 }
 async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
@@ -3613,7 +3738,7 @@ function parseStatusReply(raw) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return emptyFrame();
     const frame = value;
     const roles = [];
-    const push = (item) => {
+    const push2 = (item) => {
       if (roles.length >= STATUS_MAX_CHARACTERS) return;
       if (typeof item === "string") {
         const name = item.trim();
@@ -3627,9 +3752,9 @@ function parseStatusReply(raw) {
         if (name && !roles.some((r) => r.name === name)) roles.push({ name, act });
       }
     };
-    if (Array.isArray(frame.characters)) frame.characters.forEach(push);
-    else push(frame.characters);
-    push(frame.character);
+    if (Array.isArray(frame.characters)) frame.characters.forEach(push2);
+    else push2(frame.characters);
+    push2(frame.character);
     const tagsRaw = Array.isArray(frame.tags) ? frame.tags.join(", ") : pick(frame.tags);
     const tags = sanitizeStatusTags(tagsRaw);
     const lines = [];
@@ -4058,23 +4183,51 @@ async function runTheaterTask(input) {
     mangaSafe: (modeSettings == null ? void 0 : modeSettings.bwMangaSafeMode) ?? true,
     backend: "nai",
     ...profile ? { profile } : {},
+    // 副 API 报错即停，不回退主 API（并把原文记进日志）
     llm: async (prompt) => {
-      const caller = makeModeLlmCaller(settings2, mode);
       try {
-        return await caller("", prompt);
-      } catch {
-        return await generateQuietPrompt(prompt);
+        return await makeModeLlmCaller(settings2, mode)("", prompt);
+      } catch (err) {
+        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
+        throw err;
       }
     },
     generate: async (genInput, genProfile) => {
-      const r = await baiBaiAdapter.generate({
-        prompt: genInput.prompt,
-        ...genInput.negative ? { negative: genInput.negative } : {},
-        seed: genInput.seed,
-        size: genInput.size,
-        save: true
-      }, genProfile ?? fallbackProfile$1(mode));
-      return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      const startedAt = Date.now();
+      try {
+        const r = await baiBaiAdapter.generate({
+          prompt: genInput.prompt,
+          ...genInput.negative ? { negative: genInput.negative } : {},
+          seed: genInput.seed,
+          size: genInput.size,
+          save: true
+        }, genProfile ?? fallbackProfile$1(mode));
+        recordImageLog({
+          mode,
+          floor,
+          source: "api",
+          prompt: genInput.prompt,
+          ...genInput.negative ? { negative: genInput.negative } : {},
+          ...genInput.size ? { size: genInput.size } : {},
+          ...typeof r.seed === "number" ? { seed: r.seed } : typeof genInput.seed === "number" ? { seed: genInput.seed } : {},
+          status: "ok",
+          durationMs: Date.now() - startedAt
+        });
+        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      } catch (err) {
+        recordImageLog({
+          mode,
+          floor,
+          source: "api",
+          prompt: genInput.prompt,
+          ...genInput.negative ? { negative: genInput.negative } : {},
+          ...genInput.size ? { size: genInput.size } : {},
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt
+        });
+        throw err;
+      }
     },
     readLooks: (names) => {
       const lookup = new Map(characters.characters.map((c) => [c.name, c]));
@@ -4100,6 +4253,7 @@ async function rerollPanel(floor, kind, setId, index2) {
   const mode = modeOfKind(kind);
   await ensureModeOutPlan$1(mode, settings2);
   const seed = randomSeed();
+  const startedAt = Date.now();
   try {
     const result = await baiBaiAdapter.generate(
       {
@@ -4113,6 +4267,17 @@ async function rerollPanel(floor, kind, setId, index2) {
     );
     const path = result.path ?? result.dataUrl;
     if (!path) return { ok: false, message: "出图没有返回图片。" };
+    recordImageLog({
+      mode,
+      floor,
+      source: "api",
+      prompt: panel.prompt,
+      ...panel.negative ? { negative: panel.negative } : {},
+      size: "portrait",
+      ...typeof result.seed === "number" ? { seed: result.seed } : { seed },
+      status: "ok",
+      durationMs: Date.now() - startedAt
+    });
     updatePanel(floor, kind, setId, index2, {
       imagePath: path,
       seed: result.seed ?? seed,
@@ -4121,7 +4286,18 @@ async function rerollPanel(floor, kind, setId, index2) {
     await saveChatSafe();
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    const message = err instanceof Error ? err.message : String(err);
+    recordImageLog({
+      mode,
+      floor,
+      source: "api",
+      prompt: panel.prompt ?? "",
+      size: "portrait",
+      status: "error",
+      error: message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: false, message };
   }
 }
 async function rerollSet(floor, kind, setId) {
@@ -4906,14 +5082,16 @@ const PANEL_FAMILY = /* @__PURE__ */ new Set([
   "主场景周围没有长方形包围",
   "人物自然融入白色空间"
 ]);
-function bareTag(segment) {
+function bareTag$1(segment) {
   return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
 }
 function contentTagCount(tags) {
-  return String(tags ?? "").split(",").map(bareTag).filter((tag) => tag && !PANEL_FAMILY.has(tag)).length;
+  return String(tags ?? "").split(",").map(bareTag$1).filter((tag) => tag && !PANEL_FAMILY.has(tag)).length;
 }
 function hasStoryContent(pages) {
   for (const page of pages) {
+    if (page.tags && contentTagCount(page.tags) >= 2) return true;
+    if (page.tags && contentTagCount(page.tags) === 0) continue;
     for (const panel of page.panels) {
       if (contentTagCount(panel.tags) >= 2) return true;
     }
@@ -4921,7 +5099,7 @@ function hasStoryContent(pages) {
   return false;
 }
 function mergeCharacterTags(prompt, names, library) {
-  const present = new Set(prompt.split(",").map(bareTag).filter(Boolean));
+  const present = new Set(prompt.split(",").map(bareTag$1).filter(Boolean));
   const wanted = names.map((name) => library.find((c) => c.name === name)).filter((c) => !!c);
   const sources = wanted.length ? wanted : library.length === 1 ? library : [];
   const extra = [];
@@ -4929,13 +5107,90 @@ function mergeCharacterTags(prompt, names, library) {
     for (const raw of String(character.tag ?? "").split(",")) {
       const piece = raw.trim();
       if (!piece) continue;
-      const key = bareTag(piece);
+      const key = bareTag$1(piece);
       if (!key || present.has(key)) continue;
       present.add(key);
       extra.push(piece);
     }
   }
   return extra.length ? `${prompt}, ${extra.join(", ")}` : prompt;
+}
+const LAYOUT_NL_HEAD = {
+  regular: "A two-panel comic page: one canvas split horizontally by a thin black border, read from top to bottom.",
+  irregular: "An irregular comic page: unequally sized panels separated by thin black gutters, read from top to bottom.",
+  inset: "A manga page on a white background: an unframed character illustration in the center with narrow white margins, plus one or two small close-up panels with thin black borders.",
+  unframed: "A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders."
+};
+const AREA_LEAD = {
+  regular: ["In the upper panel", "The lower panel shows", "In the third panel", "The bottom panel shows"],
+  irregular: ["In the large panel", "In the narrow panel", "In the small panel", "In the bottom strip"],
+  inset: ["In the main illustration", "In the top strip", "In the small framed panel", "In the side panel"],
+  unframed: ["In the main illustration", "In the top strip", "In the small framed panel", "In the side panel"]
+};
+function bareTag(segment) {
+  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+}
+function mergePanelTags(page) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const panel of page.panels ?? []) {
+    for (const raw of String(panel.tags ?? "").split(",")) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const key = bareTag(piece);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(piece);
+    }
+  }
+  return out.join(", ");
+}
+function buildPageNl(page) {
+  var _a;
+  const head = LAYOUT_NL_HEAD[page.layout] ?? LAYOUT_NL_HEAD.regular;
+  const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
+  const parts = [head];
+  let wrote = false;
+  (_a = page.panels) == null ? void 0 : _a.forEach((panel, index2) => {
+    const body = String(panel.nl ?? "").trim();
+    if (!body) return;
+    const lead = leads[Math.min(index2, leads.length - 1)];
+    parts.push(lead.endsWith("shows") ? `${lead} ${body}` : `${lead}, ${body}`);
+    wrote = true;
+  });
+  if (!wrote) {
+    const titles = (page.panels ?? []).map((p) => p.title).filter(Boolean);
+    if (titles.length > 0) parts.push(`The panels in reading order: ${titles.join(" / ")}.`);
+  }
+  return parts.join(" ");
+}
+function collectPageDialogue(page) {
+  if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
+  const out = [];
+  for (const panel of page.panels ?? []) {
+    for (const item of panel.dialogue ?? []) {
+      if (out.length >= 4) return out;
+      out.push(item);
+    }
+  }
+  return out;
+}
+function composePagePrompt(page, characters = []) {
+  const base = String(page.tags ?? "").trim() || mergePanelTags(page);
+  const names = [];
+  for (const panel of page.panels ?? []) {
+    for (const c of panel.characters ?? []) {
+      if ((c == null ? void 0 : c.name) && !names.includes(c.name)) names.push(c.name);
+    }
+  }
+  const prompt = mergeCharacterTags(base, names, characters);
+  const nl = String(page.nl ?? "").trim() || buildPageNl(page);
+  return {
+    prompt,
+    nl,
+    dialogue: collectPageDialogue(page),
+    panelTitles: (page.panels ?? []).map((p) => p.title).filter(Boolean)
+  };
 }
 const ALL_BUBBLE_STYLES = [
   "classic",
@@ -5483,6 +5738,10 @@ function buildBbiTag(input) {
   const negativePart = negative ? `<negative>${negative}</negative>` : "";
   return `<bbi_image>${prompt}${nlPart}${negativePart}<size>${size}</size></bbi_image>`;
 }
+function hasImageTagAfter(mes, index2) {
+  const tail = String(mes ?? "").slice(Math.max(0, index2));
+  return /<bbi_image>[\s\S]+?<\/bbi_image>/i.test(tail);
+}
 function countImageTags(mes) {
   return (String(mes ?? "").match(/<bbi_image>[\s\S]+?<\/bbi_image>/gi) ?? []).length;
 }
@@ -5528,8 +5787,11 @@ ${tag}
   let nextText;
   let position;
   let insertAt;
-  if (anchorText && anchorText.length >= 2 && currentText.includes(anchorText)) {
-    insertAt = currentText.indexOf(anchorText) + anchorText.length;
+  const anchorUsable = !!anchorText && anchorText.length >= 2 && currentText.includes(anchorText);
+  const rawAnchorAt = anchorUsable ? currentText.indexOf(anchorText) + anchorText.length : -1;
+  const anchorHasTagAfter = anchorUsable && hasImageTagAfter(currentText, rawAnchorAt);
+  if (anchorUsable && !anchorHasTagAfter) {
+    insertAt = rawAnchorAt;
     nextText = currentText.slice(0, insertAt) + snippet + currentText.slice(insertAt);
     position = "after-anchor";
   } else {
@@ -5706,7 +5968,10 @@ async function runIllustration(task, ctx, deps) {
     },
     caller: makeModeLlmCaller(deps.fullSettings, "illustration")
   });
-  if (!plan.ok || !plan.data) throw new Error(plan.error ?? "Tag 计划生成失败。");
+  if (!plan.ok || !plan.data) {
+    recordLlmError({ mode: "illustration", floor, error: plan.error ?? "Tag 计划生成失败。" });
+    throw new Error(plan.error ?? "Tag 计划生成失败。");
+  }
   ctx.report({ stage: "review" });
   const tagSegments = plan.data.segments.map((seg) => ({
     ...seg,
@@ -5734,8 +5999,22 @@ async function runIllustration(task, ctx, deps) {
   if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
   const triggered = await triggerCardGenerate(floor, inserted.seq);
   if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
+  const imageStartedAt = Date.now();
   const waited = await waitForEntry(floor, ((_c = segment.messages[0]) == null ? void 0 : _c.swipeId) ?? 0, hash, inserted.seq);
   if (!waited.ok) console.warn("[ST-Story-Illustrator] 插画结果未取到：", waited.reason, waited.message);
+  recordImageLog({
+    mode: "illustration",
+    floor,
+    source: "card",
+    prompt,
+    ...plan.data.nl ? { nl: plan.data.nl } : {},
+    ...plan.data.negative ? { negative: plan.data.negative } : {},
+    size: plan.data.size ?? "portrait",
+    ...waited.ok && typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {},
+    status: waited.ok ? "ok" : "error",
+    ...waited.ok ? {} : { error: waited.message ?? waited.reason },
+    durationMs: Date.now() - imageStartedAt
+  });
   const imagePath = waited.ok ? waited.entry.path : "";
   const mesTextEl = document.querySelector(`.mes[mesid="${floor}"] .mes_text`);
   const anchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : void 0;
@@ -5800,7 +6079,7 @@ function fallbackProfile(mode) {
   };
 }
 async function runComic(task, ctx, deps) {
-  var _a, _b, _c;
+  var _a, _b;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
@@ -5818,7 +6097,7 @@ async function runComic(task, ctx, deps) {
     panelMode: true,
     panelLayout: layout,
     pageType: modeSettings.comicPageType ?? "auto",
-    // 漫画页必须有对白：这是它区别于「一张插画」的一半信息量，不给模型就永远没有
+    // 漫画页必须有对白：这是它区别于「一张插画」的一半信息量
     dialogue: true,
     dialoguePolicy,
     dialogueMode: "json",
@@ -5835,7 +6114,10 @@ async function runComic(task, ctx, deps) {
     options: planOptions,
     caller: makeModeLlmCaller(deps.fullSettings, "comic")
   });
-  if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
+  if (!plan.ok || !plan.data) {
+    recordLlmError({ mode: "comic", floor, error: plan.error ?? "分镜计划生成失败。" });
+    throw new Error(plan.error ?? "分镜计划生成失败。");
+  }
   if (!hasStoryContent(plan.data)) {
     console.warn("[ST-Story-Illustrator] 分镜 tag 缺少画面内容，重试一次。");
     plan = await generateComicPlan({
@@ -5843,107 +6125,110 @@ async function runComic(task, ctx, deps) {
       characters: characters.characters,
       options: {
         ...planOptions,
-        extraInstruction: "上一次的分镜 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。这次每格的 tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。"
+        extraInstruction: "上一次的 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。这次 page.tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。"
       },
       caller: makeModeLlmCaller(deps.fullSettings, "comic")
     });
     if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
     if (!hasStoryContent(plan.data)) {
-      throw new Error("分镜计划里每格都只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。");
+      throw new Error("分镜计划里只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。");
     }
   }
-  const totalPanels = plan.data.reduce((sum, page) => sum + page.panels.length, 0);
-  let done = 0;
   await ensureModeOutPlan("comic", deps);
-  let previousTag = null;
+  let done = 0;
+  const totalPages = plan.data.length;
   for (const page of plan.data) {
-    for (const panel of page.panels) {
-      if (ctx.signal.aborted) return;
-      ctx.report({ stage: "generating", page: page.pageIndex + 1, panel: panel.index + 1, totalPages: plan.data.length, totalPanels });
-      const enforced = enforceForGeneration({
-        prompt: panel.tags,
-        nl: panel.nl ?? "",
-        panelLayout: page.layout,
-        chibiOn: false
-      });
-      const prompt = mergeCharacterTags(
-        enforced.prompt,
-        panel.characters.map((c) => c.name),
-        characters.characters
-      );
-      const tag = buildBbiTag({
-        prompt,
-        ...enforced.nl ? { nl: enforced.nl } : {},
-        size: "portrait"
-      });
-      const hash = promptHash(tag);
-      const inserted = await insertImageTag({
-        floor,
-        chatId: task.chatId,
-        swipeId,
-        ...sendDate ? { sendDate } : {},
-        tag,
-        anchorText: previousTag ?? segment.text.slice(0, 120)
-      });
-      if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
-      previousTag = tag;
-      const triggered = await triggerCardGenerate(floor, inserted.seq);
-      if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
-      const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
-      if (!waited.ok) {
-        console.warn("[ST-Story-Illustrator] 分格结果未取到：", waited.reason, waited.message);
-        done += 1;
-        continue;
-      }
-      let imagePath = waited.entry.path;
-      let bakedPath = "";
-      if (showComposite && ((_c = panel.dialogue) == null ? void 0 : _c.length)) {
-        const baked = await bakeDialogueIntoImage({
-          imagePath,
-          dialogue: panel.dialogue,
-          style: bubbleStyle,
-          font: bubbleFont
-        });
-        if (baked && await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked)) {
-          bakedPath = baked;
-          imagePath = baked;
-        }
-      }
-      const artifact = {
-        id: createArtifactId(),
-        taskId: task.id,
-        mode: "comic",
-        chatId: task.chatId,
-        sourceFloors: segment.floorIds,
-        anchorFloor: floor,
-        mountMode: "trailing",
-        pageIndex: page.pageIndex,
-        panelIndex: panel.index,
-        imagePath,
-        prompt,
-        ...panel.nl ? { nl: panel.nl } : {},
-        ...panel.dialogue ? { dialogue: panel.dialogue } : {},
-        metadata: {
-          // 图的显示交给柏宝绘卡片，本插件不再挂卡片
-          embeddedInBody: true,
-          pageTitle: page.title,
-          panelTitle: panel.title,
-          layout: page.layout,
-          bbiTag: tag,
-          bbiHash: hash,
-          bbiSlotSeq: inserted.seq,
-          bbiGenerationId: waited.entry.generationId,
-          ...bakedPath ? { bubbleBakedPath: bakedPath } : {},
-          ...typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {}
-        },
-        createdAt: Date.now()
-      };
-      appendArtifact(floor, artifact);
-      done += 1;
+    if (ctx.signal.aborted) return;
+    ctx.report({ stage: "generating", page: page.pageIndex + 1, totalPages });
+    const composed = composePagePrompt(page, characters.characters);
+    const enforced = enforceForGeneration({
+      prompt: composed.prompt,
+      nl: composed.nl,
+      panelLayout: page.layout,
+      chibiOn: false
+    });
+    const tag = buildBbiTag({
+      prompt: enforced.prompt,
+      ...enforced.nl ? { nl: enforced.nl } : {},
+      size: "portrait"
+    });
+    const hash = promptHash(tag);
+    const inserted = await insertImageTag({
+      floor,
+      chatId: task.chatId,
+      swipeId,
+      ...sendDate ? { sendDate } : {},
+      tag,
+      anchorText: segment.text.slice(0, 120)
+    });
+    if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
+    const triggered = await triggerCardGenerate(floor, inserted.seq);
+    if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
+    const pageStartedAt = Date.now();
+    const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
+    recordImageLog({
+      mode: "comic",
+      floor,
+      source: "card",
+      prompt: enforced.prompt,
+      ...enforced.nl ? { nl: enforced.nl } : {},
+      size: "portrait",
+      ...waited.ok && typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {},
+      status: waited.ok ? "ok" : "error",
+      ...waited.ok ? {} : { error: waited.message ?? waited.reason },
+      durationMs: Date.now() - pageStartedAt
+    });
+    if (!waited.ok) {
+      console.warn("[ST-Story-Illustrator] 漫画页结果未取到：", waited.reason, waited.message);
+      continue;
     }
+    let imagePath = waited.entry.path;
+    let bakedPath = "";
+    if (showComposite && composed.dialogue.length) {
+      const baked = await bakeDialogueIntoImage({
+        imagePath,
+        dialogue: composed.dialogue,
+        style: bubbleStyle,
+        font: bubbleFont
+      });
+      if (baked && await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked)) {
+        bakedPath = baked;
+        imagePath = baked;
+      }
+    }
+    const artifact = {
+      id: createArtifactId(),
+      taskId: task.id,
+      mode: "comic",
+      chatId: task.chatId,
+      sourceFloors: segment.floorIds,
+      anchorFloor: floor,
+      mountMode: "trailing",
+      pageIndex: page.pageIndex,
+      imagePath,
+      prompt: enforced.prompt,
+      ...enforced.nl ? { nl: enforced.nl } : {},
+      ...composed.dialogue.length ? { dialogue: composed.dialogue } : {},
+      metadata: {
+        embeddedInBody: true,
+        pageTitle: page.title,
+        layout: page.layout,
+        panelTitles: composed.panelTitles,
+        panelCount: page.panels.length,
+        bbiTag: tag,
+        bbiHash: hash,
+        bbiSlotSeq: inserted.seq,
+        bbiGenerationId: waited.entry.generationId,
+        ...bakedPath ? { bubbleBakedPath: bakedPath } : {},
+        ...typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {}
+      },
+      createdAt: Date.now()
+    };
+    appendArtifact(floor, artifact);
+    done += 1;
   }
   await saveChatSafe();
-  if (done === 0) throw new Error("所有分格出图均失败。");
+  if (done === 0) throw new Error("所有漫画页出图均失败。");
   mountFloor(floor);
   ctx.report({ stage: "completed" });
 }
@@ -5970,23 +6255,51 @@ async function runTheaterMode(task, ctx, deps) {
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     backend: "nai",
     profile: pickProfile(deps.settings, mode),
+    // 小剧场文本按该模式指派的渠道生成；副 API 报错就抛，**不回退主 API**
     llm: async (prompt) => {
-      const caller = makeModeLlmCaller(deps.fullSettings, mode);
       try {
-        return await caller("", prompt);
-      } catch {
-        return await generateQuietPrompt(prompt);
+        return await makeModeLlmCaller(deps.fullSettings, mode)("", prompt);
+      } catch (err) {
+        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
+        throw err;
       }
     },
     generate: async (input, profile) => {
-      const r = await baiBaiAdapter.generate({
-        prompt: input.prompt,
-        ...input.negative ? { negative: input.negative } : {},
-        seed: input.seed,
-        size: input.size,
-        save: true
-      }, profile ?? fallbackProfile(mode));
-      return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      const startedAt = Date.now();
+      try {
+        const r = await baiBaiAdapter.generate({
+          prompt: input.prompt,
+          ...input.negative ? { negative: input.negative } : {},
+          seed: input.seed,
+          size: input.size,
+          save: true
+        }, profile ?? fallbackProfile(mode));
+        recordImageLog({
+          mode,
+          floor,
+          source: "api",
+          prompt: input.prompt,
+          ...input.negative ? { negative: input.negative } : {},
+          ...input.size ? { size: input.size } : {},
+          ...typeof r.seed === "number" ? { seed: r.seed } : typeof input.seed === "number" ? { seed: input.seed } : {},
+          status: "ok",
+          durationMs: Date.now() - startedAt
+        });
+        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      } catch (err) {
+        recordImageLog({
+          mode,
+          floor,
+          source: "api",
+          prompt: input.prompt,
+          ...input.negative ? { negative: input.negative } : {},
+          ...input.size ? { size: input.size } : {},
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt
+        });
+        throw err;
+      }
     },
     readLooks: (names) => {
       const lookup = new Map(characters.characters.map((c) => [c.name, c]));

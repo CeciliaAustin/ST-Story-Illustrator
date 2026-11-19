@@ -1,0 +1,125 @@
+/**
+ * 漫画页提示词组装（纯函数）
+ *
+ * 关键口径：**一张图 = 一页漫画**。整页共用一套 tag，各格只通过 nl 分区描述 —
+ * 这是《漫画分镜与对白气泡》文档里唯一被验证过的做法（构图词 + multiple views/split screen
+ * 让 NAI 一次画出多格版面）。按格各出一张图，出来永远是一堆单幅插画，不是漫画。
+ */
+
+import type { BaiBaiCharacter, ComicDialogue, ComicPagePlan, PanelLayout } from '../types';
+import { mergeCharacterTags } from './panelRelevance';
+
+/** 四档版面的总述句（与 enforcePanelPrompt 的档位同义，供 nl 兜底用）。 */
+export const LAYOUT_NL_HEAD: Record<PanelLayout, string> = {
+  regular:
+    'A two-panel comic page: one canvas split horizontally by a thin black border, read from top to bottom.',
+  irregular:
+    'An irregular comic page: unequally sized panels separated by thin black gutters, read from top to bottom.',
+  inset:
+    'A manga page on a white background: an unframed character illustration in the center with narrow white margins, plus one or two small close-up panels with thin black borders.',
+  unframed:
+    'A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders.',
+};
+
+/** 各档的「在哪一格」引导词，按顺序取，超出就沿用最后一种。 */
+const AREA_LEAD: Record<PanelLayout, string[]> = {
+  regular: ['In the upper panel', 'The lower panel shows', 'In the third panel', 'The bottom panel shows'],
+  irregular: ['In the large panel', 'In the narrow panel', 'In the small panel', 'In the bottom strip'],
+  inset: ['In the main illustration', 'In the top strip', 'In the small framed panel', 'In the side panel'],
+  unframed: ['In the main illustration', 'In the top strip', 'In the small framed panel', 'In the side panel'],
+};
+
+/** 去掉权重写法后的裸词，用于判重。 */
+function bareTag(segment: string): string {
+  return segment.replace(/^\s*[\d.]+::/, '').replace(/^\s*::/, '').replace(/::\s*$/, '').trim().toLowerCase();
+}
+
+/** 把各格 tag 合并成整页一套（裸词判重，保留第一次出现的写法）。 */
+export function mergePanelTags(page: ComicPagePlan): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const panel of page.panels ?? []) {
+    for (const raw of String(panel.tags ?? '').split(',')) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const key = bareTag(piece);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(piece);
+    }
+  }
+  return out.join(', ');
+}
+
+/** 用各格的 nl 拼出整页的分区描述（模型没写 page.nl 时兜底）。 */
+export function buildPageNl(page: ComicPagePlan): string {
+  const head = LAYOUT_NL_HEAD[page.layout] ?? LAYOUT_NL_HEAD.regular;
+  const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
+  const parts: string[] = [head];
+
+  let wrote = false;
+  page.panels?.forEach((panel, index) => {
+    const body = String(panel.nl ?? '').trim();
+    if (!body) return;
+    const lead = leads[Math.min(index, leads.length - 1)];
+    parts.push(lead.endsWith('shows') ? `${lead} ${body}` : `${lead}, ${body}`);
+    wrote = true;
+  });
+
+  if (!wrote) {
+    const titles = (page.panels ?? []).map(p => p.title).filter(Boolean);
+    if (titles.length > 0) parts.push(`The panels in reading order: ${titles.join(' / ')}.`);
+  }
+  return parts.join(' ');
+}
+
+/** 整页台词：页级优先，没有就从各格合并（上限 4 条由解析层保证）。 */
+export function collectPageDialogue(page: ComicPagePlan): ComicDialogue[] {
+  if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
+  const out: ComicDialogue[] = [];
+  for (const panel of page.panels ?? []) {
+    for (const item of panel.dialogue ?? []) {
+      if (out.length >= 4) return out;
+      out.push(item);
+    }
+  }
+  return out;
+}
+
+export interface ComposedPage {
+  prompt: string;
+  nl: string;
+  dialogue: ComicDialogue[];
+  /** 各格短标题，印在卡片上（不是出图词） */
+  panelTitles: string[];
+}
+
+/**
+ * 一页 → 一次出图请求。
+ *
+ * - prompt：页级 tags（没有就合并各格）+ 角色库外貌兜底
+ * - nl：页级 nl（没有就按档位 + 各格 nl 拼）
+ * - dialogue：页级台词（没有就取各格的）
+ */
+export function composePagePrompt(
+  page: ComicPagePlan,
+  characters: BaiBaiCharacter[] = [],
+): ComposedPage {
+  const base = String(page.tags ?? '').trim() || mergePanelTags(page);
+  const names: string[] = [];
+  for (const panel of page.panels ?? []) {
+    for (const c of panel.characters ?? []) {
+      if (c?.name && !names.includes(c.name)) names.push(c.name);
+    }
+  }
+
+  const prompt = mergeCharacterTags(base, names, characters);
+  const nl = String(page.nl ?? '').trim() || buildPageNl(page);
+
+  return {
+    prompt,
+    nl,
+    dialogue: collectPageDialogue(page),
+    panelTitles: (page.panels ?? []).map(p => p.title).filter(Boolean),
+  };
+}

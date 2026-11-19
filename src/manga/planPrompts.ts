@@ -236,19 +236,18 @@ export interface ComicPlanOptions {
   extraInstruction?: string;
 }
 
-const COMIC_SYSTEM_HEAD = `你是一位专业的漫画分镜编辑。根据给定剧情，把它排成漫画页，并以 JSON 输出分镜计划。
+const COMIC_SYSTEM_HEAD = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题","layout":"regular|irregular|inset|unframed","panels":[{"index":0,"title":"格标题","characters":[{"name":"角色","act":"动作"}],"mood":"氛围","tags":"英文构图与画面tag(逗号分隔)","nl":"英文分区描述","dialogue":[{"text":"简短中文台词","area":"tl|tc|tr|ml|mr|bl|bc|br","dir":"v(可选,竖排)","mood":"whisper(可选)"}]}]}]}。
-要求：
-- tags 必须是英文生图 tag（逗号分隔），可带权重；不要写任何中文进 tags/nl。
-- **tags 必须画出这一格正在发生的事**，至少要包含：① 出场角色的外观 tag（照抄角色快照里那串，一个角色 3~6 个即可，不要整串抄）；② 这个人正在做什么（动作/表情/姿势）；③ 在哪（室内外 + 一个具体地点）；④ 画面里的关键物件。**只写构图词的 tags 一律不合格**——那样的图与剧情毫无关系，是本次最严重的错误。
-- 反例（错误）："multiple views, split screen, white background, cinematic lighting" —— 没有人物、没有动作，出图必然与剧情无关。
-- 正例（正确）："1boy, short black hair, white shirt, leaning over a desk, holding a letter, nervous expression, classroom, afternoon, multiple views, split screen"。
-- tags 里不要出现 speech bubble / text / dialogue / caption / english text —— 台词由插件在出图后合成，画面里出现字必然是乱码。
-- nl 是英文自然语言描述，按格写（先总述版面，再逐格写）；台词是对白气泡用中文口语。
-- **台词字段必须写**：从本格剧情里挑最值得说的一两句话（可以是呼喊、拟声词「咚！」「……」），不得整页省略。
-- 一次只讲清楚每个格的一个瞬间；同一批角色在各格保持一致的着装与外貌。
-- 分格数量与版面严格遵循下面的【分镜规则】。`;
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
+硬要求：
+1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
+2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
+3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
+4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），各格远近只写在 nl 里。
+5. page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。
+6. panels 数组只用来标「每一格画了什么」：2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致。
+7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。
+8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。`;
 
 export function buildComicSystemPrompt(options: ComicPlanOptions): string {
   const ruleOptions: PanelRuleOptions = {
@@ -285,6 +284,6 @@ export function buildComicUserPrompt(
     parts.push('【在场角色（保持外貌一致）】\n' + lines.join('\n'));
   }
   if (extraInstruction) parts.push('【本次特别要求】\n' + extraInstruction);
-  parts.push('请只输出一个 JSON 对象（pages 数组）。');
+  parts.push('请只输出一个 JSON 对象（pages 数组）；一页一张图，tag 写在 page.tags 上，nl 逐格分区写。');
   return parts.join('\n\n');
 }

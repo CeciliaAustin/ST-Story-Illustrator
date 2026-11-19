@@ -14,9 +14,9 @@ import type {
 } from '../types';
 import { getCharacters } from '../baibai/bridge';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
-import { generateQuietPrompt } from '../host/sillytavern';
 import { makeModeLlmCaller } from '../manga/planGenerator';
 import { runTheaterOne } from '../theater/runtime';
+import { recordImageLog, recordLlmError } from '../log/imageLog';
 
 export function kindOfMode(mode: CreationMode): StoryKind {
   if (mode === 'chibi-status') return 'status';
@@ -77,23 +77,47 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     mangaSafe: modeSettings?.bwMangaSafeMode ?? true,
     backend: 'nai',
     ...(profile ? { profile } : {}),
+    // 副 API 报错即停，不回退主 API（并把原文记进日志）
     llm: async (prompt) => {
-      const caller = makeModeLlmCaller(settings, mode);
       try {
-        return await caller('', prompt);
-      } catch {
-        return await generateQuietPrompt(prompt);
+        return await makeModeLlmCaller(settings, mode)('', prompt);
+      } catch (err) {
+        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
+        throw err;
       }
     },
     generate: async (genInput, genProfile) => {
-      const r = await baiBaiAdapter.generate({
-        prompt: genInput.prompt,
-        ...(genInput.negative ? { negative: genInput.negative } : {}),
-        seed: genInput.seed,
-        size: genInput.size,
-        save: true,
-      }, genProfile ?? fallbackProfile(mode));
-      return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      const startedAt = Date.now();
+      try {
+        const r = await baiBaiAdapter.generate({
+          prompt: genInput.prompt,
+          ...(genInput.negative ? { negative: genInput.negative } : {}),
+          seed: genInput.seed,
+          size: genInput.size,
+          save: true,
+        }, genProfile ?? fallbackProfile(mode));
+        recordImageLog({
+          mode, floor, source: 'api',
+          prompt: genInput.prompt,
+          ...(genInput.negative ? { negative: genInput.negative } : {}),
+          ...(genInput.size ? { size: genInput.size } : {}),
+          ...(typeof r.seed === 'number' ? { seed: r.seed } : typeof genInput.seed === 'number' ? { seed: genInput.seed } : {}),
+          status: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      } catch (err) {
+        recordImageLog({
+          mode, floor, source: 'api',
+          prompt: genInput.prompt,
+          ...(genInput.negative ? { negative: genInput.negative } : {}),
+          ...(genInput.size ? { size: genInput.size } : {}),
+          status: 'error',
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt,
+        });
+        throw err;
+      }
     },
     readLooks: (names) => {
       const lookup = new Map(characters.characters.map(c => [c.name, c]));

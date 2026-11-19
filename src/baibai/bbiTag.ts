@@ -68,6 +68,12 @@ export function buildBbiTag(input: BbiTagInput): string {
   return `<bbi_image>${prompt}${nlPart}${negativePart}<size>${size}</size></bbi_image>`;
 }
 
+/** 某个位置之后是否已经有生图 tag（决定新 tag 能不能插在这里）。 */
+export function hasImageTagAfter(mes: string, index: number): boolean {
+  const tail = String(mes ?? '').slice(Math.max(0, index));
+  return /<bbi_image>[\s\S]+?<\/bbi_image>/i.test(tail);
+}
+
 /** 正文里已有的生图 tag 数量（= 下一条 tag 的槽位序号）。 */
 export function countImageTags(mes: string): number {
   return (String(mes ?? '').match(/<bbi_image>[\s\S]+?<\/bbi_image>/gi) ?? []).length;
@@ -148,8 +154,16 @@ export async function insertImageTag(input: InsertTagInput): Promise<InsertTagRe
   let nextText: string;
   let position: 'after-anchor' | 'appended';
   let insertAt: number;
-  if (anchorText && anchorText.length >= 2 && currentText.includes(anchorText)) {
-    insertAt = currentText.indexOf(anchorText) + anchorText.length;
+  // 位置规则：插在选段之后，**但绝不能插到已有图片 tag 前面**。
+  // 柏宝绘的卡片按「槽位序号」找自己的结果，序号就是 tag 在正文里的顺序；
+  // 第二张图插到第一张前面会让第一张的序号整体后移，它那张已生成的图就被判定为
+  // 「旧提示词 / 需要重新生成」——插图和漫画一起勾选时必现。
+  // 所以：锚点后面已经有 tag → 一律追加到正文末尾，保证已有槽位序号不动。
+  const anchorUsable = !!anchorText && anchorText.length >= 2 && currentText.includes(anchorText);
+  const rawAnchorAt = anchorUsable ? currentText.indexOf(anchorText!) + anchorText!.length : -1;
+  const anchorHasTagAfter = anchorUsable && hasImageTagAfter(currentText, rawAnchorAt);
+  if (anchorUsable && !anchorHasTagAfter) {
+    insertAt = rawAnchorAt;
     nextText = currentText.slice(0, insertAt) + snippet + currentText.slice(insertAt);
     position = 'after-anchor';
   } else {

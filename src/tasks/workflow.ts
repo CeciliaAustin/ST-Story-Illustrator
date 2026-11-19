@@ -22,14 +22,15 @@ import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment
 import { buildAnchor } from '../selection/anchor';
 import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
-import { generateQuietPrompt, saveChatSafe } from '../host/sillytavern';
+import { saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { readOutConfig } from '../baibai/planConfig';
 import { switchBaiBaiPlan } from '../baibai/planSwitch';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
-import { hasStoryContent, mergeCharacterTags } from '../manga/panelRelevance';
+import { hasStoryContent } from '../manga/panelRelevance';
+import { composePagePrompt } from '../manga/pageCompose';
 import { bakeDialogueIntoImage } from '../manga/bubbleBake';
 import { createArtifactId, appendArtifact } from '../storage/repository';
 import { mountFloor } from '../ui/floorCards';
@@ -43,6 +44,7 @@ import {
 } from '../baibai/bbiTag';
 import { mountTheater } from '../theater/mount';
 import { runTheaterOne } from '../theater/runtime';
+import { recordImageLog, recordLlmError } from '../log/imageLog';
 import { saveSet, newSetId } from '../theater/store';
 import type { QueueRunContext } from './taskQueue';
 
@@ -121,7 +123,10 @@ async function runIllustration(
     },
     caller: makeModeLlmCaller(deps.fullSettings, 'illustration'),
   });
-  if (!plan.ok || !plan.data) throw new Error(plan.error ?? 'Tag 计划生成失败。');
+  if (!plan.ok || !plan.data) {
+    recordLlmError({ mode: 'illustration', floor, error: plan.error ?? 'Tag 计划生成失败。' });
+    throw new Error(plan.error ?? 'Tag 计划生成失败。');
+  }
 
   ctx.report({ stage: 'review' });
   // PromptSegment.chinese 可选，TagSegment.chinese 必需 → 补齐空数组后再组装
@@ -160,8 +165,22 @@ async function runIllustration(
   if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
 
   // 等结果落库：拿到路径才好记进 artifact（也顺手把失败暴露出来）
+  const imageStartedAt = Date.now();
   const waited = await waitForEntry(floor, segment.messages[0]?.swipeId ?? 0, hash, inserted.seq);
   if (!waited.ok) console.warn('[ST-Story-Illustrator] 插画结果未取到：', waited.reason, waited.message);
+  recordImageLog({
+    mode: 'illustration',
+    floor,
+    source: 'card',
+    prompt,
+    ...(plan.data.nl ? { nl: plan.data.nl } : {}),
+    ...(plan.data.negative ? { negative: plan.data.negative } : {}),
+    size: plan.data.size ?? 'portrait',
+    ...(waited.ok && typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
+    status: waited.ok ? 'ok' : 'error',
+    ...(waited.ok ? {} : { error: waited.message ?? waited.reason }),
+    durationMs: Date.now() - imageStartedAt,
+  });
   const imagePath = waited.ok ? waited.entry.path : '';
 
   const mesTextEl = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
@@ -253,7 +272,7 @@ async function runComic(
     panelMode: true,
     panelLayout: layout,
     pageType: modeSettings.comicPageType ?? 'auto',
-    // 漫画页必须有对白：这是它区别于「一张插画」的一半信息量，不给模型就永远没有
+    // 漫画页必须有对白：这是它区别于「一张插画」的一半信息量
     dialogue: true,
     dialoguePolicy,
     dialogueMode: 'json' as const,
@@ -271,10 +290,12 @@ async function runComic(
     options: planOptions,
     caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
   });
-  if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
+  if (!plan.ok || !plan.data) {
+    recordLlmError({ mode: 'comic', floor, error: plan.error ?? '分镜计划生成失败。' });
+    throw new Error(plan.error ?? '分镜计划生成失败。');
+  }
 
-  // 相关度兜底：整页 tag 里只有构图词、没有任何画面内容时，出图必然与选段无关。
-  // 这种情况再问一次（把「必须写人和动作」显式塞进 user prompt），仍旧不行才报错。
+  // 相关度兜底：整页 tag 只有构图词、没有画面内容时，出图必然与选段无关。
   if (!hasStoryContent(plan.data)) {
     console.warn('[ST-Story-Illustrator] 分镜 tag 缺少画面内容，重试一次。');
     plan = await generateComicPlan({
@@ -283,125 +304,127 @@ async function runComic(
       options: {
         ...planOptions,
         extraInstruction:
-          '上一次的分镜 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。' +
-          '这次每格的 tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。',
+          '上一次的 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。' +
+          '这次 page.tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。',
       },
       caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
     });
     if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
     if (!hasStoryContent(plan.data)) {
-      throw new Error('分镜计划里每格都只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。');
+      throw new Error('分镜计划里只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。');
     }
   }
-
-  const totalPanels = plan.data.reduce((sum, page) => sum + page.panels.length, 0);
-  let done = 0;
 
   // 整本漫画用同一套出图方案，只在开始前切一次
   await ensureModeOutPlan('comic', deps);
 
-  // 上一格插进去的 tag：下一格以它为锚点，保证多格按顺序排在一起
-  let previousTag: string | null = null;
+  let done = 0;
+  const totalPages = plan.data.length;
 
+  // **一页 = 一张图**：构图词让 NAI 一次画出多格版面，各格内容只靠 nl 分区描述。
+  // 按格各出一张图只会得到一堆单幅插画，永远不是漫画。
   for (const page of plan.data) {
-    for (const panel of page.panels) {
-      if (ctx.signal.aborted) return;
-      ctx.report({ stage: 'generating', page: page.pageIndex + 1, panel: panel.index + 1, totalPages: plan.data.length, totalPanels });
+    if (ctx.signal.aborted) return;
+    ctx.report({ stage: 'generating', page: page.pageIndex + 1, totalPages });
 
-      const enforced = enforceForGeneration({
-        prompt: panel.tags,
-        nl: panel.nl ?? '',
-        panelMode: true,
-        panelLayout: page.layout,
-        chibiOn: false,
-        storyImage: false,
-      });
-      // 角色外观由角色库兜底注入：模型漏写时至少人还是那个人
-      const prompt = mergeCharacterTags(
-        enforced.prompt,
-        panel.characters.map(c => c.name),
-        characters.characters,
-      );
+    const composed = composePagePrompt(page, characters.characters);
+    const enforced = enforceForGeneration({
+      prompt: composed.prompt,
+      nl: composed.nl,
+      panelMode: true,
+      panelLayout: page.layout,
+      chibiOn: false,
+      storyImage: false,
+    });
 
-      const tag = buildBbiTag({
-        prompt,
-        ...(enforced.nl ? { nl: enforced.nl } : {}),
-        size: 'portrait',
-      });
-      const hash = promptHash(tag);
-      const inserted = await insertImageTag({
-        floor,
-        chatId: task.chatId,
-        swipeId,
-        ...(sendDate ? { sendDate } : {}),
-        tag,
-        anchorText: previousTag ?? segment.text.slice(0, 120),
-      });
-      if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
-      previousTag = tag;
+    const tag = buildBbiTag({
+      prompt: enforced.prompt,
+      ...(enforced.nl ? { nl: enforced.nl } : {}),
+      size: 'portrait',
+    });
+    const hash = promptHash(tag);
+    const inserted = await insertImageTag({
+      floor,
+      chatId: task.chatId,
+      swipeId,
+      ...(sendDate ? { sendDate } : {}),
+      tag,
+      anchorText: segment.text.slice(0, 120),
+    });
+    if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
 
-      const triggered = await triggerCardGenerate(floor, inserted.seq);
-      if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
+    const triggered = await triggerCardGenerate(floor, inserted.seq);
+    if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
 
-      const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
-      if (!waited.ok) {
-        console.warn('[ST-Story-Illustrator] 分格结果未取到：', waited.reason, waited.message);
-        done += 1;
-        continue;
-      }
-
-      // 对白气泡：柏宝绘卡片只认一条图片路径，没有显示时加工的钩子，
-      // 所以合成一次、把卡片指向带字版，原图仍留在图库。
-      let imagePath = waited.entry.path;
-      let bakedPath = '';
-      if (showComposite && panel.dialogue?.length) {
-        const baked = await bakeDialogueIntoImage({
-          imagePath,
-          dialogue: panel.dialogue,
-          style: bubbleStyle,
-          font: bubbleFont,
-        });
-        if (baked && (await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked))) {
-          bakedPath = baked;
-          imagePath = baked;
-        }
-      }
-
-      const artifact: VisualArtifact = {
-        id: createArtifactId(),
-        taskId: task.id,
-        mode: 'comic',
-        chatId: task.chatId,
-        sourceFloors: segment.floorIds,
-        anchorFloor: floor,
-        mountMode: 'trailing',
-        pageIndex: page.pageIndex,
-        panelIndex: panel.index,
-        imagePath,
-        prompt,
-        ...(panel.nl ? { nl: panel.nl } : {}),
-        ...(panel.dialogue ? { dialogue: panel.dialogue } : {}),
-        metadata: {
-          // 图的显示交给柏宝绘卡片，本插件不再挂卡片
-          embeddedInBody: true,
-          pageTitle: page.title,
-          panelTitle: panel.title,
-          layout: page.layout,
-          bbiTag: tag,
-          bbiHash: hash,
-          bbiSlotSeq: inserted.seq,
-          bbiGenerationId: waited.entry.generationId,
-          ...(bakedPath ? { bubbleBakedPath: bakedPath } : {}),
-          ...(typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
-        },
-        createdAt: Date.now(),
-      };
-      appendArtifact(floor, artifact);
-      done += 1;
+    const pageStartedAt = Date.now();
+    const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
+    recordImageLog({
+      mode: 'comic',
+      floor,
+      source: 'card',
+      prompt: enforced.prompt,
+      ...(enforced.nl ? { nl: enforced.nl } : {}),
+      size: 'portrait',
+      ...(waited.ok && typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
+      status: waited.ok ? 'ok' : 'error',
+      ...(waited.ok ? {} : { error: waited.message ?? waited.reason }),
+      durationMs: Date.now() - pageStartedAt,
+    });
+    if (!waited.ok) {
+      console.warn('[ST-Story-Illustrator] 漫画页结果未取到：', waited.reason, waited.message);
+      continue;
     }
+
+    // 对白气泡：卡片只认一条图片路径，所以合成一次、把卡片指向带字版（原图留库）
+    let imagePath = waited.entry.path;
+    let bakedPath = '';
+    if (showComposite && composed.dialogue.length) {
+      const baked = await bakeDialogueIntoImage({
+        imagePath,
+        dialogue: composed.dialogue,
+        style: bubbleStyle,
+        font: bubbleFont,
+      });
+      if (baked && (await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked))) {
+        bakedPath = baked;
+        imagePath = baked;
+      }
+    }
+
+    const artifact: VisualArtifact = {
+      id: createArtifactId(),
+      taskId: task.id,
+      mode: 'comic',
+      chatId: task.chatId,
+      sourceFloors: segment.floorIds,
+      anchorFloor: floor,
+      mountMode: 'trailing',
+      pageIndex: page.pageIndex,
+      imagePath,
+      prompt: enforced.prompt,
+      ...(enforced.nl ? { nl: enforced.nl } : {}),
+      ...(composed.dialogue.length ? { dialogue: composed.dialogue } : {}),
+      metadata: {
+        embeddedInBody: true,
+        pageTitle: page.title,
+        layout: page.layout,
+        panelTitles: composed.panelTitles,
+        panelCount: page.panels.length,
+        bbiTag: tag,
+        bbiHash: hash,
+        bbiSlotSeq: inserted.seq,
+        bbiGenerationId: waited.entry.generationId,
+        ...(bakedPath ? { bubbleBakedPath: bakedPath } : {}),
+        ...(typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
+      },
+      createdAt: Date.now(),
+    };
+    appendArtifact(floor, artifact);
+    done += 1;
   }
+
   await saveChatSafe();
-  if (done === 0) throw new Error('所有分格出图均失败。');
+  if (done === 0) throw new Error('所有漫画页出图均失败。');
   mountFloor(floor);
   ctx.report({ stage: 'completed' });
 }
@@ -438,24 +461,47 @@ async function runTheaterMode(
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     backend: 'nai',
     profile: pickProfile(deps.settings, mode),
+    // 小剧场文本按该模式指派的渠道生成；副 API 报错就抛，**不回退主 API**
     llm: async (prompt) => {
-      // 小剧场文本按该模式指派的渠道生成，失败回退主 API
-      const caller = makeModeLlmCaller(deps.fullSettings, mode);
       try {
-        return await caller('', prompt);
-      } catch {
-        return await generateQuietPrompt(prompt);
+        return await makeModeLlmCaller(deps.fullSettings, mode)('', prompt);
+      } catch (err) {
+        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
+        throw err;
       }
     },
     generate: async (input, profile) => {
-      const r = await baiBaiAdapter.generate({
-        prompt: input.prompt,
-        ...(input.negative ? { negative: input.negative } : {}),
-        seed: input.seed,
-        size: input.size,
-        save: true,
-      }, profile ?? fallbackProfile(mode));
-      return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      const startedAt = Date.now();
+      try {
+        const r = await baiBaiAdapter.generate({
+          prompt: input.prompt,
+          ...(input.negative ? { negative: input.negative } : {}),
+          seed: input.seed,
+          size: input.size,
+          save: true,
+        }, profile ?? fallbackProfile(mode));
+        recordImageLog({
+          mode, floor, source: 'api',
+          prompt: input.prompt,
+          ...(input.negative ? { negative: input.negative } : {}),
+          ...(input.size ? { size: input.size } : {}),
+          ...(typeof r.seed === 'number' ? { seed: r.seed } : typeof input.seed === 'number' ? { seed: input.seed } : {}),
+          status: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
+        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      } catch (err) {
+        recordImageLog({
+          mode, floor, source: 'api',
+          prompt: input.prompt,
+          ...(input.negative ? { negative: input.negative } : {}),
+          ...(input.size ? { size: input.size } : {}),
+          status: 'error',
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt,
+        });
+        throw err;
+      }
     },
     readLooks: (names) => {
       const lookup = new Map(characters.characters.map(c => [c.name, c]));

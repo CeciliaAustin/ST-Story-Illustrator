@@ -1599,3 +1599,83 @@
 .sti-cs-body > .sti-cs-strip {
   width: 100%;
 }
+
+/* ============================================================
+ * 出图日志
+ * ============================================================ */
+
+.sti-log-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0 8px;
+  font-size: 10.5px;
+  opacity: 0.72;
+}
+
+.sti-log-item {
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.24));
+  border-radius: 8px;
+  margin-bottom: 6px;
+  background: rgba(128, 128, 128, 0.06);
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.sti-log-item.is-error {
+  border-color: rgba(200, 90, 90, 0.45);
+}
+
+.sti-log-summary {
+  padding: 5px 9px;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.88;
+}
+
+.sti-log-summary::-webkit-details-marker { display: none; }
+.sti-log-summary::marker { content: ''; }
+
+.sti-log-item.is-error .sti-log-summary {
+  color: #e08c8c;
+  opacity: 1;
+}
+
+.sti-log-body {
+  padding: 0 9px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sti-log-error {
+  color: #e08c8c;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: rgba(200, 90, 90, 0.12);
+}
+
+.sti-log-field-label {
+  font-size: 10px;
+  opacity: 0.55;
+  margin-bottom: 1px;
+}
+
+.sti-log-field-value {
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 9em;
+  overflow-y: auto;
+  opacity: 0.86;
+  scrollbar-width: thin;
+}

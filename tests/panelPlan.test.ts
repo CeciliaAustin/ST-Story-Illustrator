@@ -250,7 +250,7 @@ describe('parseComicPagePlan', () => {
   it('skips pages without panels and warns', () => {
     const result = parseComicPagePlan({ pages: [{ layout: 'regular', panels: [] }] });
     expect(result.pages).toEqual([]);
-    expect(result.warnings.some(w => w.includes('无 panels'))).toBe(true);
+    expect(result.warnings.some(w => w.includes('既没有 tags 也没有有效分格'))).toBe(true);
   });
 
   it('drops invalid panels but keeps valid ones', () => {

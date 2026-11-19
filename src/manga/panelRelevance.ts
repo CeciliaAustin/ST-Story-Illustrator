@@ -34,9 +34,12 @@ export function contentTagCount(tags: string): number {
     .filter(tag => tag && !PANEL_FAMILY.has(tag)).length;
 }
 
-/** 整份计划里是否存在「写出了画面内容」的格（>=2 个内容 tag）。 */
+/** 整份计划里是否存在「写出了画面内容」的页/格（>=2 个内容 tag）。 */
 export function hasStoryContent(pages: ComicPagePlan[]): boolean {
   for (const page of pages) {
+    // 页级 tag 是整页出图真正发出去的那一串，优先看它
+    if (page.tags && contentTagCount(page.tags) >= 2) return true;
+    if (page.tags && contentTagCount(page.tags) === 0) continue;
     for (const panel of page.panels) {
       if (contentTagCount(panel.tags) >= 2) return true;
     }
