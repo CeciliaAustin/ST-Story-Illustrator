@@ -180,3 +180,100 @@ export function extractPlainTextFromMes(mes: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+// ============================================================
+// 宽松锚点定位（划线处插图用）
+// ============================================================
+
+/**
+ * 归一化后的「骨架」：每个字符都记住它在原文里的下标。
+ *
+ * 为什么要这一层：用户划线拿到的是**渲染后的文本**（`window.getSelection()`），
+ * 而我们要插进去的是 `message.mes` 原文。两者差的不是内容，而是：
+ * - Markdown 强调符（`*动作*`、`**加粗**`）在 DOM 里根本不显示；
+ * - 空行：DOM 里一个换行，mes 里常常是两个；
+ * - 引号被排版成 “ ” ‘ ’，破折号被换成 ——；
+ * - 零宽字符、全角半角差异。
+ * 直接 `indexOf` 一定找不到 → 以前就一路落到「追加到本楼末尾」。
+ */
+const ZERO_WIDTH = /[\u200b-\u200f\u202a-\u202e\ufeff]/;
+const MARK_CHARS = /[*_~`]/;
+const QUOTE_MAP: Record<string, string> = {
+  '“': '"', '”': '"', '„': '"', '«': '"', '»': '"',
+  '‘': "'", '’': "'", '‚': "'", '‹': "'", '›': "'",
+  '—': '-', '–': '-',
+};
+
+function skeleton(text: string): { s: string; map: number[] } {
+  const src = String(text ?? '');
+  const chars: string[] = [];
+  const map: number[] = [];
+  let lastSpace = false;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ZERO_WIDTH.test(ch) || MARK_CHARS.test(ch)) continue;
+    if (/\s/.test(ch)) {
+      // 连续空白（含换行）压成一个空格：DOM 与 mes 的空行数量差不该影响定位
+      if (!chars.length || lastSpace) continue;
+      chars.push(' ');
+      map.push(i);
+      lastSpace = true;
+      continue;
+    }
+    lastSpace = false;
+    const replaced = QUOTE_MAP[ch] ?? ch;
+    // NFKC：全角标点/数字归一；结果可能是多个码位，都指回同一个原下标
+    const normalized = replaced.normalize('NFKC').toLowerCase();
+    for (const c of normalized) {
+      chars.push(c);
+      map.push(i);
+    }
+  }
+  while (chars.length && chars[chars.length - 1] === ' ') {
+    chars.pop();
+    map.pop();
+  }
+  return { s: chars.join(''), map };
+}
+
+export interface AnchorRange {
+  /** 选段在原文里的起始下标（含） */
+  start: number;
+  /** 结束下标（不含） */
+  end: number;
+}
+
+/**
+ * 在原文里找出选段的位置（宽松匹配）。
+ *
+ * 逐级退让：整段找不到就用前 60 / 40 / 24 个字符，再不行从 24 一路缩到 8
+ * （用户可能在面板里改了选段的后半句，前 22 个字仍然对得上）。
+ * 仍找不到才返回 null，由调用方决定兜底。
+ */
+export function findAnchorRange(haystack: string, needle: string): AnchorRange | null {
+  const hay = skeleton(haystack);
+  const pin = skeleton(needle);
+  if (!hay.s || !pin.s) return null;
+  const probes = [pin.s, pin.s.slice(0, 60), pin.s.slice(0, 40), pin.s.slice(0, 24)];
+  for (let len = 22; len >= 8; len -= 2) probes.push(pin.s.slice(0, len));
+  for (const probe of probes) {
+    if (!probe.trim()) continue;
+    const at = hay.s.indexOf(probe);
+    if (at < 0) continue;
+    const start = hay.map[at];
+    const end = hay.map[at + probe.length - 1] + 1;
+    return { start, end };
+  }
+  return null;
+}
+
+/**
+ * 选段所在**行**的末尾下标（不含换行符）。
+ *
+ * 不插在选段正中间：Markdown 里那会把一句话劈成两段（`\n\n` 会断段），
+ * 图片夹在半句话中间也读不下去。插在选段所在行之后，视觉上就是「划线那段下面」。
+ */
+export function lineEndAfter(text: string, index: number): number {
+  const nl = String(text ?? '').indexOf('\n', Math.max(0, index));
+  return nl < 0 ? String(text ?? '').length : nl;
+}

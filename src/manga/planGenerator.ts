@@ -24,6 +24,7 @@ import {
   buildIllustrationSystemPrompt,
   buildIllustrationUserPrompt,
   parseIllustrationResponse,
+  ensureCharacterSegments,
   buildComicSystemPrompt,
   buildComicUserPrompt,
   type IllustrationPromptOptions,
@@ -88,8 +89,11 @@ export function makeModeLlmCaller(
   // 人物与服装怎么取证、什么算自创、连续场景怎么沿用同一套衣服，全写在那份规范里。
   // 用户改过它而我们只用自己的紧凑规则，等于他写的规则对本插件完全无效
   // ——「人物对了，服装每格都不一样」就是这么来的。柏宝绘每一张都过一遍，我们也过。
-  const nl = settings.includeNl !== false;
-  return async (system, user) => base(withSpecPreamble(system, nl), user);
+  //
+  // nl 恒为 true：五种模式都会写自然语言（插图有 nl 通道、小剧场每格一句、漫画页分区描述），
+  // 规范里的 {{#nl}} 段必须展开。以前这里读 settings.includeNl，而它默认 false 且**没有 UI**，
+  // 等于把用户贴进去的规范与思维链砍掉一半——「没走我的提示词」就是这么来的。
+  return async (system, user) => base(withSpecPreamble(system, true), user);
 }
 
 // ============================================================
@@ -114,6 +118,10 @@ export interface GenerateIllustrationInput {
   caller?: LlmCaller;
   /** 用户在「提示词」标签页里改过的模板 */
   promptOverrides?: PromptOverrideMap;
+  /** 柏宝绘角色库全文（含发色/瞳色/固定着装） */
+  libraryBlock?: string;
+  /** 「谁是谁」：用户扮演谁、角色卡是谁 */
+  castBlock?: string;
 }
 
 export async function generateIllustrationPlan(
@@ -121,14 +129,24 @@ export async function generateIllustrationPlan(
 ): Promise<GeneratePlanResult<GeneratePromptResponse>> {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildIllustrationSystemPrompt(input.options, input.promptOverrides);
-  const user = buildIllustrationUserPrompt(input.scene, input.characters ?? []);
+  const user = buildIllustrationUserPrompt(input.scene, input.characters ?? [], {
+    ...(input.libraryBlock ? { libraryBlock: input.libraryBlock } : {}),
+    ...(input.castBlock ? { castBlock: input.castBlock } : {}),
+  });
   try {
     const raw = await caller(system, user);
     const parsed = parseIllustrationResponse(raw);
     if (!parsed) {
       return { ok: false, error: 'LLM 未返回可解析的结构化 Tag（JSON 解析失败或无有效片段）。' };
     }
-    return { ok: true, data: parsed };
+    // 外貌是确定信息，不该听模型记性：它一个 character 段都没写就由代码补上
+    const data = ensureCharacterSegments(
+      parsed,
+      input.characters ?? [],
+      input.scene.selectedText,
+      input.options.includeChinese,
+    );
+    return { ok: true, data };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

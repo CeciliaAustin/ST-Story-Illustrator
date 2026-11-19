@@ -81,7 +81,7 @@ const SPEECH_ROOM_RULE =
 
 const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你的任务是根据给定剧情，输出结构化的英文生图标签。
 严格遵守：
-1. 只输出一个 JSON 对象，不要输出任何解释文字、不要使用 Markdown 代码围栏。
+1. 先按前面的规范在心里过一遍检查清单（要写出来就写在 <thinking>…</thinking> 里，并且必须闭合）；然后只输出一个 JSON 对象，JSON 之外不要任何解释文字、不要 Markdown 代码围栏。
 2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}],"nl":"可选英文自然语言描述","negative":"可选英文负面词","size":"portrait|landscape"}。
 3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
 4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
@@ -89,6 +89,8 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 6. 场景与动作必须以给定剧情和上下文为依据，不得凭空添加关键剧情事实。
 7. segment 按 order 从小到大排列；无需的字段直接省略，不要填空字符串或空数组。
 8. 若剧情里的名场面适合漫画分镜，仍按单幅插画输出（漫画由专门的模式处理）。
+9. 选段里出场的**每一个人**都要有自己的 character 段：name 照抄角色库里的名字，外貌照抄该条目的 tag（不改写、不合并）。漏掉一个人，图上就少一个人。
+10. nl 必须写：英文 1~2 句，把「谁、在哪里、正在做什么」串起来——柏宝绘的 nl 通道决定这些细节能不能真的落在画面上。
 {{#hasFlags}}
 补充约束：
 {{#noChinese}}不要生成 chinese 字段（用户已关闭中文辅助）。{{/noChinese}}

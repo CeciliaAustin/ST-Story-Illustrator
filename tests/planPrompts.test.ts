@@ -9,6 +9,7 @@ import {
   characterToSegment,
   buildIllustrationSystemPrompt,
   buildIllustrationUserPrompt,
+  ensureCharacterSegments,
   parseIllustrationResponse,
   buildComicSystemPrompt,
   buildComicUserPrompt,
@@ -80,6 +81,10 @@ describe('buildIllustrationSystemPrompt', () => {
     const p = buildIllustrationSystemPrompt({ includeChinese: true, includeNl: true, includeNegative: true });
     expect(p).toContain('"segments"');
     expect(p).toContain('纯英文');
+    // nl 是柏宝绘的画面细节通道：开启时不许出现「不要生成 nl」
+    expect(p).not.toContain('不要生成 nl');
+    // 外貌与在场人物必须齐全（「人物都没填」的直接对策）
+    expect(p).toContain('每一个人');
   });
 
   it('reflects disabled fields', () => {
@@ -100,6 +105,74 @@ describe('buildIllustrationUserPrompt', () => {
     expect(p).toContain('她笑了');
     expect(p).toContain('前文');
     expect(p).toContain('Alice: blonde');
+  });
+
+  it('角色条目只有字段没有 tag 时，明确标注「没有外貌数据」而不是留空', () => {
+    const p = buildIllustrationUserPrompt(
+      { selectedText: '她笑了' },
+      [{ name: 'Alice', tag: '', fields: { hair: 'long black' } }],
+    );
+    expect(p).toContain('Alice: （没有外貌数据，请按正文写具体）');
+  });
+
+  it('有角色库全文时优先用它（按字段渲染，含发色瞳色与固定着装）', () => {
+    const p = buildIllustrationUserPrompt(
+      { selectedText: '她笑了' },
+      [{ name: 'Alice', tag: '' }],
+      { libraryBlock: '【角色固定外貌库】\n- Alice: 头发=long black, 眼睛=red' },
+    );
+    expect(p).toContain('头发=long black');
+    expect(p).not.toContain('Alice: （没有外貌数据');
+  });
+
+  it('带上「谁是谁」（用户人设 / 角色卡）', () => {
+    const p = buildIllustrationUserPrompt(
+      { selectedText: '她笑了' },
+      [],
+      { castBlock: '【本聊天的人物对应】\n- 用户扮演：Sissy' },
+    );
+    expect(p).toContain('用户扮演：Sissy');
+  });
+});
+
+describe('ensureCharacterSegments：模型漏写时由代码补外貌', () => {
+  const scene = { selectedText: 'Elias 把她按在桌上', source: 'scene' as const, english: ['1boy', 'leaning over'], chinese: [], enabled: true, order: 0 };
+
+  it('一个 character 段都没有时补上出场角色（排在 scene 之前）', () => {
+    const out = ensureCharacterSegments(
+      { segments: [scene] },
+      [{ name: 'Elias', tag: '1boy, short black hair' }],
+      scene.selectedText,
+      false,
+    );
+    expect(out.segments[0]).toMatchObject({ source: 'character', characterName: 'Elias' });
+    expect(out.segments[0].english).toContain('short black hair');
+    expect(out.segments[0].order).toBeLessThan(0);
+  });
+
+  it('模型已经写了 character 段就不重复补', () => {
+    const own = { ...scene, id: 'c1', source: 'character' as const, characterName: 'Elias', english: ['short black hair'] };
+    const out = ensureCharacterSegments({ segments: [own] }, [{ name: 'Elias', tag: '1boy, short black hair' }], scene.selectedText, false);
+    expect(out.segments).toHaveLength(1);
+  });
+
+  it('选段没提到、且库里超过 2 人时不乱补（避免把无关的人画进来）', () => {
+    const out = ensureCharacterSegments(
+      { segments: [scene] },
+      [
+        { name: 'A', tag: '1girl' },
+        { name: 'B', tag: '1boy' },
+        { name: 'C', tag: '1boy' },
+      ],
+      '桌子上放着一封信',
+      false,
+    );
+    expect(out.segments).toHaveLength(1);
+  });
+
+  it('库里条目没外貌时不补空段', () => {
+    const out = ensureCharacterSegments({ segments: [scene] }, [{ name: 'Elias', tag: '' }], scene.selectedText, false);
+    expect(out.segments).toHaveLength(1);
   });
 });
 

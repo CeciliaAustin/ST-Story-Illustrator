@@ -157,18 +157,68 @@ export interface SceneInput {
   nextText?: string;
 }
 
+export interface IllustrationContextBlocks {
+  /** 柏宝绘角色库全文（按字段渲染，含发色/瞳色/体型/固定着装） */
+  libraryBlock?: string;
+  /** 「谁是谁」：用户扮演谁、角色卡是谁 */
+  castBlock?: string;
+}
+
+/**
+ * 模型一个 character 段都没写时，由代码补上在场角色的固定外貌。
+ *
+ * 「人物都没填」有一半不是模型懒得写，而是它把外貌散落进 scene 段、
+ * 或者干脆只写 1boy/1girl。外貌是**可确定**的东西（柏宝绘角色库里就有），
+ * 不该靠模型记性——柏宝绘自己在多角色时走的也是独立的 character 通道。
+ *
+ * 只在「一个 character 段都没有」时补，且只补选段里真的提到的人；
+ * 一个都没提到时，库里只有 1~2 个人才全补（避免把无关的人画进来）。
+ */
+export function ensureCharacterSegments(
+  response: GeneratePromptResponse,
+  characters: BaiBaiCharacter[],
+  selectedText: string,
+  includeChinese: boolean,
+): GeneratePromptResponse {
+  if (response.segments.some(seg => seg.source === 'character')) return response;
+  const usable = characters.filter(c => String(c.name ?? '').trim() && String(c.tag ?? '').trim());
+  if (!usable.length) return response;
+  const text = String(selectedText ?? '');
+  const mentioned = usable.filter(c => text.includes(String(c.name).trim()));
+  const picked = mentioned.length ? mentioned : usable.length <= 2 ? usable : [];
+  if (!picked.length) return response;
+  const segs: PromptSegment[] = [];
+  picked.forEach((character, i) => {
+    const seg = characterToSegment(character, i - picked.length, includeChinese);
+    if (seg) segs.push(seg);
+  });
+  if (!segs.length) return response;
+  return { ...response, segments: [...segs, ...response.segments] };
+}
+
 export function buildIllustrationUserPrompt(
   scene: SceneInput,
   characters: BaiBaiCharacter[],
+  blocks: IllustrationContextBlocks = {},
 ): string {
   const parts: string[] = [];
   parts.push('【本次画面主体（选段，必须以此为准）】\n' + scene.selectedText);
   if (scene.floorText) parts.push('【所在楼层全文（情境参考）】\n' + scene.floorText);
   if (scene.previousText) parts.push('【前文（仅补充，勿当成本画面正在发生的动作）】\n' + scene.previousText);
   if (scene.nextText) parts.push('【后文（仅补充）】\n' + scene.nextText);
-  if (characters.length > 0) {
-    const lines = characters.map(c => `- ${c.name}: ${c.tag ?? ''}${c.nl ? ` (${c.nl})` : ''}`);
-    parts.push('【角色固定外貌（character 段须原样保留其 tag）】\n' + lines.join('\n'));
+  if (blocks.castBlock) parts.push(blocks.castBlock);
+  // 角色库优先：它按字段渲染（头发/眼睛/体型…），比 `tag` 一整串更抗「条目只有字段没有 tag」。
+  // 以前只发 `- 名字: tag`，tag 为空的人就只剩一个名字——模型只能自己编一张脸。
+  if (blocks.libraryBlock) {
+    parts.push(blocks.libraryBlock);
+  } else if (characters.length > 0) {
+    const lines = characters
+      .filter(c => !!String(c.name ?? '').trim())
+      .map(c => `- ${c.name}: ${c.tag || '（没有外貌数据，请按正文写具体）'}${c.nl ? ` (${c.nl})` : ''}`);
+    if (lines.length) {
+      parts.push('【角色固定外貌（character 段须原样保留其 tag；标注「没有外貌数据」的按正文补）】\n'
+        + lines.join('\n'));
+    }
   }
   parts.push('请只输出一个 JSON 对象。');
   return parts.join('\n\n');

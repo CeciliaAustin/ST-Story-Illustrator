@@ -116,3 +116,26 @@ describe('readPromptSet：真的从柏宝绘设置里读', () => {
     expect(system.indexOf('NOVELAI V5')).toBeLessThan(system.indexOf('【任务协议】'));
   });
 });
+
+describe('makeModeLlmCaller：五种模式都必须展开规范里的 nl 段', () => {
+  it('设置里 includeNl=false（旧默认且没有 UI）也不许把规范砍一半', async () => {
+    const seen: string[] = [];
+    (globalThis as unknown as Record<string, unknown>).getContext = () => ({
+      chat: [],
+      extensionSettings: rawSettings({
+        naiV5Spec: '{{#nl}}有自然语言时的规范{{/nl}}{{^nl}}没有 nl 时的规范{{/nl}}',
+      }),
+      generateQuietPrompt: async (prompt: string) => {
+        seen.push(prompt);
+        return '';
+      },
+    });
+    await initSTEnvironment();
+    const { makeModeLlmCaller } = await import('../src/manga/planGenerator');
+    const caller = makeModeLlmCaller({ llmSource: 'main', includeNl: false }, 'illustration');
+    await caller('【任务协议】只输出 JSON', '正文');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('有自然语言时的规范');
+    expect(seen[0]).not.toContain('没有 nl 时的规范');
+  });
+});

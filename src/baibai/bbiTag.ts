@@ -17,6 +17,7 @@
  */
 
 import { getContext, getEventTypes, getCurrentChatId } from '../host/sillytavern';
+import { findAnchorRange, lineEndAfter } from '../selection/anchor';
 
 // ============================================================
 // 常量
@@ -151,20 +152,27 @@ export async function insertImageTag(input: InsertTagInput): Promise<InsertTagRe
 
   // tag 独占一行，前后留空行，避免与正文粘连（柏宝绘的剔除逻辑按「整行」还原）
   const snippet = `\n\n${tag}\n`;
+  // 位置：插在选段所在**行之后**，不再因为「后面已经有图」就整段挪到楼末。
+  //
+  // 旧规矩（有 tag 就追加到末尾）是为了保住已有卡片的槽位序号：柏宝绘按
+  // (promptHash, slotSeq) 找自己的图，序号就是 tag 在正文里的顺序。插到前面却不挪序号，
+  // 旧图就会被判成「提示词已改」而显示未生成。现在改成**插完把后面的序号整体 +1**
+  // （shiftSlotSeqAfterInsert），位置与旧图都不吃亏。
+  //
+  // 定位用宽松匹配而不是 indexOf：划线拿到的是渲染后的文本，mes 里带 Markdown
+  // 强调符与多余空行，逐字比一定对不上，以前就一路落到「追加到本楼末尾」
+  // ——用户看到的正是「图跑到最下面去了」。
+  const range = anchorText && anchorText.length >= 2
+    ? findAnchorRange(currentText, anchorText)
+    : null;
   let nextText: string;
   let position: 'after-anchor' | 'appended';
   let insertAt: number;
-  // 位置规则：插在选段之后，**但绝不能插到已有图片 tag 前面**。
-  // 柏宝绘的卡片按「槽位序号」找自己的结果，序号就是 tag 在正文里的顺序；
-  // 第二张图插到第一张前面会让第一张的序号整体后移，它那张已生成的图就被判定为
-  // 「旧提示词 / 需要重新生成」——插图和漫画一起勾选时必现。
-  // 所以：锚点后面已经有 tag → 一律追加到正文末尾，保证已有槽位序号不动。
-  const anchorUsable = !!anchorText && anchorText.length >= 2 && currentText.includes(anchorText);
-  const rawAnchorAt = anchorUsable ? currentText.indexOf(anchorText!) + anchorText!.length : -1;
-  const anchorHasTagAfter = anchorUsable && hasImageTagAfter(currentText, rawAnchorAt);
-  if (anchorUsable && !anchorHasTagAfter) {
-    insertAt = rawAnchorAt;
-    nextText = currentText.slice(0, insertAt) + snippet + currentText.slice(insertAt);
+  if (range) {
+    // 插在选段所在**行之后**：插在字中间会把一句话劈成两段（还带 \n\n 断段）
+    insertAt = lineEndAfter(currentText, range.end);
+    const head = currentText.slice(0, insertAt).replace(/[ \t]+$/, '');
+    nextText = head + snippet + currentText.slice(insertAt);
     position = 'after-anchor';
   } else {
     insertAt = currentText.length;
@@ -172,6 +180,8 @@ export async function insertImageTag(input: InsertTagInput): Promise<InsertTagRe
     position = 'appended';
   }
   const seq = countImageTags(currentText.slice(0, insertAt));
+  // 插点后面原来有几张图：这些卡的序号要整体后移，否则它们会「图还在、卡片说没生成」
+  const tagsAfterInsert = countImageTags(currentText.slice(insertAt));
 
   msg.mes = nextText;
   const swipes = msg.swipes;
@@ -187,6 +197,10 @@ export async function insertImageTag(input: InsertTagInput): Promise<InsertTagRe
       swipes[swipeId] = currentText;
     }
     return { ok: false, reason: 'save-failed' };
+  }
+
+  if (position === 'after-anchor' && tagsAfterInsert > 0) {
+    await shiftSlotSeqAfterInsert(floor, swipeId, seq);
   }
 
   await refreshFloor(ctx, floor, msg);
@@ -376,4 +390,52 @@ export async function replaceEntryPath(
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * 在正文中间插入新 tag 之后，把这一楼同 swipe 下序号 >= fromSeq 的旧结果整体后移一位。
+ *
+ * 为什么必须做：柏宝绘的卡片按 (promptHash, slotSeq) 找自己的图，slotSeq 就是 tag
+ * 在正文里的顺序。我们把新 tag 插到选段处（可能在某张旧图前面），旧图的序号就整体
+ * 变了；不跟着改，旧卡会被判成「提示词已改」而显示未生成。
+ *
+ * 只动 bbiImage 这一个槽位字段，不碰图片文件、不碰柏宝绘的其它状态；
+ * 写失败就原样回滚（宁可序号旧，也不能留下半改的存档）。
+ */
+export async function shiftSlotSeqAfterInsert(
+  floor: number,
+  swipeId: number,
+  fromSeq: number,
+): Promise<number> {
+  const ctx = getContext() as Ctx;
+  const msg = ctx.chat?.[floor] as Record<string, unknown> | undefined;
+  const extra = msg?.extra as Record<string, unknown> | undefined;
+  const store = extra?.[BBI_IMAGE_EXTRA_KEY] as BbiStore | undefined;
+  const buckets = store?.[String(swipeId)];
+  if (!buckets) return 0;
+
+  const next: BbiStore = JSON.parse(JSON.stringify(store)) as BbiStore;
+  const nextBuckets = next[String(swipeId)] ?? {};
+  let moved = 0;
+  for (const list of Object.values(nextBuckets)) {
+    if (!Array.isArray(list)) continue;
+    for (let i = 0; i < list.length; i += 1) {
+      const entry = list[i];
+      const seq = typeof entry.slotSeq === 'number' ? entry.slotSeq : 0;
+      if (seq < fromSeq) continue;
+      list[i] = { ...entry, slotSeq: seq + 1 };
+      moved += 1;
+    }
+  }
+  if (!moved || !extra) return 0;
+
+  extra[BBI_IMAGE_EXTRA_KEY] = next;
+  try {
+    if (typeof ctx.saveChat === 'function') await (ctx.saveChat as () => Promise<void>)();
+  } catch {
+    extra[BBI_IMAGE_EXTRA_KEY] = store;
+    return 0;
+  }
+  await refreshFloor(ctx, floor, msg);
+  return moved;
 }

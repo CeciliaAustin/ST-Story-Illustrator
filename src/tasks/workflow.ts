@@ -29,6 +29,7 @@ import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
 import { saveChatSafe } from '../host/sillytavern';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
+import { buildLibraryBlock, buildCastBlock, readCastContext } from '../theater/library';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { resolvePanelsPerPage } from '../manga/panelPlan';
@@ -84,14 +85,32 @@ async function runIllustration(
 
   ctx.report({ stage: 'reading' });
   const characters = await getCharacters(floor);
+  // 与柏宝绘自己读剧情同一套取证：整份角色库（发色/瞳色/体型/固定着装）+「谁是谁」。
+  // 以前只发 `- 名字: tag`：条目里 tag 为空、只有字段的人，模型看到的就只剩一个名字，
+  // 于是自己编一张脸——「人物都没填」就是这么来的。
+  const cast = readCastContext(segment.messages.find(m => !m.isUser)?.speaker ?? '');
+  const libraryBlock = buildLibraryBlock(characters.characters);
+  const castBlock = buildCastBlock(cast);
+  if (!libraryBlock) {
+    recordNotice({
+      mode: 'illustration',
+      floor,
+      text: '柏宝绘角色库是空的（或这一楼之前还没有档案）：这次插图没有任何外貌可抄，'
+        + '画出来的人不会是故事里的角色。请到柏宝绘 →「角色」里确认条目存在。',
+    });
+  }
   const plan = await generateIllustrationPlan({
     scene: sceneFromSegment(segment),
     characters: characters.characters,
+    // nl 是柏宝绘的画面细节通道（它自己的每张图都带），以前这里读 includeNl，
+    // 默认 false 且没有 UI → 生成的 tag 里没有 <nl>，看着就像「没走柏宝绘的流程」。
     options: {
       includeChinese: deps.fullSettings.includeChinese,
-      includeNl: deps.fullSettings.includeNl,
+      includeNl: true,
       includeNegative: true,
     },
+    ...(libraryBlock ? { libraryBlock } : {}),
+    ...(castBlock ? { castBlock } : {}),
     caller: makeModeLlmCaller(deps.fullSettings, 'illustration'),
     promptOverrides: deps.fullSettings.promptOverrides,
   });
@@ -136,6 +155,15 @@ async function runIllustration(
     anchorText: segment.text.slice(0, 120),
   });
   if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
+  if (inserted.position === 'appended') {
+    // 兜底发生时要吭声：用户看到的是「图跑到最下面」，不说一句会以为是 bug。
+    recordNotice({
+      mode: 'illustration',
+      floor,
+      text: '没能在正文里定位到你划线的那段原文（可能选段被改过，或这一楼已有图片 tag），'
+        + '这张图已追加到本楼末尾。',
+    });
+  }
 
   const triggered = await triggerCardGenerate(floor, inserted.seq);
   if (!triggered.ok) throw new Error(cardFailureMessage(triggered));

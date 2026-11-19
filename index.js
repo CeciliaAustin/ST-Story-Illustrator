@@ -458,6 +458,71 @@ function extractPlainText(mesText) {
   clone.querySelectorAll("bbi_image").forEach((el2) => el2.remove());
   return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
 }
+const ZERO_WIDTH = /[\u200b-\u200f\u202a-\u202e\ufeff]/;
+const MARK_CHARS = /[*_~`]/;
+const QUOTE_MAP = {
+  "“": '"',
+  "”": '"',
+  "„": '"',
+  "«": '"',
+  "»": '"',
+  "‘": "'",
+  "’": "'",
+  "‚": "'",
+  "‹": "'",
+  "›": "'",
+  "—": "-",
+  "–": "-"
+};
+function skeleton(text) {
+  const src = String(text ?? "");
+  const chars = [];
+  const map = [];
+  let lastSpace = false;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ZERO_WIDTH.test(ch) || MARK_CHARS.test(ch)) continue;
+    if (/\s/.test(ch)) {
+      if (!chars.length || lastSpace) continue;
+      chars.push(" ");
+      map.push(i);
+      lastSpace = true;
+      continue;
+    }
+    lastSpace = false;
+    const replaced = QUOTE_MAP[ch] ?? ch;
+    const normalized = replaced.normalize("NFKC").toLowerCase();
+    for (const c of normalized) {
+      chars.push(c);
+      map.push(i);
+    }
+  }
+  while (chars.length && chars[chars.length - 1] === " ") {
+    chars.pop();
+    map.pop();
+  }
+  return { s: chars.join(""), map };
+}
+function findAnchorRange(haystack, needle) {
+  const hay = skeleton(haystack);
+  const pin = skeleton(needle);
+  if (!hay.s || !pin.s) return null;
+  const probes = [pin.s, pin.s.slice(0, 60), pin.s.slice(0, 40), pin.s.slice(0, 24)];
+  for (let len = 22; len >= 8; len -= 2) probes.push(pin.s.slice(0, len));
+  for (const probe2 of probes) {
+    if (!probe2.trim()) continue;
+    const at = hay.s.indexOf(probe2);
+    if (at < 0) continue;
+    const start = hay.map[at];
+    const end = hay.map[at + probe2.length - 1] + 1;
+    return { start, end };
+  }
+  return null;
+}
+function lineEndAfter(text, index2) {
+  const nl = String(text ?? "").indexOf("\n", Math.max(0, index2));
+  return nl < 0 ? String(text ?? "").length : nl;
+}
 const TOOLBAR_ID = "sti-selection-toolbar";
 const TOOLBAR_CLASS = "sti-selection-toolbar";
 const TOOLBAR_BUTTON_CLASS = "sti-toolbar-btn";
@@ -2744,7 +2809,7 @@ const COMMON_RULES = [
 const SPEECH_ROOM_RULE = "有台词的那一格，nl 里要写明主角位于画面下半部或偏左右一侧、画面上方留出安静的空白（气泡会叠在那里）——人物头顶顶到画面上沿时，气泡只能盖在脸上。";
 const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你的任务是根据给定剧情，输出结构化的英文生图标签。
 严格遵守：
-1. 只输出一个 JSON 对象，不要输出任何解释文字、不要使用 Markdown 代码围栏。
+1. 先按前面的规范在心里过一遍检查清单（要写出来就写在 <thinking>…</thinking> 里，并且必须闭合）；然后只输出一个 JSON 对象，JSON 之外不要任何解释文字、不要 Markdown 代码围栏。
 2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}],"nl":"可选英文自然语言描述","negative":"可选英文负面词","size":"portrait|landscape"}。
 3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
 4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
@@ -2752,6 +2817,8 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 6. 场景与动作必须以给定剧情和上下文为依据，不得凭空添加关键剧情事实。
 7. segment 按 order 从小到大排列；无需的字段直接省略，不要填空字符串或空数组。
 8. 若剧情里的名场面适合漫画分镜，仍按单幅插画输出（漫画由专门的模式处理）。
+9. 选段里出场的**每一个人**都要有自己的 character 段：name 照抄角色库里的名字，外貌照抄该条目的 tag（不改写、不合并）。漏掉一个人，图上就少一个人。
+10. nl 必须写：英文 1~2 句，把「谁、在哪里、正在做什么」串起来——柏宝绘的 nl 通道决定这些细节能不能真的落在画面上。
 {{#hasFlags}}
 补充约束：
 {{#noChinese}}不要生成 chinese 字段（用户已关闭中文辅助）。{{/noChinese}}
@@ -4588,6 +4655,21 @@ function safeParseJson(text) {
     return null;
   }
 }
+function characterToSegment(character, order, includeChinese) {
+  const englishTags = String(character.tag ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+  if (englishTags.length === 0) return null;
+  const cn = includeChinese && character.nl ? [character.nl.trim()] : includeChinese && character.desc ? [character.desc.trim()] : [];
+  const name = String(character.name ?? "").trim() || "角色";
+  return {
+    id: `char-${order}-${name}`,
+    source: "character",
+    characterName: name,
+    english: englishTags,
+    ...cn.length ? { chinese: cn } : {},
+    enabled: true,
+    order
+  };
+}
 function buildIllustrationSystemPrompt(options, overrides) {
   const hasFlags = !options.includeChinese || !options.includeNl || !options.includeNegative || !!options.size;
   return renderPromptDoc("illustration", "single", {
@@ -4598,15 +4680,36 @@ function buildIllustrationSystemPrompt(options, overrides) {
     sizeClause: options.size ?? ""
   }, overrides);
 }
-function buildIllustrationUserPrompt(scene, characters) {
+function ensureCharacterSegments(response, characters, selectedText, includeChinese) {
+  if (response.segments.some((seg) => seg.source === "character")) return response;
+  const usable = characters.filter((c) => String(c.name ?? "").trim() && String(c.tag ?? "").trim());
+  if (!usable.length) return response;
+  const text = String(selectedText ?? "");
+  const mentioned = usable.filter((c) => text.includes(String(c.name).trim()));
+  const picked = mentioned.length ? mentioned : usable.length <= 2 ? usable : [];
+  if (!picked.length) return response;
+  const segs = [];
+  picked.forEach((character, i) => {
+    const seg = characterToSegment(character, i - picked.length, includeChinese);
+    if (seg) segs.push(seg);
+  });
+  if (!segs.length) return response;
+  return { ...response, segments: [...segs, ...response.segments] };
+}
+function buildIllustrationUserPrompt(scene, characters, blocks = {}) {
   const parts = [];
   parts.push("【本次画面主体（选段，必须以此为准）】\n" + scene.selectedText);
   if (scene.floorText) parts.push("【所在楼层全文（情境参考）】\n" + scene.floorText);
   if (scene.previousText) parts.push("【前文（仅补充，勿当成本画面正在发生的动作）】\n" + scene.previousText);
   if (scene.nextText) parts.push("【后文（仅补充）】\n" + scene.nextText);
-  if (characters.length > 0) {
-    const lines = characters.map((c) => `- ${c.name}: ${c.tag ?? ""}${c.nl ? ` (${c.nl})` : ""}`);
-    parts.push("【角色固定外貌（character 段须原样保留其 tag）】\n" + lines.join("\n"));
+  if (blocks.castBlock) parts.push(blocks.castBlock);
+  if (blocks.libraryBlock) {
+    parts.push(blocks.libraryBlock);
+  } else if (characters.length > 0) {
+    const lines = characters.filter((c) => !!String(c.name ?? "").trim()).map((c) => `- ${c.name}: ${c.tag || "（没有外貌数据，请按正文写具体）"}${c.nl ? ` (${c.nl})` : ""}`);
+    if (lines.length) {
+      parts.push("【角色固定外貌（character 段须原样保留其 tag；标注「没有外貌数据」的按正文补）】\n" + lines.join("\n"));
+    }
   }
   parts.push("请只输出一个 JSON 对象。");
   return parts.join("\n\n");
@@ -4700,20 +4803,28 @@ const defaultLlmCaller = async (system, user) => {
 function makeModeLlmCaller(settings2, mode) {
   const channelId = resolveChannelId(mode, settings2.modeChannels, settings2.llmSource);
   const base = channelId === "main" ? mainApiLlmCaller : async (system, user) => generateViaChannelStrict(channelId, system, user);
-  const nl = settings2.includeNl !== false;
-  return async (system, user) => base(withSpecPreamble(system, nl), user);
+  return async (system, user) => base(withSpecPreamble(system, true), user);
 }
 async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildIllustrationSystemPrompt(input.options, input.promptOverrides);
-  const user = buildIllustrationUserPrompt(input.scene, input.characters ?? []);
+  const user = buildIllustrationUserPrompt(input.scene, input.characters ?? [], {
+    ...input.libraryBlock ? { libraryBlock: input.libraryBlock } : {},
+    ...input.castBlock ? { castBlock: input.castBlock } : {}
+  });
   try {
     const raw = await caller(system, user);
     const parsed = parseIllustrationResponse(raw);
     if (!parsed) {
       return { ok: false, error: "LLM 未返回可解析的结构化 Tag（JSON 解析失败或无有效片段）。" };
     }
-    return { ok: true, data: parsed };
+    const data = ensureCharacterSegments(
+      parsed,
+      input.characters ?? [],
+      input.scene.selectedText,
+      input.options.includeChinese
+    );
+    return { ok: true, data };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -7887,10 +7998,6 @@ function buildBbiTag(input) {
   const negativePart = negative ? `<negative>${negative}</negative>` : "";
   return `<bbi_image>${prompt}${nlPart}${negativePart}<size>${size}</size></bbi_image>`;
 }
-function hasImageTagAfter(mes, index2) {
-  const tail = String(mes ?? "").slice(Math.max(0, index2));
-  return /<bbi_image>[\s\S]+?<\/bbi_image>/i.test(tail);
-}
 function countImageTags(mes) {
   return (String(mes ?? "").match(/<bbi_image>[\s\S]+?<\/bbi_image>/gi) ?? []).length;
 }
@@ -7933,15 +8040,14 @@ async function insertImageTag(input) {
 
 ${tag}
 `;
+  const range = anchorText && anchorText.length >= 2 ? findAnchorRange(currentText, anchorText) : null;
   let nextText;
   let position;
   let insertAt;
-  const anchorUsable = !!anchorText && anchorText.length >= 2 && currentText.includes(anchorText);
-  const rawAnchorAt = anchorUsable ? currentText.indexOf(anchorText) + anchorText.length : -1;
-  const anchorHasTagAfter = anchorUsable && hasImageTagAfter(currentText, rawAnchorAt);
-  if (anchorUsable && !anchorHasTagAfter) {
-    insertAt = rawAnchorAt;
-    nextText = currentText.slice(0, insertAt) + snippet + currentText.slice(insertAt);
+  if (range) {
+    insertAt = lineEndAfter(currentText, range.end);
+    const head = currentText.slice(0, insertAt).replace(/[ \t]+$/, "");
+    nextText = head + snippet + currentText.slice(insertAt);
     position = "after-anchor";
   } else {
     insertAt = currentText.length;
@@ -7949,6 +8055,7 @@ ${tag}
     position = "appended";
   }
   const seq2 = countImageTags(currentText.slice(0, insertAt));
+  const tagsAfterInsert = countImageTags(currentText.slice(insertAt));
   msg.mes = nextText;
   const swipes = msg.swipes;
   if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) {
@@ -7962,6 +8069,9 @@ ${tag}
       swipes[swipeId] = currentText;
     }
     return { ok: false, reason: "save-failed" };
+  }
+  if (position === "after-anchor" && tagsAfterInsert > 0) {
+    await shiftSlotSeqAfterInsert(floor, swipeId, seq2);
   }
   await refreshFloor(ctx, floor, msg);
   return { ok: true, seq: seq2, position };
@@ -8070,6 +8180,38 @@ async function replaceEntryPath(floor, swipeId, hash, generationId, nextPath) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+async function shiftSlotSeqAfterInsert(floor, swipeId, fromSeq) {
+  var _a;
+  const ctx = getContext();
+  const msg = (_a = ctx.chat) == null ? void 0 : _a[floor];
+  const extra = msg == null ? void 0 : msg.extra;
+  const store = extra == null ? void 0 : extra[BBI_IMAGE_EXTRA_KEY];
+  const buckets = store == null ? void 0 : store[String(swipeId)];
+  if (!buckets) return 0;
+  const next = JSON.parse(JSON.stringify(store));
+  const nextBuckets = next[String(swipeId)] ?? {};
+  let moved2 = 0;
+  for (const list of Object.values(nextBuckets)) {
+    if (!Array.isArray(list)) continue;
+    for (let i = 0; i < list.length; i += 1) {
+      const entry = list[i];
+      const seq2 = typeof entry.slotSeq === "number" ? entry.slotSeq : 0;
+      if (seq2 < fromSeq) continue;
+      list[i] = { ...entry, slotSeq: seq2 + 1 };
+      moved2 += 1;
+    }
+  }
+  if (!moved2 || !extra) return 0;
+  extra[BBI_IMAGE_EXTRA_KEY] = next;
+  try {
+    if (typeof ctx.saveChat === "function") await ctx.saveChat();
+  } catch {
+    extra[BBI_IMAGE_EXTRA_KEY] = store;
+    return 0;
+  }
+  await refreshFloor(ctx, floor, msg);
+  return moved2;
+}
 function sceneFromSegment(segment) {
   const context = getSurroundingContext(segment, 1);
   return {
@@ -8079,20 +8221,34 @@ function sceneFromSegment(segment) {
   };
 }
 async function runIllustration(task, ctx, deps) {
-  var _a, _b, _c;
+  var _a, _b, _c, _d;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
   ctx.report({ stage: "reading" });
   const characters = await getCharacters(floor);
+  const cast = readCastContext(((_a = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _a.speaker) ?? "");
+  const libraryBlock = buildLibraryBlock(characters.characters);
+  const castBlock = buildCastBlock(cast);
+  if (!libraryBlock) {
+    recordNotice({
+      mode: "illustration",
+      floor,
+      text: "柏宝绘角色库是空的（或这一楼之前还没有档案）：这次插图没有任何外貌可抄，画出来的人不会是故事里的角色。请到柏宝绘 →「角色」里确认条目存在。"
+    });
+  }
   const plan = await generateIllustrationPlan({
     scene: sceneFromSegment(segment),
     characters: characters.characters,
+    // nl 是柏宝绘的画面细节通道（它自己的每张图都带），以前这里读 includeNl，
+    // 默认 false 且没有 UI → 生成的 tag 里没有 <nl>，看着就像「没走柏宝绘的流程」。
     options: {
       includeChinese: deps.fullSettings.includeChinese,
-      includeNl: deps.fullSettings.includeNl,
+      includeNl: true,
       includeNegative: true
     },
+    ...libraryBlock ? { libraryBlock } : {},
+    ...castBlock ? { castBlock } : {},
     caller: makeModeLlmCaller(deps.fullSettings, "illustration"),
     promptOverrides: deps.fullSettings.promptOverrides
   });
@@ -8118,16 +8274,23 @@ async function runIllustration(task, ctx, deps) {
   const inserted = await insertImageTag({
     floor,
     chatId: task.chatId,
-    swipeId: ((_a = segment.messages[0]) == null ? void 0 : _a.swipeId) ?? 0,
-    ...((_b = segment.messages[0]) == null ? void 0 : _b.sendDate) ? { sendDate: segment.messages[0].sendDate } : {},
+    swipeId: ((_b = segment.messages[0]) == null ? void 0 : _b.swipeId) ?? 0,
+    ...((_c = segment.messages[0]) == null ? void 0 : _c.sendDate) ? { sendDate: segment.messages[0].sendDate } : {},
     tag,
     anchorText: segment.text.slice(0, 120)
   });
   if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
+  if (inserted.position === "appended") {
+    recordNotice({
+      mode: "illustration",
+      floor,
+      text: "没能在正文里定位到你划线的那段原文（可能选段被改过，或这一楼已有图片 tag），这张图已追加到本楼末尾。"
+    });
+  }
   const triggered = await triggerCardGenerate(floor, inserted.seq);
   if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
   const imageStartedAt = Date.now();
-  const waited = await waitForEntry(floor, ((_c = segment.messages[0]) == null ? void 0 : _c.swipeId) ?? 0, hash, inserted.seq);
+  const waited = await waitForEntry(floor, ((_d = segment.messages[0]) == null ? void 0 : _d.swipeId) ?? 0, hash, inserted.seq);
   if (!waited.ok) console.warn("[ST-Story-Illustrator] 插画结果未取到：", waited.reason, waited.message);
   recordImageLog({
     mode: "illustration",
