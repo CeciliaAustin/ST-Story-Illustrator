@@ -166,10 +166,17 @@ export function getMessage(floor: number): STChatMessage | undefined {
  * 立即保存聊天（把 message.extra / mes 的改动落盘）。
  * 失败不抛：保存失败不该让生成任务整体失败，下次保存会带上去。
  *
- * **并发合并**：ST 服务端用 write-file-atomic 落盘（临时文件 → rename），
- * Windows 上 rename 与「目标文件被另一个写入占用」撞车就报 EPERM——
- * 用户看到的「聊天无法保存」就是几个保存请求挤在同一个瞬间造成的。
- * 这里把并发请求合并成单飞 + 固定间隔排队：同一时刻只有一个保存在路上。
+ * **为什么要排队 + 延迟**：ST 客户端的 `ctx.saveChat` 就是 `saveChatConditional`，
+ * 它只锁得住「它自己发起的保存」，锁不住 ST 自己那条防抖自动保存
+ * （`saveChatDebounced` 直接调 `saveChat`，不经过 `isChatSaving`）。两边同时
+ * POST `/api/chats/save` 时，服务端 `write-file-atomic` 会同时往同一个 `.jsonl`
+ * 做 rename——Windows 上目标文件被另一个句柄占用，后到的一次就报
+ * `EPERM: operation not permitted, rename`，用户看到的就是「聊天无法保存」。
+ *
+ * 所以这里做三件事：
+ * 1. 突发合并：同一瞬间的多次请求只发一次；
+ * 2. 延迟到编辑动作结束之后再存——等 ST 那 1s 防抖保存先走完，别撞车；
+ * 3. 失败按退避重试一次（AV/索引器短暂锁文件的窗口通常是秒级）。
  */
 let saveDraining = false;
 let saveWaiters: Array<(ok: boolean) => void> = [];
@@ -184,10 +191,10 @@ export function saveChatSafe(): Promise<boolean> {
   });
 }
 
-/** 两次保存之间的最小间隔：给 ST 自己的原子写留出完成窗口。 */
-const SAVE_GAP_MS = 400;
-/** 收到第一个请求后再等一小拍：把同一瞬间的突发合并成一次真实保存。 */
-const SAVE_COALESCE_MS = 120;
+/** 收到请求后先等一拍：合并突发，同时错开 ST 自己的防抖保存。 */
+const SAVE_COALESCE_MS = 1500;
+/** 失败后重试的等待（只重试一次：连续失败说明不是瞬时锁，再试只会刷屏）。 */
+const SAVE_RETRY_MS = 2500;
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => window.setTimeout(resolve, ms));
@@ -196,30 +203,33 @@ function delay(ms: number): Promise<void> {
 async function drainSaveQueue(): Promise<void> {
   try {
     while (saveWaiters.length > 0) {
-      await delay(SAVE_COALESCE_MS); // 突发合并
+      await delay(SAVE_COALESCE_MS);
       const waiters = saveWaiters;
       saveWaiters = [];
-      let ok = false;
-      const ctx = getContext() as Record<string, unknown>;
-      const save = ctx.saveChat;
-      if (typeof save === 'function') {
-        try {
-          await (save as () => Promise<void>).call(ctx);
-          ok = true;
-        } catch {
-          // rename 类瞬时失败：稍等一下单次重试（文件锁释放通常在几十毫秒级）
-          await delay(SAVE_GAP_MS);
-          try {
-            await (save as () => Promise<void>).call(ctx);
-            ok = true;
-          } catch { /* 仍失败就放弃，下次保存会带上去 */ }
-        }
-      }
+      const ok = await saveOnceWithRetry();
       for (const waiter of waiters) waiter(ok);
-      if (saveWaiters.length > 0) await delay(SAVE_GAP_MS);
+      if (saveWaiters.length > 0) await delay(SAVE_COALESCE_MS);
     }
   } finally {
     saveDraining = false;
+  }
+}
+
+async function saveOnceWithRetry(): Promise<boolean> {
+  const ctx = getContext() as Record<string, unknown>;
+  const save = ctx.saveChat;
+  if (typeof save !== 'function') return false;
+  try {
+    await (save as () => Promise<void>).call(ctx);
+    return true;
+  } catch {
+    await delay(SAVE_RETRY_MS);
+    try {
+      await (save as () => Promise<void>).call(ctx);
+      return true;
+    } catch {
+      return false; // 改动还在内存里，下一次保存会带上去
+    }
   }
 }
 
@@ -325,7 +335,12 @@ export function getChatMetadata<T>(key: string, defaults: T): T {
 }
 
 /**
- * 写入聊天元数据（触发防抖保存）。
+ * 写入聊天元数据（触发 ST 的防抖保存）。
+ *
+ * 注意：ST 的 `saveMetadata` / `saveMetadataDebounced` 内部走的也是
+ * `saveChatConditional`——元数据不是单独的文件，而是聊天文件头。
+ * 所以「改个索引」= 「又存一次整条聊天」，高频调用会和我们自己的保存撞车（EPERM）。
+ * 只想改内存、等下一起落盘的场景请用 `touchChatMetadata`。
  */
 export function saveChatMetadata(key: string, value: unknown): void {
   const ctx = getContext();
@@ -336,6 +351,15 @@ export function saveChatMetadata(key: string, value: unknown): void {
   if (typeof ctx.saveMetadataDebounced === 'function') {
     ctx.saveMetadataDebounced();
   }
+}
+
+/** 只写内存、不触发保存（随后由 `saveChatSafe` 统一落盘）。 */
+export function touchChatMetadata(key: string, value: unknown): void {
+  const ctx = getContext();
+  if (!ctx.chatMetadata) {
+    ctx.chatMetadata = {};
+  }
+  (ctx.chatMetadata as Record<string, unknown>)[key] = value;
 }
 
 // ============================================================

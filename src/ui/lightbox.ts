@@ -76,6 +76,8 @@ export interface ComicLightboxContext {
    * 并返回保存后的最新排版参数（数据可能被别处改过，以返回值为准）。
    */
   onSave: (items: ComicDialogue[] | undefined) => Promise<ComicLightboxPlan | null>;
+  /** 点「改词」：实现方退出灯箱并打开改词面板（重画完成后卡片自己换图）。 */
+  onEditPrompt?: () => void;
 }
 
 /** 单开一层的状态（每次 open 重建，闭包天然隔离）。 */
@@ -127,6 +129,13 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
     );
   });
   bar.appendChild(downloadBtn);
+
+  // 改词（柏宝绘楼层卡上的「编辑提示词」等价物）：退出大图、开改词面板
+  if (ctx.onEditPrompt) {
+    const promptBtn = iconButton('prompt', '改提示词并重画这一页');
+    promptBtn.addEventListener('click', () => ctx.onEditPrompt?.());
+    bar.appendChild(promptBtn);
+  }
 
   const bubbleBtn = iconButton('bubble', '带字 / 无字切换（合成失败自动退回无字原图）');
   bubbleBtn.classList.add('is-on');
@@ -195,7 +204,7 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
     if (!item) return;
     item.x = x;
     item.y = y;
-    void persist(state);
+    void persist(state, img);
     renderBottom();
   });
 
@@ -302,7 +311,7 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
     save.textContent = '保存并重合成';
     save.addEventListener('click', () => {
       void (async () => {
-        await persist(state);
+        await persist(state, img);
         state.editing = false;
         editBtn.classList.remove('is-on');
         renderPanel();
@@ -322,11 +331,15 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
 }
 
 /** 细线 SVG 图标按钮（与柏宝绘 bbi-lb-btn 同款风格）。 */
-function iconButton(icon: 'download' | 'bubble' | 'edit' | 'move' | 'close', title: string): HTMLButtonElement {
+function iconButton(
+  icon: 'download' | 'bubble' | 'edit' | 'move' | 'close' | 'prompt',
+  title: string,
+): HTMLButtonElement {
   const paths: Record<string, string> = {
     download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14"/>',
     bubble: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z"/>',
     edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4"/>',
+    prompt: '<path d="M4 6h16M4 12h10M4 18h7"/><path d="M18 12l2 2-5 5h-2v-2l5-5z"/>',
     move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
   };
@@ -341,13 +354,14 @@ function iconButton(icon: 'download' | 'bubble' | 'edit' | 'move' | 'close', tit
   return btn;
 }
 
-/** 保存草稿 → ctx.onSave → 以返回的最新参数重建草稿（保存过的台词必然要重画）。 */
-async function persist(state: ComicState): Promise<void> {
+/** 保存草稿 → ctx.onSave → 以返回的最新参数重建草稿，并重合成一次图。 */
+async function persist(state: ComicState, img: HTMLImageElement): Promise<void> {
   const saved = await state.ctx.onSave(normalizeDialogueEdits(state.draft));
   if (saved) {
     state.ctx.plan = saved;
     state.draft = saved.items.map(item => ({ ...item }));
   }
+  refreshImage(state, img);
 }
 
 /**
@@ -363,11 +377,13 @@ function refreshImage(state: ComicState, img: HTMLImageElement): void {
     img.src = state.ctx.baseSrc;
     return;
   }
-  img.src = state.ctx.baseSrc; // 先显示无字原图，合成好了再换（不白屏）
+  // 已经有带字图时**不要**先退回无字原图：等新的合成好了直接换，
+  // 否则每挪一次气泡，画面都要闪一下（用户说的「一闪一闪」）。
+  if (!state.current) img.src = state.ctx.baseSrc;
   void (async () => {
     const result = await compositeDialogue(state.ctx.baseSrc, state.draft, state.ctx.plan.opts);
     if (token !== state.imgToken) { result?.revoke(); return; }
-    if (!result) return; // 合成失败：保持无字原图，不升级成错误（坑 11）
+    if (!result) return; // 合成失败：保持当前画面，不升级成错误（坑 11）
     state.current?.revoke();
     state.current = result;
     img.src = result.url;

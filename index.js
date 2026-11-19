@@ -73,8 +73,8 @@ function saveChatSafe() {
     }
   });
 }
-const SAVE_GAP_MS = 400;
-const SAVE_COALESCE_MS = 120;
+const SAVE_COALESCE_MS = 1500;
+const SAVE_RETRY_MS = 2500;
 function delay(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -84,27 +84,29 @@ async function drainSaveQueue() {
       await delay(SAVE_COALESCE_MS);
       const waiters = saveWaiters;
       saveWaiters = [];
-      let ok = false;
-      const ctx = getContext();
-      const save = ctx.saveChat;
-      if (typeof save === "function") {
-        try {
-          await save.call(ctx);
-          ok = true;
-        } catch {
-          await delay(SAVE_GAP_MS);
-          try {
-            await save.call(ctx);
-            ok = true;
-          } catch {
-          }
-        }
-      }
+      const ok = await saveOnceWithRetry();
       for (const waiter of waiters) waiter(ok);
-      if (saveWaiters.length > 0) await delay(SAVE_GAP_MS);
+      if (saveWaiters.length > 0) await delay(SAVE_COALESCE_MS);
     }
   } finally {
     saveDraining = false;
+  }
+}
+async function saveOnceWithRetry() {
+  const ctx = getContext();
+  const save = ctx.saveChat;
+  if (typeof save !== "function") return false;
+  try {
+    await save.call(ctx);
+    return true;
+  } catch {
+    await delay(SAVE_RETRY_MS);
+    try {
+      await save.call(ctx);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 function getEventTypes() {
@@ -175,15 +177,12 @@ function getChatMetadata(key, defaults) {
   if (stored === void 0) return defaults;
   return stored;
 }
-function saveChatMetadata(key, value) {
+function touchChatMetadata(key, value) {
   const ctx = getContext();
   if (!ctx.chatMetadata) {
     ctx.chatMetadata = {};
   }
   ctx.chatMetadata[key] = value;
-  if (typeof ctx.saveMetadataDebounced === "function") {
-    ctx.saveMetadataDebounced();
-  }
 }
 async function generateQuietPrompt(prompt, options) {
   const ctx = getContext();
@@ -796,12 +795,12 @@ function stripManagedBlock(s, tag) {
   while ((open = out.match(openRe)) && guard++ < 100) {
     const start = open.index ?? 0;
     const rest = out.slice(start + open[0].length);
-    const close = rest.match(closeRe);
-    if (!close) {
+    const close2 = rest.match(closeRe);
+    if (!close2) {
       out = out.slice(0, start) + out.slice(start + open[0].length);
       continue;
     }
-    const end = start + open[0].length + (close.index ?? 0) + close[0].length;
+    const end = start + open[0].length + (close2.index ?? 0) + close2[0].length;
     out = out.slice(0, start) + out.slice(end);
   }
   return out;
@@ -3335,12 +3334,12 @@ function openLightbox(imageUrl, caption) {
   img.src = imageUrl;
   img.alt = caption ?? "图片";
   overlay.appendChild(img);
-  const close = document.createElement("button");
-  close.className = "sti-lightbox-close";
-  close.textContent = "×";
-  close.setAttribute("aria-label", "关闭");
-  close.addEventListener("click", closeLightbox);
-  overlay.appendChild(close);
+  const close2 = document.createElement("button");
+  close2.className = "sti-lightbox-close";
+  close2.textContent = "×";
+  close2.setAttribute("aria-label", "关闭");
+  close2.addEventListener("click", closeLightbox);
+  overlay.appendChild(close2);
   overlay.style.display = "flex";
   overlay.onclick = (e) => {
     if (e.target === overlay) closeLightbox();
@@ -3388,6 +3387,14 @@ function openComicLightbox(ctx) {
     );
   });
   bar.appendChild(downloadBtn);
+  if (ctx.onEditPrompt) {
+    const promptBtn = iconButton("prompt", "改提示词并重画这一页");
+    promptBtn.addEventListener("click", () => {
+      var _a;
+      return (_a = ctx.onEditPrompt) == null ? void 0 : _a.call(ctx);
+    });
+    bar.appendChild(promptBtn);
+  }
   const bubbleBtn = iconButton("bubble", "带字 / 无字切换（合成失败自动退回无字原图）");
   bubbleBtn.classList.add("is-on");
   bubbleBtn.addEventListener("click", () => {
@@ -3418,9 +3425,9 @@ function openComicLightbox(ctx) {
     renderPanel2();
   });
   bar.appendChild(moveBtn);
-  const close = iconButton("close", "关闭 (Esc)");
-  close.addEventListener("click", closeLightbox);
-  bar.appendChild(close);
+  const close2 = iconButton("close", "关闭 (Esc)");
+  close2.addEventListener("click", closeLightbox);
+  bar.appendChild(close2);
   function syncMoveTools() {
     const disabled = !state2.showBubbles;
     editBtn.disabled = disabled;
@@ -3448,7 +3455,7 @@ function openComicLightbox(ctx) {
     if (!item) return;
     item.x = x;
     item.y = y;
-    void persist(state2);
+    void persist(state2, img);
     renderBottom();
   });
   const bottom = document.createElement("div");
@@ -3548,7 +3555,7 @@ function openComicLightbox(ctx) {
     save.textContent = "保存并重合成";
     save.addEventListener("click", () => {
       void (async () => {
-        await persist(state2);
+        await persist(state2, img);
         state2.editing = false;
         editBtn.classList.remove("is-on");
         renderPanel2();
@@ -3571,6 +3578,7 @@ function iconButton(icon, title) {
     download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14"/>',
     bubble: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z"/>',
     edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4"/>',
+    prompt: '<path d="M4 6h16M4 12h10M4 18h7"/><path d="M18 12l2 2-5 5h-2v-2l5-5z"/>',
     move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>'
   };
@@ -3582,12 +3590,13 @@ function iconButton(icon, title) {
   btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[icon]}</svg>`;
   return btn;
 }
-async function persist(state2) {
+async function persist(state2, img) {
   const saved = await state2.ctx.onSave(normalizeDialogueEdits(state2.draft));
   if (saved) {
     state2.ctx.plan = saved;
     state2.draft = saved.items.map((item) => ({ ...item }));
   }
+  refreshImage(state2, img);
 }
 function refreshImage(state2, img) {
   var _a;
@@ -3598,7 +3607,7 @@ function refreshImage(state2, img) {
     img.src = state2.ctx.baseSrc;
     return;
   }
-  img.src = state2.ctx.baseSrc;
+  if (!state2.current) img.src = state2.ctx.baseSrc;
   void (async () => {
     var _a2;
     const result = await compositeDialogue(state2.ctx.baseSrc, state2.draft, state2.ctx.plan.opts);
@@ -3657,12 +3666,12 @@ function ensureGallery() {
     stepGallery(1);
   });
   el2.appendChild(next);
-  const close = document.createElement("button");
-  close.className = "sti-lightbox-close";
-  close.textContent = "×";
-  close.setAttribute("aria-label", "关闭");
-  close.addEventListener("click", closeGallery);
-  el2.appendChild(close);
+  const close2 = document.createElement("button");
+  close2.className = "sti-lightbox-close";
+  close2.textContent = "×";
+  close2.setAttribute("aria-label", "关闭");
+  close2.addEventListener("click", closeGallery);
+  el2.appendChild(close2);
   document.body.appendChild(el2);
   gallery = el2;
   el2.addEventListener("keydown", (e) => {
@@ -3711,6 +3720,132 @@ function destroyLightbox() {
     gallery = null;
   }
   galleryItems = [];
+}
+let mask = null;
+function ensureMask() {
+  if (mask) return mask;
+  const el2 = document.createElement("div");
+  el2.className = "sti-dlg-mask";
+  el2.style.display = "none";
+  document.body.appendChild(el2);
+  mask = el2;
+  return el2;
+}
+function openPromptDialog(options) {
+  const host = ensureMask();
+  host.innerHTML = "";
+  host.style.display = "flex";
+  host.onclick = (event) => {
+    if (event.target === host) close();
+  };
+  const panel = document.createElement("div");
+  panel.className = "sti-prompt-dlg";
+  panel.addEventListener("click", (event) => event.stopPropagation());
+  host.appendChild(panel);
+  const head = document.createElement("div");
+  head.className = "sti-prompt-dlg__head";
+  const title = document.createElement("div");
+  title.className = "sti-prompt-dlg__title";
+  title.textContent = "改提示词并重画";
+  head.appendChild(title);
+  if (options.subtitle) {
+    const sub = document.createElement("div");
+    sub.className = "sti-prompt-dlg__sub";
+    sub.textContent = options.subtitle;
+    head.appendChild(sub);
+  }
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "sti-prompt-dlg__x";
+  x.textContent = "×";
+  x.setAttribute("aria-label", "关闭");
+  x.addEventListener("click", close);
+  head.appendChild(x);
+  panel.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "sti-prompt-dlg__body";
+  panel.appendChild(body);
+  const promptLabel = document.createElement("label");
+  promptLabel.className = "sti-prompt-dlg__label";
+  promptLabel.textContent = "正向提示词（Base：人数 / 场景 / 构图 / 光线）";
+  const promptArea = document.createElement("textarea");
+  promptArea.className = "sti-prompt-dlg__area";
+  promptArea.value = options.prompt;
+  promptArea.spellcheck = false;
+  promptArea.rows = 8;
+  body.append(promptLabel, promptArea);
+  const nlLabel = document.createElement("label");
+  nlLabel.className = "sti-prompt-dlg__label";
+  nlLabel.textContent = "自然语言画面描述（nl，可留空）";
+  const nlArea = document.createElement("textarea");
+  nlArea.className = "sti-prompt-dlg__area is-nl";
+  nlArea.value = options.nl;
+  nlArea.spellcheck = false;
+  nlArea.rows = 4;
+  body.append(nlLabel, nlArea);
+  const hint = document.createElement("p");
+  hint.className = "sti-prompt-dlg__hint";
+  hint.textContent = "角色块（<characters>）不受影响；保存后立刻用新词重画这一页，台词气泡会按当前台词重新合成。";
+  body.appendChild(hint);
+  const foot = document.createElement("div");
+  foot.className = "sti-prompt-dlg__foot";
+  const status = document.createElement("span");
+  status.className = "sti-prompt-dlg__status";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "sti-prompt-dlg__btn";
+  cancel.textContent = "取消";
+  cancel.addEventListener("click", close);
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "sti-prompt-dlg__btn sti-prompt-dlg__btn--main";
+  apply.textContent = "保存并重画";
+  foot.append(status, cancel, apply);
+  panel.appendChild(foot);
+  let busy = false;
+  apply.addEventListener("click", () => {
+    if (busy) return;
+    const prompt = promptArea.value.trim();
+    if (!prompt) {
+      status.textContent = "正向提示词不能为空。";
+      promptArea.focus();
+      return;
+    }
+    busy = true;
+    status.textContent = "";
+    apply.disabled = true;
+    cancel.disabled = true;
+    apply.textContent = "重画中…";
+    void (async () => {
+      try {
+        const result = await options.onApply(prompt, nlArea.value.trim());
+        if (result.ok) {
+          close();
+          return;
+        }
+        status.textContent = result.message ?? "重画失败。";
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+      } finally {
+        busy = false;
+        apply.disabled = false;
+        cancel.disabled = false;
+        apply.textContent = "保存并重画";
+      }
+    })();
+  });
+  promptArea.focus();
+}
+function close() {
+  if (!mask) return;
+  mask.style.display = "none";
+  mask.innerHTML = "";
+}
+function destroyPromptDialog() {
+  if (mask) {
+    mask.remove();
+    mask = null;
+  }
 }
 const SETTINGS_KEY = "baibai_image";
 function str(v) {
@@ -3914,10 +4049,10 @@ function closePanelIfWeOpened(weOpened) {
   if (!weOpened) return;
   const root = shadowRoot();
   if (!root) return;
-  const close = Array.from(root.querySelectorAll("button.bbi-icon-btn")).find(
+  const close2 = Array.from(root.querySelectorAll("button.bbi-icon-btn")).find(
     (btn) => (btn.getAttribute("title") ?? "") === "关闭"
   );
-  close == null ? void 0 : close.click();
+  close2 == null ? void 0 : close2.click();
 }
 async function switchBaiBaiPlan(planId, options = {}) {
   const opts = typeof options === "number" ? { timeoutMs: options } : options;
@@ -4543,12 +4678,12 @@ function render(panel, tab = "settings") {
   const title = document.createElement("h2");
   title.textContent = tab === "log" ? "出图日志" : tab === "prompts" ? "提示词" : "配图设置";
   head.appendChild(title);
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "sti-config-close";
-  close.textContent = "×";
-  close.addEventListener("click", () => hideConfigPanel());
-  head.appendChild(close);
+  const close2 = document.createElement("button");
+  close2.type = "button";
+  close2.className = "sti-config-close";
+  close2.textContent = "×";
+  close2.addEventListener("click", () => hideConfigPanel());
+  head.appendChild(close2);
   panel.appendChild(head);
   panel.appendChild(buildStudioTabs(tab));
   if (tab === "log") {
@@ -5383,7 +5518,7 @@ function updateArtifact(floor, artifactId, patch) {
 }
 function touchChatIndex() {
   const index2 = getChatMetadata(CHAT_META_KEY, { version: SCHEMA_VERSION, updatedAt: 0, count: 0 });
-  saveChatMetadata(CHAT_META_KEY, {
+  touchChatMetadata(CHAT_META_KEY, {
     version: SCHEMA_VERSION,
     updatedAt: Date.now(),
     count: (index2.count ?? 0) + 1
@@ -6263,7 +6398,7 @@ function extractJson(text) {
   const start = raw.search(/[\[{]/);
   if (start < 0) return null;
   const open = raw[start];
-  const close = open === "{" ? "}" : "]";
+  const close2 = open === "{" ? "}" : "]";
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -6286,7 +6421,7 @@ function extractJson(text) {
       continue;
     }
     if (ch === open) depth += 1;
-    else if (ch === close) {
+    else if (ch === close2) {
       depth -= 1;
       if (depth === 0) return raw.slice(start, i + 1).trim();
     }
@@ -7833,11 +7968,14 @@ ${user}`
 function randomSeed$1() {
   return Math.floor(Math.random() * 4294967295);
 }
-async function rerollComicPage(floor, artifactId) {
+async function rerollComicPage(floor, artifactId, overrides = {}) {
   const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
   if (!artifact) return { ok: false, message: "找不到这一页。" };
   if (artifact.mode !== "comic") return { ok: false, message: "这张不是漫画页。" };
-  if (!artifact.prompt.trim()) return { ok: false, message: "这一页没存下当时的出图词，请重新选段生成。" };
+  const prompt = (overrides.prompt ?? artifact.prompt ?? "").trim();
+  if (!prompt) return { ok: false, message: "正向提示词不能为空。" };
+  const nl = (overrides.nl !== void 0 ? overrides.nl : artifact.nl ?? "").trim();
+  const edited = overrides.prompt !== void 0 || overrides.nl !== void 0;
   const settings2 = getSettings(DEFAULT_SETTINGS);
   const comic = resolveModeSettings(settings2, "comic");
   const meta = artifact.metadata ?? {};
@@ -7850,8 +7988,8 @@ async function rerollComicPage(floor, artifactId) {
     await ensureModeOutPlan("comic", settings2);
     const result = await baiBaiAdapter.generate(
       {
-        prompt: artifact.prompt,
-        ...artifact.nl ? { nl: artifact.nl } : {},
+        prompt,
+        ...nl ? { nl } : {},
         ...characters.length ? { characters } : {},
         ...typeof meta.characterName === "string" && meta.characterName ? { character: meta.characterName } : {},
         seed,
@@ -7867,7 +8005,7 @@ async function rerollComicPage(floor, artifactId) {
         floor,
         source: "api",
         plan: readOutConfig().activePlanName,
-        prompt: artifact.prompt,
+        prompt,
         size: "portrait",
         seed,
         status: "error",
@@ -7879,11 +8017,14 @@ async function rerollComicPage(floor, artifactId) {
     updateArtifact(floor, artifactId, {
       imagePath: rawPath,
       originalImagePath: void 0,
+      // 改过词就把新词落回 artifact：再点「重画」用的就是改后的版本
+      ...edited ? { prompt, nl: nl || void 0 } : {},
       metadata: {
         ...meta,
         rawImagePath: rawPath,
         bubbleBakedPath: void 0,
         ...meta.pageType ? {} : { pageType },
+        ...edited ? { promptEditedAt: Date.now() } : {},
         ...typeof result.seed === "number" ? { seed: result.seed } : { seed }
       }
     });
@@ -7892,15 +8033,15 @@ async function rerollComicPage(floor, artifactId) {
       floor,
       source: "api",
       plan: readOutConfig().activePlanName,
-      prompt: artifact.prompt,
-      ...artifact.nl ? { nl: artifact.nl } : {},
+      prompt,
+      ...nl ? { nl } : {},
       ...characters.length ? { characters } : {},
       size: "portrait",
       ...typeof result.seed === "number" ? { seed: result.seed } : { seed },
       status: "ok",
       durationMs: Date.now() - startedAt
     });
-    await saveChatSafe();
+    void saveChatSafe();
     return { ok: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -7909,7 +8050,7 @@ async function rerollComicPage(floor, artifactId) {
       floor,
       source: "api",
       plan: readOutConfig().activePlanName,
-      prompt: artifact.prompt,
+      prompt,
       size: "portrait",
       seed,
       status: "error",
@@ -8130,7 +8271,9 @@ function svgIcon(name) {
     // 下载
     download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14" fill="none"/>',
     // 对话气泡（气泡 / 台词）
-    dialog: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z" fill="none"/>'
+    dialog: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z" fill="none"/>',
+    // 铅笔（改提示词）
+    edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4" fill="none"/>'
   };
   return `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
@@ -8149,6 +8292,9 @@ function buildComicActions(artifact, floor) {
   };
   const status = document.createElement("span");
   status.className = "sti-card-status";
+  const edit = make("改提示词", "edit");
+  edit.title = "改这一页的提示词（正向词 / nl）并重画";
+  edit.addEventListener("click", () => editComicPrompt(floor, artifact.id));
   const redraw = make("重画这一页", "redraw");
   redraw.title = "同一套提示词、换一个种子重画这一页（台词气泡会重新合成）";
   redraw.addEventListener("click", () => {
@@ -8176,14 +8322,31 @@ function buildComicActions(artifact, floor) {
   const download = make("下载这张图", "download");
   download.title = "下载当前显示的这一版（带字 / 无字跟随页面）";
   download.addEventListener("click", () => {
-    const bubbled = document.querySelector(`[data-sti-artifact-id="${artifact.id}"] img`);
-    void saveImageFile((bubbled == null ? void 0 : bubbled.src) ?? artifact.imagePath, `comic_${Date.now().toString(36)}.png`);
+    const img = document.querySelector(`[data-sti-artifact-id="${artifact.id}"] img`);
+    void saveImageFile((img == null ? void 0 : img.src) ?? artifact.imagePath, `comic_${Date.now().toString(36)}.png`);
   });
   const dialog = make("气泡与台词", "dialog");
   dialog.title = "打开大图：气泡开关、改台词、移动气泡位置";
   dialog.addEventListener("click", () => openComicCardLightbox(floor, artifact.id, imgAlt(artifact)));
-  wrap.append(redraw, download, dialog, status);
+  wrap.append(edit, redraw, download, dialog, status);
   return wrap;
+}
+function editComicPrompt(floor, artifactId) {
+  var _a, _b;
+  const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
+  if (!artifact) return;
+  const page = typeof ((_a = artifact.metadata) == null ? void 0 : _a.pageTitle) === "string" ? artifact.metadata.pageTitle : "";
+  const panelCount = typeof ((_b = artifact.metadata) == null ? void 0 : _b.panelCount) === "number" ? artifact.metadata.panelCount : 0;
+  openPromptDialog({
+    prompt: artifact.prompt ?? "",
+    nl: artifact.nl ?? "",
+    ...page || panelCount ? { subtitle: [page, panelCount ? `${panelCount} 格` : ""].filter(Boolean).join(" · ") } : {},
+    onApply: async (prompt, nl) => {
+      const result = await rerollComicPage(floor, artifactId, { prompt, nl });
+      if (result.ok) mountFloor(floor);
+      return result;
+    }
+  });
 }
 function imgAlt(artifact) {
   return `${MODE_LABELS[artifact.mode] || artifact.mode} 作品`;
@@ -8229,9 +8392,13 @@ function openComicCardLightbox(floor, artifactId, alt) {
   openComicLightbox({
     baseSrc: comicBaseImageOf(latest),
     plan,
+    onEditPrompt: () => {
+      closeLightbox();
+      editComicPrompt(floor, artifactId);
+    },
     onSave: async (items) => {
       updateArtifact(floor, artifactId, { dialogue: items ?? [] });
-      await saveChatSafe();
+      void saveChatSafe();
       mountFloor(floor);
       const fresh = getArtifacts(floor).find((a) => a.id === artifactId);
       if (!fresh) return null;
@@ -8407,13 +8574,13 @@ function openPromptEditor(options) {
   const title = document.createElement("h3");
   title.textContent = `改词 · 第 ${panel.index + 1} 格`;
   head.appendChild(title);
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "sti-pe-x";
-  close.textContent = "×";
-  close.setAttribute("aria-label", "关闭");
-  close.addEventListener("click", closeEditor);
-  head.appendChild(close);
+  const close2 = document.createElement("button");
+  close2.type = "button";
+  close2.className = "sti-pe-x";
+  close2.textContent = "×";
+  close2.setAttribute("aria-label", "关闭");
+  close2.addEventListener("click", closeEditor);
+  head.appendChild(close2);
   box.appendChild(head);
   const tip = document.createElement("p");
   tip.className = "sti-pe-tip";
@@ -10549,6 +10716,7 @@ function onDisable() {
   destroyToolbar();
   destroySelectionPanel();
   destroyLightbox();
+  destroyPromptDialog();
   destroyConfigPanel();
   destroyWandMenu();
   unmountFloatingBall();

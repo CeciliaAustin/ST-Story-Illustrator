@@ -26,6 +26,7 @@ import { showToolbar, hideToolbar, setOnGenerate, destroyToolbar } from './ui/se
 import { showSelectionPanel, hideSelectionPanel, destroySelectionPanel } from './ui/selectionPanel';
 import { setSegmentCleanOptions } from './selection/storySegment';
 import { destroyLightbox } from './ui/lightbox';
+import { destroyPromptDialog } from './ui/promptDialog';
 import { destroyConfigPanel, hideConfigPanel, showConfigPanel } from './ui/configPanel';
 import { remountAll, mountFloor, ensureFloorMounted } from './ui/floorCards';
 import { mountTheater, remountAllTheater, ensureTheaterMounted } from './theater/mount';
@@ -501,6 +502,7 @@ export function onDisable(): void {
   destroyToolbar();
   destroySelectionPanel();
   destroyLightbox();
+  destroyPromptDialog();
   destroyConfigPanel();
   destroyWandMenu();
   unmountFloatingBall();

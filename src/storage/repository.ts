@@ -11,7 +11,7 @@
  */
 
 import type { VisualArtifact } from '../types';
-import { getMessage, getChatMetadata, saveChatMetadata } from '../host/sillytavern';
+import { getMessage, getChatMetadata, touchChatMetadata } from '../host/sillytavern';
 
 // ============================================================
 // 常量与命名空间
@@ -124,7 +124,10 @@ export function getArtifactCount(): number {
 
 function touchChatIndex(): void {
   const index = getChatMetadata<ChatTaskIndex>(CHAT_META_KEY, { version: SCHEMA_VERSION, updatedAt: 0, count: 0 });
-  saveChatMetadata(CHAT_META_KEY, {
+  // 只写内存：这里每改一次 artifact 都会调用，而 ST 的元数据保存 = 再存一次整条聊天，
+  // 高频触发会和我们自己的落盘同时 rename 同一个 .jsonl（Windows 报 EPERM）。
+  // 真正的落盘交给调用方的 saveChatSafe（saveChat 会把 chat_metadata 一起写进去）。
+  touchChatMetadata(CHAT_META_KEY, {
     version: SCHEMA_VERSION,
     updatedAt: Date.now(),
     count: (index.count ?? 0) + 1,

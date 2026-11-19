@@ -17,9 +17,10 @@ import { manwaAnchors, parseManwaTags } from '../baibai/manwaTag';
 import { extractPlainText, findAnchorRange } from '../selection/anchor';
 import { comicOverlayPlan, comicBaseImageOf } from '../manga/bubbleOverlay';
 import { compositeDialogue } from '../manga/bubbleComposite';
-import { openLightbox, openComicLightbox } from './lightbox';
+import { openLightbox, openComicLightbox, closeLightbox } from './lightbox';
 import { rerollComicPage } from '../manga/rerollPage';
 import { saveImageFile } from './saveImage';
+import { openPromptDialog } from './promptDialog';
 
 const INLINE_CLASS = 'sti-inline-card';
 const TRAILING_AREA_CLASS = 'sti-trailing-area';
@@ -340,7 +341,7 @@ function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HT
 // ============================================================
 
 /** 内联 SVG 图标（与柏宝绘的 icon 风格一致：细线、24 视窗）。 */
-function svgIcon(name: 'redraw' | 'download' | 'dialog'): string {
+function svgIcon(name: 'redraw' | 'download' | 'dialog' | 'edit'): string {
   const paths: Record<string, string> = {
     // 循环箭头（重绘）
     redraw: '<path d="M20 11a8 8 0 1 0-2.34 5.66M20 5v6h-6" fill="none"/>',
@@ -348,19 +349,21 @@ function svgIcon(name: 'redraw' | 'download' | 'dialog'): string {
     download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14" fill="none"/>',
     // 对话气泡（气泡 / 台词）
     dialog: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z" fill="none"/>',
+    // 铅笔（改提示词）
+    edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4" fill="none"/>',
   };
   return `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
 
 /**
- * 漫画卡片的悬浮操作组：重画 / 下载 / 气泡与台词（打开灯箱）。
+ * 漫画卡片的悬浮操作组：改词 / 重画 / 下载 / 气泡与台词（打开灯箱）。
  * 平时淡显几乎不可见，hover 卡片才浮出来——图片平时只有一颗小点，柏宝绘同款。
  */
 function buildComicActions(artifact: VisualArtifact, floor: number): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'sti-figure-actions';
 
-  const make = (label: string, icon: 'redraw' | 'download' | 'dialog'): HTMLButtonElement => {
+  const make = (label: string, icon: 'redraw' | 'download' | 'dialog' | 'edit'): HTMLButtonElement => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'sti-figure-fab';
@@ -374,6 +377,10 @@ function buildComicActions(artifact: VisualArtifact, floor: number): HTMLElement
 
   const status = document.createElement('span');
   status.className = 'sti-card-status';
+
+  const edit = make('改提示词', 'edit');
+  edit.title = '改这一页的提示词（正向词 / nl）并重画';
+  edit.addEventListener('click', () => editComicPrompt(floor, artifact.id));
 
   const redraw = make('重画这一页', 'redraw');
   redraw.title = '同一套提示词、换一个种子重画这一页（台词气泡会重新合成）';
@@ -403,16 +410,39 @@ function buildComicActions(artifact: VisualArtifact, floor: number): HTMLElement
   const download = make('下载这张图', 'download');
   download.title = '下载当前显示的这一版（带字 / 无字跟随页面）';
   download.addEventListener('click', () => {
-    const bubbled = document.querySelector<HTMLImageElement>(`[data-sti-artifact-id="${artifact.id}"] img`);
-    void saveImageFile(bubbled?.src ?? artifact.imagePath, `comic_${Date.now().toString(36)}.png`);
+    const img = document.querySelector<HTMLImageElement>(`[data-sti-artifact-id="${artifact.id}"] img`);
+    void saveImageFile(img?.src ?? artifact.imagePath, `comic_${Date.now().toString(36)}.png`);
   });
 
   const dialog = make('气泡与台词', 'dialog');
   dialog.title = '打开大图：气泡开关、改台词、移动气泡位置';
   dialog.addEventListener('click', () => openComicCardLightbox(floor, artifact.id, imgAlt(artifact)));
 
-  wrap.append(redraw, download, dialog, status);
+  wrap.append(edit, redraw, download, dialog, status);
   return wrap;
+}
+
+/**
+ * 改词面板：把这一页当时发出去的正向词 + nl 摊开，改完就地重画。
+ * 重画成功后就地重挂卡片（旧卡 imagePath 过期会被换掉），并回写新词。
+ */
+function editComicPrompt(floor: number, artifactId: string): void {
+  const artifact = getArtifacts(floor).find(a => a.id === artifactId);
+  if (!artifact) return;
+  const page = typeof artifact.metadata?.pageTitle === 'string' ? artifact.metadata.pageTitle : '';
+  const panelCount = typeof artifact.metadata?.panelCount === 'number' ? artifact.metadata.panelCount : 0;
+  openPromptDialog({
+    prompt: artifact.prompt ?? '',
+    nl: artifact.nl ?? '',
+    ...(page || panelCount
+      ? { subtitle: [page, panelCount ? `${panelCount} 格` : ''].filter(Boolean).join(' · ') }
+      : {}),
+    onApply: async (prompt, nl) => {
+      const result = await rerollComicPage(floor, artifactId, { prompt, nl });
+      if (result.ok) mountFloor(floor);
+      return result;
+    },
+  });
 }
 
 function imgAlt(artifact: VisualArtifact): string {
@@ -466,10 +496,16 @@ function openComicCardLightbox(floor: number, artifactId: string, alt: string): 
   openComicLightbox({
     baseSrc: comicBaseImageOf(latest),
     plan,
+    onEditPrompt: () => {
+      // 灯箱里点「改词」：先退出灯箱，再开改词面板（重画完成后卡片自己会换图）
+      closeLightbox();
+      editComicPrompt(floor, artifactId);
+    },
     onSave: async items => {
-      // 写回 artifact（台词 + 手动钉的位置一起存），落盘、重挂卡片
+      // 写回 artifact（台词 + 手动钉的位置一起存），立即重挂卡片；
+      // 落盘走防抖保存，不 await —— 否则点一下气泡要等 1.5s 才有反馈。
       updateArtifact(floor, artifactId, { dialogue: items ?? [] });
-      await saveChatSafe();
+      void saveChatSafe();
       mountFloor(floor);
       const fresh = getArtifacts(floor).find(a => a.id === artifactId);
       if (!fresh) return null;
