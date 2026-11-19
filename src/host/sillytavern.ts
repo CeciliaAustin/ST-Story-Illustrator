@@ -165,16 +165,61 @@ export function getMessage(floor: number): STChatMessage | undefined {
 /**
  * 立即保存聊天（把 message.extra / mes 的改动落盘）。
  * 失败不抛：保存失败不该让生成任务整体失败，下次保存会带上去。
+ *
+ * **并发合并**：ST 服务端用 write-file-atomic 落盘（临时文件 → rename），
+ * Windows 上 rename 与「目标文件被另一个写入占用」撞车就报 EPERM——
+ * 用户看到的「聊天无法保存」就是几个保存请求挤在同一个瞬间造成的。
+ * 这里把并发请求合并成单飞 + 固定间隔排队：同一时刻只有一个保存在路上。
  */
-export async function saveChatSafe(): Promise<boolean> {
-  const ctx = getContext() as Record<string, unknown>;
-  const save = ctx.saveChat;
-  if (typeof save !== 'function') return false;
+let saveDraining = false;
+let saveWaiters: Array<(ok: boolean) => void> = [];
+
+export function saveChatSafe(): Promise<boolean> {
+  return new Promise(resolve => {
+    saveWaiters.push(resolve);
+    if (!saveDraining) {
+      saveDraining = true;
+      void drainSaveQueue();
+    }
+  });
+}
+
+/** 两次保存之间的最小间隔：给 ST 自己的原子写留出完成窗口。 */
+const SAVE_GAP_MS = 400;
+/** 收到第一个请求后再等一小拍：把同一瞬间的突发合并成一次真实保存。 */
+const SAVE_COALESCE_MS = 120;
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+async function drainSaveQueue(): Promise<void> {
   try {
-    await (save as () => Promise<void>).call(ctx);
-    return true;
-  } catch {
-    return false;
+    while (saveWaiters.length > 0) {
+      await delay(SAVE_COALESCE_MS); // 突发合并
+      const waiters = saveWaiters;
+      saveWaiters = [];
+      let ok = false;
+      const ctx = getContext() as Record<string, unknown>;
+      const save = ctx.saveChat;
+      if (typeof save === 'function') {
+        try {
+          await (save as () => Promise<void>).call(ctx);
+          ok = true;
+        } catch {
+          // rename 类瞬时失败：稍等一下单次重试（文件锁释放通常在几十毫秒级）
+          await delay(SAVE_GAP_MS);
+          try {
+            await (save as () => Promise<void>).call(ctx);
+            ok = true;
+          } catch { /* 仍失败就放弃，下次保存会带上去 */ }
+        }
+      }
+      for (const waiter of waiters) waiter(ok);
+      if (saveWaiters.length > 0) await delay(SAVE_GAP_MS);
+    }
+  } finally {
+    saveDraining = false;
   }
 }
 

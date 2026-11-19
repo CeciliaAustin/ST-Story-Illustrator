@@ -1,18 +1,23 @@
 /**
  * ST-Story-Illustrator — 图片放大查看（Lightbox）
  *
- * 2026-11 修订：对齐柏宝绘原版的灯箱交互（原版文档 §6.7/6.13/§7）——
- * 漫画页落盘的是无字原图，气泡在显示时才 canvas 合成，于是灯箱可以：
+ * 2026-11-19 修订：外观与交互对齐柏宝绘原版灯箱——
+ * - 深色毛玻璃全屏遮罩，图片居中，右上角**图标工具栏**（下载 / 气泡 / 台词 / 移动 / 关闭）；
+ * - 图下不再放任何文字行（那行 caption 是用户点名的「多出来一行字」）；
  * - 「气泡」开关：带字 / 无字一键切换（合成失败自动退回无字原图，坑 11）；
  * - 「台词」面板：增删改台词，保存写回 artifact.dialogue，零额度重合成；
- * - 「移动气泡」：选中某一句 → 点击图上位置 → 原地钉死（手动位置不参与
- *   自动排版、不被避让挪动，用户说放哪就放哪）；
- * - 「下载」：当前显示那一版（合成时自建独立 blob，不复用显示层引用，坑 10）。
+ * - 「移动气泡」：选中某一句 → 点击图上位置 → 原地钉死（手动位置不参与自动排版）；
+ * - 「下载」：走 saveImageFile（canvas 重编码，相对路径/跨域都能存）——
+ *   旧实现 fetch URL 在柏宝绘相对路径/跨域图上静默失败，症状就是「点了没反应」。
+ *
+ * 性能纪律：图只在「带字状态或台词草稿变化」时才重合成；开关台词面板、
+ * 选中 chip 这类纯 UI 操作不触发 canvas（旧实现每次 render 都重画一遍 = 闪屏）。
  */
 import type { ComicDialogue } from '../types';
-import type { PanelDialogueItem, PlanOptions, BubbleCompositeResult } from '../manga/bubbleTypes';
+import type { PanelDialogueItem, PlanOptions } from '../manga/bubbleTypes';
 import { compositeDialogue } from '../manga/bubbleComposite';
 import { normalizeDialogueEdits } from '../manga/bubbleOverlay';
+import { saveImageFile } from './saveImage';
 
 let overlay: HTMLElement | null = null;
 
@@ -21,20 +26,13 @@ export function openLightbox(imageUrl: string, caption?: string): void {
   ensureOverlay();
   if (!overlay) return;
   overlay.innerHTML = '';
-  overlay.classList.remove('is-comic'); // 漫画灯箱的附加类不串场
+  overlay.classList.remove('is-comic');
 
   const img = document.createElement('img');
   img.className = 'sti-lightbox-img';
   img.src = imageUrl;
   img.alt = caption ?? '图片';
   overlay.appendChild(img);
-
-  if (caption) {
-    const cap = document.createElement('div');
-    cap.className = 'sti-lightbox-caption';
-    cap.textContent = caption;
-    overlay.appendChild(cap);
-  }
 
   const close = document.createElement('button');
   close.className = 'sti-lightbox-close';
@@ -71,7 +69,6 @@ export interface ComicLightboxPlan {
 
 export interface ComicLightboxContext {
   baseSrc: string;
-  caption?: string;
   /** 打开时的排版参数（bubbleOverlay.comicOverlayPlan 的产物）。 */
   plan: ComicLightboxPlan;
   /**
@@ -89,14 +86,15 @@ interface ComicState {
   moving: boolean;
   moveIndex: number;
   draft: PanelDialogueItem[];
-  token: number;
+  /** 图的合成代次：只有图的输入变了才 ++，UI 状态变化不碰它 */
+  imgToken: number;
   current: { url: string; revoke: () => void } | null;
 }
 
 /** 打开漫画灯箱。plan 为空（无台词）时直接走普通大图。 */
 export function openComicLightbox(ctx: ComicLightboxContext): void {
   if (!ctx.plan.items.length) {
-    openLightbox(ctx.baseSrc, ctx.caption);
+    openLightbox(ctx.baseSrc);
     return;
   }
   ensureOverlay();
@@ -111,17 +109,78 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
     moving: false,
     moveIndex: 0,
     draft: ctx.plan.items.map(item => ({ ...item })),
-    token: 0,
+    imgToken: 0,
     current: null,
   };
 
+  // —— 右上角图标工具栏（柏宝绘同款：细线 SVG、圆角胶囊按钮）——
+  const bar = document.createElement('div');
+  bar.className = 'sti-lb-bar';
+  bar.addEventListener('click', e => e.stopPropagation());
+  overlay.appendChild(bar);
+
+  const downloadBtn = iconButton('download', '下载当前版本（带字 / 无字跟随开关）');
+  downloadBtn.addEventListener('click', () => {
+    void saveImageFile(
+      state.showBubbles && state.current ? state.current.url : ctx.baseSrc,
+      `comic_${Date.now().toString(36)}.png`,
+    );
+  });
+  bar.appendChild(downloadBtn);
+
+  const bubbleBtn = iconButton('bubble', '带字 / 无字切换（合成失败自动退回无字原图）');
+  bubbleBtn.classList.add('is-on');
+  bubbleBtn.addEventListener('click', () => {
+    state.showBubbles = !state.showBubbles;
+    bubbleBtn.classList.toggle('is-on', state.showBubbles);
+    syncMoveTools();
+    refreshImage(state, img);
+  });
+  bar.appendChild(bubbleBtn);
+
+  const editBtn = iconButton('edit', '编辑台词：增删改后保存，立即重合成（不消耗出图额度）');
+  editBtn.addEventListener('click', () => {
+    state.editing = !state.editing;
+    if (state.editing) state.moving = false;
+    editBtn.classList.toggle('is-on', state.editing);
+    syncMoveTools();
+    renderBottom();
+    renderPanel();
+  });
+  bar.appendChild(editBtn);
+
+  const moveBtn = iconButton('move', '选中一句台词，再点击图上位置把它钉在那里（不被自动排版挪动）');
+  moveBtn.addEventListener('click', () => {
+    state.moving = !state.moving;
+    if (state.moving) state.editing = false;
+    moveBtn.classList.toggle('is-on', state.moving);
+    editBtn.classList.toggle('is-on', state.editing);
+    syncMoveTools();
+    renderBottom();
+    renderPanel();
+  });
+  bar.appendChild(moveBtn);
+
+  const close = iconButton('close', '关闭 (Esc)');
+  close.addEventListener('click', closeLightbox);
+  bar.appendChild(close);
+
+  // 移动模式下，气泡关闭时移动没有意义：三个工具联动置灰
+  function syncMoveTools(): void {
+    const disabled = !state.showBubbles;
+    editBtn.disabled = disabled;
+    moveBtn.disabled = disabled;
+    if (disabled) { state.moving = false; state.editing = false; }
+  }
+
+  // —— 图片舞台 ——
   const stage = document.createElement('div');
   stage.className = 'sti-lb-stage';
   overlay.appendChild(stage);
 
   const img = document.createElement('img');
   img.className = 'sti-lightbox-img';
-  img.alt = ctx.caption ?? '漫画页';
+  img.alt = '漫画页';
   stage.appendChild(img);
 
   // 移动气泡模式：点击图面 → 归一化坐标 → 钉死选中那句
@@ -137,130 +196,29 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
     item.x = x;
     item.y = y;
     void persist(state);
+    renderBottom();
   });
 
-  const caption = document.createElement('div');
-  caption.className = 'sti-lightbox-caption';
-  overlay.appendChild(caption);
+  // —— 底部条：移动模式的台词选择（编辑面板打开时隐藏）——
+  const bottom = document.createElement('div');
+  bottom.className = 'sti-lb-bottom';
+  bottom.addEventListener('click', e => e.stopPropagation());
+  overlay.appendChild(bottom);
 
-  // 工具栏：气泡开关 / 台词 / 移动气泡 / 下载 / 关闭
-  const bar = document.createElement('div');
-  bar.className = 'sti-lb-toolbar';
-  overlay.appendChild(bar);
-
-  const bubbleBtn = toolButton('气泡', '带字 / 无字切换（合成失败自动退回无字原图）');
-  bubbleBtn.classList.add('is-on');
-  bubbleBtn.addEventListener('click', () => {
-    state.showBubbles = !state.showBubbles;
-    bubbleBtn.classList.toggle('is-on', state.showBubbles);
-    render(state, img, caption, chips, panel);
-  });
-  bar.appendChild(bubbleBtn);
-
-  const editBtn = toolButton('台词', '编辑台词：增删改后保存，立即重合成（不消耗出图额度）');
-  editBtn.addEventListener('click', () => {
-    state.editing = !state.editing;
-    if (state.editing) state.moving = false;
-    render(state, img, caption, chips, panel);
-  });
-  bar.appendChild(editBtn);
-
-  const moveBtn = toolButton('移动气泡', '选中一句台词，再点击图上位置把它钉在那里（不被自动排版挪动）');
-  moveBtn.addEventListener('click', () => {
-    state.moving = !state.moving;
-    if (state.moving) state.editing = false;
-    render(state, img, caption, chips, panel);
-  });
-  bar.appendChild(moveBtn);
-
-  const saveBtn = toolButton('下载', '保存当前显示的这一版（带字 / 无字跟随开关）');
-  saveBtn.addEventListener('click', () => { void downloadCurrent(state); });
-  bar.appendChild(saveBtn);
-
-  const close = document.createElement('button');
-  close.className = 'sti-lightbox-close';
-  close.textContent = '×';
-  close.setAttribute('aria-label', '关闭');
-  close.addEventListener('click', closeLightbox);
-  overlay.appendChild(close);
-
-  // 移动模式：每句一个 chip，选中哪句、点哪儿钉哪儿
-  const chips = document.createElement('div');
-  chips.className = 'sti-lb-chips';
-  overlay.appendChild(chips);
-
-  // 台词编辑面板
+  // —— 台词编辑面板（柏宝绘式居中浮层）——
   const panel = document.createElement('div');
   panel.className = 'sti-lb-dlg';
+  panel.addEventListener('click', e => e.stopPropagation());
   overlay.appendChild(panel);
 
-  overlay.style.display = 'flex';
-  overlay.onclick = (e) => { if (e.target === overlay) closeLightbox(); };
-  render(state, img, caption, chips, panel);
-}
-
-function toolButton(label: string, title: string): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'sti-lb-btn';
-  btn.textContent = label;
-  btn.title = title;
-  return btn;
-}
-
-/** 保存草稿 → ctx.onSave → 以返回的最新参数重建草稿。 */
-async function persist(state: ComicState): Promise<void> {
-  const saved = await state.ctx.onSave(normalizeDialogueEdits(state.draft));
-  if (saved) {
-    state.ctx.plan = saved;
-    state.draft = saved.items.map(item => ({ ...item }));
-  }
-}
-
-/** 当前显示的地址：带字（显示层 blob）/ 无字原图。 */
-function currentSrc(state: ComicState): string {
-  return state.showBubbles && state.current ? state.current.url : state.ctx.baseSrc;
-}
-
-/** 渲染（幂等）：图、chip、面板、caption 全部按当前状态重建。 */
-function render(
-  state: ComicState,
-  img: HTMLImageElement,
-  caption: HTMLElement,
-  chips: HTMLElement,
-  panel: HTMLElement,
-): void {
-  // —— 图 ——
-  const token = ++state.token;
-  if (state.current) { state.current.revoke(); state.current = null; }
-  if (!state.showBubbles) {
-    img.src = state.ctx.baseSrc;
-  } else {
-    img.src = state.ctx.baseSrc; // 先显示无字原图，合成好了再换（不白屏）
-    void (async () => {
-      const result: BubbleCompositeResult | null = await compositeDialogue(
-        state.ctx.baseSrc, state.draft, state.ctx.plan.opts,
-      );
-      if (token !== state.token) { result?.revoke(); return; }
-      if (!result) return; // 合成失败：保持无字原图，不升级成错误（坑 11）
-      state.current = result;
-      img.src = result.url;
-    })();
-  }
-
-  // —— caption ——
-  caption.textContent = state.moving
-    ? `移动气泡：正在移动第 ${state.moveIndex + 1} 句——点击图上位置把它钉住`
-    : (state.ctx.caption ?? '');
-
-  // —— chips（移动模式） ——
-  chips.innerHTML = '';
-  chips.style.display = state.moving ? 'flex' : 'none';
-  if (state.moving) {
+  function renderBottom(): void {
+    bottom.innerHTML = '';
+    bottom.style.display = state.moving && !state.editing ? 'flex' : 'none';
+    if (bottom.style.display === 'none') return;
     const hint = document.createElement('span');
-    hint.className = 'sti-lb-chip-hint';
-    hint.textContent = '选择要挪的台词：';
-    chips.appendChild(hint);
+    hint.className = 'sti-lb-hint';
+    hint.textContent = '点击台词选中，再点图上位置钉住：';
+    bottom.appendChild(hint);
     state.draft.forEach((item, index) => {
       const chip = document.createElement('button');
       chip.type = 'button';
@@ -269,108 +227,151 @@ function render(
       chip.addEventListener('click', event => {
         event.stopPropagation();
         state.moveIndex = index;
-        render(state, img, caption, chips, panel);
+        renderBottom();
       });
-      chips.appendChild(chip);
+      bottom.appendChild(chip);
     });
   }
 
-  // —— 台词编辑面板 ——
-  panel.innerHTML = '';
-  panel.style.display = state.editing ? 'flex' : 'none';
-  if (!state.editing) return;
+  function renderPanel(): void {
+    panel.innerHTML = '';
+    panel.style.display = state.editing ? 'flex' : 'none';
+    if (!state.editing) return;
 
-  const head = document.createElement('div');
-  head.className = 'sti-lb-dlg__head';
-  const name = document.createElement('div');
-  name.className = 'sti-lb-dlg__name';
-  name.textContent = '台词（最多 4 条，每条 60 字内）';
-  head.appendChild(name);
-  const closePanel = document.createElement('button');
-  closePanel.type = 'button';
-  closePanel.className = 'sti-lb-dlg__x';
-  closePanel.textContent = '×';
-  closePanel.addEventListener('click', () => {
-    state.editing = false;
-    render(state, img, caption, chips, panel);
-  });
-  head.appendChild(closePanel);
-  panel.appendChild(head);
-
-  const list = document.createElement('div');
-  list.className = 'sti-lb-dlg__list';
-  state.draft.forEach((item, index) => {
-    const row = document.createElement('div');
-    row.className = 'sti-lb-dlg__row';
-    const no = document.createElement('span');
-    no.className = 'sti-lb-dlg__no';
-    no.textContent = String(index + 1);
-    const text = document.createElement('input');
-    text.type = 'text';
-    text.className = 'sti-lb-dlg__text';
-    text.value = item.text;
-    text.maxLength = 60;
-    text.addEventListener('input', () => { item.text = text.value; });
-    text.addEventListener('click', e => e.stopPropagation());
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'sti-lb-dlg__del';
-    del.textContent = '−';
-    del.title = '删除这一条';
-    del.addEventListener('click', () => {
-      state.draft.splice(index, 1);
-      if (state.moveIndex >= state.draft.length) state.moveIndex = Math.max(0, state.draft.length - 1);
-      render(state, img, caption, chips, panel);
-    });
-    row.append(no, text, del);
-    list.appendChild(row);
-  });
-  panel.appendChild(list);
-
-  const actions = document.createElement('div');
-  actions.className = 'sti-lb-dlg__actions';
-  const add = document.createElement('button');
-  add.type = 'button';
-  add.className = 'sti-lb-dlg__btn';
-  add.textContent = '加一条';
-  add.disabled = state.draft.length >= 4;
-  add.addEventListener('click', () => {
-    state.draft.push({ text: '' });
-    render(state, img, caption, chips, panel);
-  });
-  const save = document.createElement('button');
-  save.type = 'button';
-  save.className = 'sti-lb-dlg__btn sti-lb-dlg__btn--main';
-  save.textContent = '保存';
-  save.addEventListener('click', event => {
-    event.stopPropagation();
-    void (async () => {
-      await persist(state);
+    const head = document.createElement('div');
+    head.className = 'sti-lb-dlg__head';
+    const name = document.createElement('div');
+    name.className = 'sti-lb-dlg__name';
+    name.textContent = '台词（最多 4 条，每条 60 字内）';
+    head.appendChild(name);
+    const closePanel = document.createElement('button');
+    closePanel.type = 'button';
+    closePanel.className = 'sti-lb-dlg__x';
+    closePanel.textContent = '×';
+    closePanel.addEventListener('click', () => {
       state.editing = false;
-      render(state, img, caption, chips, panel);
-    })();
-  });
-  actions.append(add, save);
-  panel.appendChild(actions);
+      editBtn.classList.remove('is-on');
+      renderPanel();
+    });
+    head.appendChild(closePanel);
+    panel.appendChild(head);
+
+    const list = document.createElement('div');
+    list.className = 'sti-lb-dlg__list';
+    state.draft.forEach((item, index) => {
+      const row = document.createElement('div');
+      row.className = 'sti-lb-dlg__row';
+      const no = document.createElement('span');
+      no.className = 'sti-lb-dlg__no';
+      no.textContent = String(index + 1);
+      const text = document.createElement('input');
+      text.type = 'text';
+      text.className = 'sti-lb-dlg__text';
+      text.value = item.text;
+      text.maxLength = 60;
+      text.addEventListener('input', () => { item.text = text.value; });
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'sti-lb-dlg__del';
+      del.textContent = '−';
+      del.title = '删除这一条';
+      del.addEventListener('click', () => {
+        state.draft.splice(index, 1);
+        if (state.moveIndex >= state.draft.length) state.moveIndex = Math.max(0, state.draft.length - 1);
+        renderPanel();
+      });
+      row.append(no, text, del);
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+
+    const actions = document.createElement('div');
+    actions.className = 'sti-lb-dlg__actions';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'sti-lb-dlg__btn';
+    add.textContent = '加一条';
+    add.disabled = state.draft.length >= 4;
+    add.addEventListener('click', () => {
+      state.draft.push({ text: '' });
+      renderPanel();
+    });
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'sti-lb-dlg__btn sti-lb-dlg__btn--main';
+    save.textContent = '保存并重合成';
+    save.addEventListener('click', () => {
+      void (async () => {
+        await persist(state);
+        state.editing = false;
+        editBtn.classList.remove('is-on');
+        renderPanel();
+      })();
+    });
+    actions.append(add, save);
+    panel.appendChild(actions);
+  }
+
+  overlay.style.display = 'flex';
+  overlay.onclick = (e) => { if (e.target === overlay) closeLightbox(); };
+
+  syncMoveTools();
+  renderBottom();
+  renderPanel();
+  refreshImage(state, img);
 }
 
-/** 下载当前显示的版本。合成时自建独立 blob，不复用显示层的引用（坑 10）。 */
-async function downloadCurrent(state: ComicState): Promise<void> {
-  const src = currentSrc(state);
-  try {
-    const blob = await (await fetch(src)).blob();
-    const url = URL.createObjectURL(blob);
-    try {
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `comic_${Date.now().toString(36)}.png`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  } catch { /* 下载失败不打断浏览 */ }
+/** 细线 SVG 图标按钮（与柏宝绘 bbi-lb-btn 同款风格）。 */
+function iconButton(icon: 'download' | 'bubble' | 'edit' | 'move' | 'close', title: string): HTMLButtonElement {
+  const paths: Record<string, string> = {
+    download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14"/>',
+    bubble: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z"/>',
+    edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4"/>',
+    move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
+    close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  };
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'sti-lb-btn';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.innerHTML =
+    `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" ` +
+    `stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[icon]}</svg>`;
+  return btn;
+}
+
+/** 保存草稿 → ctx.onSave → 以返回的最新参数重建草稿（保存过的台词必然要重画）。 */
+async function persist(state: ComicState): Promise<void> {
+  const saved = await state.ctx.onSave(normalizeDialogueEdits(state.draft));
+  if (saved) {
+    state.ctx.plan = saved;
+    state.draft = saved.items.map(item => ({ ...item }));
+  }
+}
+
+/**
+ * 按当前状态刷新图。只在「带字开关或台词草稿变化」时重合成；
+ * UI 状态（面板开关、chip 选中）不进入这里——旧实现每次 render 都 revoke + 重画，
+ * 灯箱里点几下按钮图就跟着闪几下，就是它。
+ */
+function refreshImage(state: ComicState, img: HTMLImageElement): void {
+  const token = ++state.imgToken;
+  if (!state.showBubbles) {
+    state.current?.revoke();
+    state.current = null;
+    img.src = state.ctx.baseSrc;
+    return;
+  }
+  img.src = state.ctx.baseSrc; // 先显示无字原图，合成好了再换（不白屏）
+  void (async () => {
+    const result = await compositeDialogue(state.ctx.baseSrc, state.draft, state.ctx.plan.opts);
+    if (token !== state.imgToken) { result?.revoke(); return; }
+    if (!result) return; // 合成失败：保持无字原图，不升级成错误（坑 11）
+    state.current?.revoke();
+    state.current = result;
+    img.src = result.url;
+  })();
 }
 
 function truncate(text: string, max: number): string {
@@ -491,9 +492,4 @@ export function destroyLightbox(): void {
   if (overlay) { overlay.remove(); overlay = null; }
   if (gallery) { gallery.remove(); gallery = null; }
   galleryItems = [];
-}
-
-// 供 card 使用：为带字合成图管理 revoke 生命周期
-export interface CompositeHandle {
-  result: BubbleCompositeResult | null;
 }

@@ -62,15 +62,49 @@ function getMessage(floor) {
   if (floor < 0 || floor >= chat.length) return void 0;
   return chat[floor];
 }
-async function saveChatSafe() {
-  const ctx = getContext();
-  const save = ctx.saveChat;
-  if (typeof save !== "function") return false;
+let saveDraining = false;
+let saveWaiters = [];
+function saveChatSafe() {
+  return new Promise((resolve) => {
+    saveWaiters.push(resolve);
+    if (!saveDraining) {
+      saveDraining = true;
+      void drainSaveQueue();
+    }
+  });
+}
+const SAVE_GAP_MS = 400;
+const SAVE_COALESCE_MS = 120;
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+async function drainSaveQueue() {
   try {
-    await save.call(ctx);
-    return true;
-  } catch {
-    return false;
+    while (saveWaiters.length > 0) {
+      await delay(SAVE_COALESCE_MS);
+      const waiters = saveWaiters;
+      saveWaiters = [];
+      let ok = false;
+      const ctx = getContext();
+      const save = ctx.saveChat;
+      if (typeof save === "function") {
+        try {
+          await save.call(ctx);
+          ok = true;
+        } catch {
+          await delay(SAVE_GAP_MS);
+          try {
+            await save.call(ctx);
+            ok = true;
+          } catch {
+          }
+        }
+      }
+      for (const waiter of waiters) waiter(ok);
+      if (saveWaiters.length > 0) await delay(SAVE_GAP_MS);
+    }
+  } finally {
+    saveDraining = false;
   }
 }
 function getEventTypes() {
@@ -3259,6 +3293,37 @@ function normalizeDialogueEdits(value) {
   }
   return out.length ? out : void 0;
 }
+async function saveImageFile(src, filename) {
+  try {
+    const { image, cleanup } = await loadDrawableImage(src);
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+      ctx.drawImage(image, 0, 0);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) return false;
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return true;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } finally {
+      cleanup();
+    }
+  } catch {
+    return false;
+  }
+}
 let overlay = null;
 function openLightbox(imageUrl, caption) {
   ensureOverlay();
@@ -3270,12 +3335,6 @@ function openLightbox(imageUrl, caption) {
   img.src = imageUrl;
   img.alt = caption ?? "图片";
   overlay.appendChild(img);
-  if (caption) {
-    const cap = document.createElement("div");
-    cap.className = "sti-lightbox-caption";
-    cap.textContent = caption;
-    overlay.appendChild(cap);
-  }
   const close = document.createElement("button");
   close.className = "sti-lightbox-close";
   close.textContent = "×";
@@ -3300,7 +3359,7 @@ function ensureOverlay() {
 }
 function openComicLightbox(ctx) {
   if (!ctx.plan.items.length) {
-    openLightbox(ctx.baseSrc, ctx.caption);
+    openLightbox(ctx.baseSrc);
     return;
   }
   ensureOverlay();
@@ -3314,15 +3373,69 @@ function openComicLightbox(ctx) {
     moving: false,
     moveIndex: 0,
     draft: ctx.plan.items.map((item) => ({ ...item })),
-    token: 0,
+    imgToken: 0,
     current: null
   };
+  const bar = document.createElement("div");
+  bar.className = "sti-lb-bar";
+  bar.addEventListener("click", (e) => e.stopPropagation());
+  overlay.appendChild(bar);
+  const downloadBtn = iconButton("download", "下载当前版本（带字 / 无字跟随开关）");
+  downloadBtn.addEventListener("click", () => {
+    void saveImageFile(
+      state2.showBubbles && state2.current ? state2.current.url : ctx.baseSrc,
+      `comic_${Date.now().toString(36)}.png`
+    );
+  });
+  bar.appendChild(downloadBtn);
+  const bubbleBtn = iconButton("bubble", "带字 / 无字切换（合成失败自动退回无字原图）");
+  bubbleBtn.classList.add("is-on");
+  bubbleBtn.addEventListener("click", () => {
+    state2.showBubbles = !state2.showBubbles;
+    bubbleBtn.classList.toggle("is-on", state2.showBubbles);
+    syncMoveTools();
+    refreshImage(state2, img);
+  });
+  bar.appendChild(bubbleBtn);
+  const editBtn = iconButton("edit", "编辑台词：增删改后保存，立即重合成（不消耗出图额度）");
+  editBtn.addEventListener("click", () => {
+    state2.editing = !state2.editing;
+    if (state2.editing) state2.moving = false;
+    editBtn.classList.toggle("is-on", state2.editing);
+    syncMoveTools();
+    renderBottom();
+    renderPanel2();
+  });
+  bar.appendChild(editBtn);
+  const moveBtn = iconButton("move", "选中一句台词，再点击图上位置把它钉在那里（不被自动排版挪动）");
+  moveBtn.addEventListener("click", () => {
+    state2.moving = !state2.moving;
+    if (state2.moving) state2.editing = false;
+    moveBtn.classList.toggle("is-on", state2.moving);
+    editBtn.classList.toggle("is-on", state2.editing);
+    syncMoveTools();
+    renderBottom();
+    renderPanel2();
+  });
+  bar.appendChild(moveBtn);
+  const close = iconButton("close", "关闭 (Esc)");
+  close.addEventListener("click", closeLightbox);
+  bar.appendChild(close);
+  function syncMoveTools() {
+    const disabled = !state2.showBubbles;
+    editBtn.disabled = disabled;
+    moveBtn.disabled = disabled;
+    if (disabled) {
+      state2.moving = false;
+      state2.editing = false;
+    }
+  }
   const stage = document.createElement("div");
   stage.className = "sti-lb-stage";
   overlay.appendChild(stage);
   const img = document.createElement("img");
   img.className = "sti-lightbox-img";
-  img.alt = ctx.caption ?? "漫画页";
+  img.alt = "漫画页";
   stage.appendChild(img);
   stage.addEventListener("click", (event) => {
     if (!state2.moving) return;
@@ -3336,64 +3449,137 @@ function openComicLightbox(ctx) {
     item.x = x;
     item.y = y;
     void persist(state2);
+    renderBottom();
   });
-  const caption = document.createElement("div");
-  caption.className = "sti-lightbox-caption";
-  overlay.appendChild(caption);
-  const bar = document.createElement("div");
-  bar.className = "sti-lb-toolbar";
-  overlay.appendChild(bar);
-  const bubbleBtn = toolButton("气泡", "带字 / 无字切换（合成失败自动退回无字原图）");
-  bubbleBtn.classList.add("is-on");
-  bubbleBtn.addEventListener("click", () => {
-    state2.showBubbles = !state2.showBubbles;
-    bubbleBtn.classList.toggle("is-on", state2.showBubbles);
-    render$1(state2, img, caption, chips, panel);
-  });
-  bar.appendChild(bubbleBtn);
-  const editBtn = toolButton("台词", "编辑台词：增删改后保存，立即重合成（不消耗出图额度）");
-  editBtn.addEventListener("click", () => {
-    state2.editing = !state2.editing;
-    if (state2.editing) state2.moving = false;
-    render$1(state2, img, caption, chips, panel);
-  });
-  bar.appendChild(editBtn);
-  const moveBtn = toolButton("移动气泡", "选中一句台词，再点击图上位置把它钉在那里（不被自动排版挪动）");
-  moveBtn.addEventListener("click", () => {
-    state2.moving = !state2.moving;
-    if (state2.moving) state2.editing = false;
-    render$1(state2, img, caption, chips, panel);
-  });
-  bar.appendChild(moveBtn);
-  const saveBtn = toolButton("下载", "保存当前显示的这一版（带字 / 无字跟随开关）");
-  saveBtn.addEventListener("click", () => {
-    void downloadCurrent(state2);
-  });
-  bar.appendChild(saveBtn);
-  const close = document.createElement("button");
-  close.className = "sti-lightbox-close";
-  close.textContent = "×";
-  close.setAttribute("aria-label", "关闭");
-  close.addEventListener("click", closeLightbox);
-  overlay.appendChild(close);
-  const chips = document.createElement("div");
-  chips.className = "sti-lb-chips";
-  overlay.appendChild(chips);
+  const bottom = document.createElement("div");
+  bottom.className = "sti-lb-bottom";
+  bottom.addEventListener("click", (e) => e.stopPropagation());
+  overlay.appendChild(bottom);
   const panel = document.createElement("div");
   panel.className = "sti-lb-dlg";
+  panel.addEventListener("click", (e) => e.stopPropagation());
   overlay.appendChild(panel);
+  function renderBottom() {
+    bottom.innerHTML = "";
+    bottom.style.display = state2.moving && !state2.editing ? "flex" : "none";
+    if (bottom.style.display === "none") return;
+    const hint = document.createElement("span");
+    hint.className = "sti-lb-hint";
+    hint.textContent = "点击台词选中，再点图上位置钉住：";
+    bottom.appendChild(hint);
+    state2.draft.forEach((item, index2) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "sti-lb-chip" + (index2 === state2.moveIndex ? " is-on" : "") + (typeof item.x === "number" ? " is-done" : "");
+      chip.textContent = truncate(item.text, 12);
+      chip.addEventListener("click", (event) => {
+        event.stopPropagation();
+        state2.moveIndex = index2;
+        renderBottom();
+      });
+      bottom.appendChild(chip);
+    });
+  }
+  function renderPanel2() {
+    panel.innerHTML = "";
+    panel.style.display = state2.editing ? "flex" : "none";
+    if (!state2.editing) return;
+    const head = document.createElement("div");
+    head.className = "sti-lb-dlg__head";
+    const name = document.createElement("div");
+    name.className = "sti-lb-dlg__name";
+    name.textContent = "台词（最多 4 条，每条 60 字内）";
+    head.appendChild(name);
+    const closePanel = document.createElement("button");
+    closePanel.type = "button";
+    closePanel.className = "sti-lb-dlg__x";
+    closePanel.textContent = "×";
+    closePanel.addEventListener("click", () => {
+      state2.editing = false;
+      editBtn.classList.remove("is-on");
+      renderPanel2();
+    });
+    head.appendChild(closePanel);
+    panel.appendChild(head);
+    const list = document.createElement("div");
+    list.className = "sti-lb-dlg__list";
+    state2.draft.forEach((item, index2) => {
+      const row = document.createElement("div");
+      row.className = "sti-lb-dlg__row";
+      const no = document.createElement("span");
+      no.className = "sti-lb-dlg__no";
+      no.textContent = String(index2 + 1);
+      const text = document.createElement("input");
+      text.type = "text";
+      text.className = "sti-lb-dlg__text";
+      text.value = item.text;
+      text.maxLength = 60;
+      text.addEventListener("input", () => {
+        item.text = text.value;
+      });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "sti-lb-dlg__del";
+      del.textContent = "−";
+      del.title = "删除这一条";
+      del.addEventListener("click", () => {
+        state2.draft.splice(index2, 1);
+        if (state2.moveIndex >= state2.draft.length) state2.moveIndex = Math.max(0, state2.draft.length - 1);
+        renderPanel2();
+      });
+      row.append(no, text, del);
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+    const actions = document.createElement("div");
+    actions.className = "sti-lb-dlg__actions";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "sti-lb-dlg__btn";
+    add.textContent = "加一条";
+    add.disabled = state2.draft.length >= 4;
+    add.addEventListener("click", () => {
+      state2.draft.push({ text: "" });
+      renderPanel2();
+    });
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "sti-lb-dlg__btn sti-lb-dlg__btn--main";
+    save.textContent = "保存并重合成";
+    save.addEventListener("click", () => {
+      void (async () => {
+        await persist(state2);
+        state2.editing = false;
+        editBtn.classList.remove("is-on");
+        renderPanel2();
+      })();
+    });
+    actions.append(add, save);
+    panel.appendChild(actions);
+  }
   overlay.style.display = "flex";
   overlay.onclick = (e) => {
     if (e.target === overlay) closeLightbox();
   };
-  render$1(state2, img, caption, chips, panel);
+  syncMoveTools();
+  renderBottom();
+  renderPanel2();
+  refreshImage(state2, img);
 }
-function toolButton(label, title) {
+function iconButton(icon, title) {
+  const paths = {
+    download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14"/>',
+    bubble: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z"/>',
+    edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4"/>',
+    move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
+    close: '<path d="M6 6l12 12M18 6 6 18"/>'
+  };
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "sti-lb-btn";
-  btn.textContent = label;
   btn.title = title;
+  btn.setAttribute("aria-label", title);
+  btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[icon]}</svg>`;
   return btn;
 }
 async function persist(state2) {
@@ -3403,148 +3589,28 @@ async function persist(state2) {
     state2.draft = saved.items.map((item) => ({ ...item }));
   }
 }
-function currentSrc(state2) {
-  return state2.showBubbles && state2.current ? state2.current.url : state2.ctx.baseSrc;
-}
-function render$1(state2, img, caption, chips, panel) {
-  const token = ++state2.token;
-  if (state2.current) {
-    state2.current.revoke();
-    state2.current = null;
-  }
+function refreshImage(state2, img) {
+  var _a;
+  const token = ++state2.imgToken;
   if (!state2.showBubbles) {
+    (_a = state2.current) == null ? void 0 : _a.revoke();
+    state2.current = null;
     img.src = state2.ctx.baseSrc;
-  } else {
-    img.src = state2.ctx.baseSrc;
-    void (async () => {
-      const result = await compositeDialogue(
-        state2.ctx.baseSrc,
-        state2.draft,
-        state2.ctx.plan.opts
-      );
-      if (token !== state2.token) {
-        result == null ? void 0 : result.revoke();
-        return;
-      }
-      if (!result) return;
-      state2.current = result;
-      img.src = result.url;
-    })();
+    return;
   }
-  caption.textContent = state2.moving ? `移动气泡：正在移动第 ${state2.moveIndex + 1} 句——点击图上位置把它钉住` : state2.ctx.caption ?? "";
-  chips.innerHTML = "";
-  chips.style.display = state2.moving ? "flex" : "none";
-  if (state2.moving) {
-    const hint = document.createElement("span");
-    hint.className = "sti-lb-chip-hint";
-    hint.textContent = "选择要挪的台词：";
-    chips.appendChild(hint);
-    state2.draft.forEach((item, index2) => {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "sti-lb-chip" + (index2 === state2.moveIndex ? " is-on" : "") + (typeof item.x === "number" ? " is-done" : "");
-      chip.textContent = truncate(item.text, 12);
-      chip.addEventListener("click", (event) => {
-        event.stopPropagation();
-        state2.moveIndex = index2;
-        render$1(state2, img, caption, chips, panel);
-      });
-      chips.appendChild(chip);
-    });
-  }
-  panel.innerHTML = "";
-  panel.style.display = state2.editing ? "flex" : "none";
-  if (!state2.editing) return;
-  const head = document.createElement("div");
-  head.className = "sti-lb-dlg__head";
-  const name = document.createElement("div");
-  name.className = "sti-lb-dlg__name";
-  name.textContent = "台词（最多 4 条，每条 60 字内）";
-  head.appendChild(name);
-  const closePanel = document.createElement("button");
-  closePanel.type = "button";
-  closePanel.className = "sti-lb-dlg__x";
-  closePanel.textContent = "×";
-  closePanel.addEventListener("click", () => {
-    state2.editing = false;
-    render$1(state2, img, caption, chips, panel);
-  });
-  head.appendChild(closePanel);
-  panel.appendChild(head);
-  const list = document.createElement("div");
-  list.className = "sti-lb-dlg__list";
-  state2.draft.forEach((item, index2) => {
-    const row = document.createElement("div");
-    row.className = "sti-lb-dlg__row";
-    const no = document.createElement("span");
-    no.className = "sti-lb-dlg__no";
-    no.textContent = String(index2 + 1);
-    const text = document.createElement("input");
-    text.type = "text";
-    text.className = "sti-lb-dlg__text";
-    text.value = item.text;
-    text.maxLength = 60;
-    text.addEventListener("input", () => {
-      item.text = text.value;
-    });
-    text.addEventListener("click", (e) => e.stopPropagation());
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "sti-lb-dlg__del";
-    del.textContent = "−";
-    del.title = "删除这一条";
-    del.addEventListener("click", () => {
-      state2.draft.splice(index2, 1);
-      if (state2.moveIndex >= state2.draft.length) state2.moveIndex = Math.max(0, state2.draft.length - 1);
-      render$1(state2, img, caption, chips, panel);
-    });
-    row.append(no, text, del);
-    list.appendChild(row);
-  });
-  panel.appendChild(list);
-  const actions = document.createElement("div");
-  actions.className = "sti-lb-dlg__actions";
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "sti-lb-dlg__btn";
-  add.textContent = "加一条";
-  add.disabled = state2.draft.length >= 4;
-  add.addEventListener("click", () => {
-    state2.draft.push({ text: "" });
-    render$1(state2, img, caption, chips, panel);
-  });
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "sti-lb-dlg__btn sti-lb-dlg__btn--main";
-  save.textContent = "保存";
-  save.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void (async () => {
-      await persist(state2);
-      state2.editing = false;
-      render$1(state2, img, caption, chips, panel);
-    })();
-  });
-  actions.append(add, save);
-  panel.appendChild(actions);
-}
-async function downloadCurrent(state2) {
-  const src = currentSrc(state2);
-  try {
-    const blob = await (await fetch(src)).blob();
-    const url = URL.createObjectURL(blob);
-    try {
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `comic_${Date.now().toString(36)}.png`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    } finally {
-      URL.revokeObjectURL(url);
+  img.src = state2.ctx.baseSrc;
+  void (async () => {
+    var _a2;
+    const result = await compositeDialogue(state2.ctx.baseSrc, state2.draft, state2.ctx.plan.opts);
+    if (token !== state2.imgToken) {
+      result == null ? void 0 : result.revoke();
+      return;
     }
-  } catch {
-  }
+    if (!result) return;
+    (_a2 = state2.current) == null ? void 0 : _a2.revoke();
+    state2.current = result;
+    img.src = result.url;
+  })();
 }
 function truncate(text, max) {
   const clean = text.trim() || "（空）";
@@ -7873,53 +7939,68 @@ const MODE_LABELS = {
   "bw-manga": "黑白漫"
 };
 function mountFloor(floor) {
-  var _a;
+  var _a, _b, _c;
   const mes = document.querySelector(`.mes[mesid="${floor}"]`);
   if (!mes) return;
-  unmountFloor(floor);
-  const artifacts = getArtifacts(floor);
-  const visible = artifacts.filter((a) => {
+  const visible = getArtifacts(floor).filter((a) => {
     var _a2;
     return ((_a2 = a.metadata) == null ? void 0 : _a2.embeddedInBody) !== true;
   });
-  const inline = visible.filter((a) => a.mountMode === "inline");
-  const trailing = visible.filter((a) => a.mountMode !== "inline");
-  const manwa = mountManwa(mes, floor, visible);
-  for (const artifact of inline) {
-    if (manwa.consumed.has(artifact.id)) continue;
-    if (manwa.tagged && ((_a = artifact.metadata) == null ? void 0 : _a.inlineFallback) !== true) continue;
+  const byId = new Map(visible.map((a) => [a.id, a]));
+  const refs = parseManwaTags(((_a = getMessage(floor)) == null ? void 0 : _a.mes) ?? "");
+  const tagged = refs.length > 0;
+  const expected = /* @__PURE__ */ new Set();
+  if (tagged) {
+    for (const ref of refs) if (byId.has(ref.id)) expected.add(ref.id);
+    for (const artifact of visible) {
+      if (artifact.mountMode === "inline" && ((_b = artifact.metadata) == null ? void 0 : _b.inlineFallback) === true) expected.add(artifact.id);
+    }
+  } else {
+    for (const artifact of visible) {
+      if (artifact.mountMode === "inline") expected.add(artifact.id);
+    }
+  }
+  for (const artifact of visible) {
+    if (artifact.mountMode !== "inline") expected.add(artifact.id);
+  }
+  for (const node of Array.from(mes.querySelectorAll(`[${MOUNTED_ATTR$1}="${floor}"]`))) {
+    if (node.classList.contains(TRAILING_AREA_CLASS)) continue;
+    const id = node.getAttribute("data-sti-artifact-id") ?? "";
+    const artifact = byId.get(id);
+    const stale = !expected.has(id) || artifact && node.getAttribute("data-sti-src") !== artifact.imagePath;
+    if (stale) {
+      revokeCardOverlay(node);
+      node.remove();
+    }
+  }
+  const missing = (id) => {
+    if (!expected.has(id)) return void 0;
+    if (mes.querySelector(`[data-sti-artifact-id="${id}"]`)) return void 0;
+    return byId.get(id);
+  };
+  if (tagged) {
+    const anchors = manwaAnchors(floor);
+    const count = Math.min(anchors.length, refs.length);
+    for (let i = 0; i < count; i += 1) {
+      const artifact = missing(refs[i].id);
+      if (!artifact) continue;
+      anchors[i].appendChild(buildCard$1(artifact, floor, true));
+    }
+  }
+  for (const artifact of visible) {
+    if (artifact.mountMode !== "inline") continue;
+    if (tagged && ((_c = artifact.metadata) == null ? void 0 : _c.inlineFallback) !== true) continue;
+    if (!missing(artifact.id)) continue;
     mountInline(mes, floor, artifact);
   }
+  const trailing = visible.filter((a) => a.mountMode !== "inline" && missing(a.id));
   if (trailing.length > 0) mountTrailing(mes, floor, trailing);
-}
-function mountManwa(mes, floor, artifacts) {
-  var _a;
-  const consumed = /* @__PURE__ */ new Set();
-  const refs = parseManwaTags(((_a = getMessage(floor)) == null ? void 0 : _a.mes) ?? "");
-  if (!refs.length) return { consumed, tagged: false };
-  const anchors = manwaAnchors(floor);
-  if (!anchors.length) return { consumed, tagged: true };
-  const byId = new Map(artifacts.map((a) => [a.id, a]));
-  const count = Math.min(anchors.length, refs.length);
-  for (let i = 0; i < count; i += 1) {
-    const artifact = byId.get(refs[i].id);
-    if (!artifact) continue;
-    if (anchors[i].querySelector(`[${MOUNTED_ATTR$1}]`)) {
-      consumed.add(artifact.id);
-      continue;
+  else {
+    const wantsTrailing = visible.some((a) => a.mountMode !== "inline" && expected.has(a.id));
+    if (!wantsTrailing) {
+      const area = mes.querySelector(`#${CSS.escape(`${TRAILING_AREA_ID}${floor}`)}`);
+      if (area) area.remove();
     }
-    anchors[i].appendChild(buildCard$1(artifact, floor, true));
-    consumed.add(artifact.id);
-  }
-  return { consumed, tagged: true };
-}
-function unmountFloor(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  const cards = mes.querySelectorAll(`[${MOUNTED_ATTR$1}="${floor}"]`);
-  for (const card of Array.from(cards)) {
-    revokeCardOverlay(card);
-    card.remove();
   }
 }
 function remountAll() {
@@ -7930,19 +8011,6 @@ function remountAll() {
   }
 }
 function ensureFloorMounted(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  const visible = getArtifacts(floor).filter((a) => {
-    var _a;
-    return ((_a = a.metadata) == null ? void 0 : _a.embeddedInBody) !== true;
-  });
-  if (visible.length === 0) return;
-  const present = /* @__PURE__ */ new Set();
-  for (const node of Array.from(mes.querySelectorAll("[data-sti-artifact-id]"))) {
-    const id = node.getAttribute("data-sti-artifact-id");
-    if (id) present.add(id);
-  }
-  if (visible.every((a) => present.has(a.id))) return;
   mountFloor(floor);
 }
 function mountInline(mes, floor, artifact) {
@@ -8032,6 +8100,7 @@ function buildCard$1(artifact, floor, inline) {
   ].join(" ");
   card.setAttribute(MOUNTED_ATTR$1, String(floor));
   card.setAttribute("data-sti-artifact-id", artifact.id);
+  card.setAttribute("data-sti-src", artifact.imagePath);
   const img = document.createElement("img");
   img.className = "sti-card-image";
   img.src = artifact.imagePath;
@@ -8044,49 +8113,80 @@ function buildCard$1(artifact, floor, inline) {
     img.addEventListener("click", () => openLightbox(artifact.imagePath, img.alt));
   }
   card.appendChild(img);
-  const caption = document.createElement("div");
-  caption.className = "sti-card-caption";
-  caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ""));
-  if (caption.textContent) card.appendChild(caption);
-  if (artifact.mode === "comic") card.appendChild(buildComicActions(artifact, floor));
+  if (comic) {
+    card.appendChild(buildComicActions(artifact, floor));
+  } else {
+    const caption = document.createElement("div");
+    caption.className = "sti-card-caption";
+    caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ""));
+    if (caption.textContent) card.appendChild(caption);
+  }
   return card;
 }
+function svgIcon(name) {
+  const paths = {
+    // 循环箭头（重绘）
+    redraw: '<path d="M20 11a8 8 0 1 0-2.34 5.66M20 5v6h-6" fill="none"/>',
+    // 下载
+    download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14" fill="none"/>',
+    // 对话气泡（气泡 / 台词）
+    dialog: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z" fill="none"/>'
+  };
+  return `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
+}
 function buildComicActions(artifact, floor) {
-  const row = document.createElement("div");
-  row.className = "sti-card-actions";
+  const wrap = document.createElement("div");
+  wrap.className = "sti-figure-actions";
+  const make = (label, icon) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sti-figure-fab";
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.innerHTML = svgIcon(icon);
+    btn.addEventListener("click", (e) => e.stopPropagation());
+    return btn;
+  };
   const status = document.createElement("span");
   status.className = "sti-card-status";
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "sti-card-btn";
-  button.textContent = "重画";
-  button.title = "同一套提示词、换一个种子重画这一页（台词气泡会重新合成）";
-  button.addEventListener("click", (event) => {
-    event.stopPropagation();
-    if (button.disabled) return;
-    button.disabled = true;
-    button.textContent = "重画中…";
+  const redraw = make("重画这一页", "redraw");
+  redraw.title = "同一套提示词、换一个种子重画这一页（台词气泡会重新合成）";
+  redraw.addEventListener("click", () => {
+    if (redraw.disabled) return;
+    redraw.disabled = true;
+    redraw.classList.add("is-busy");
     status.textContent = "";
     void (async () => {
       try {
         const result = await rerollComicPage(floor, artifact.id);
         if (!result.ok) {
           status.textContent = result.message ?? "重画失败。";
-          button.disabled = false;
-          button.textContent = "重画";
+          redraw.disabled = false;
+          redraw.classList.remove("is-busy");
           return;
         }
         mountFloor(floor);
       } catch (err) {
         status.textContent = err instanceof Error ? err.message : String(err);
-        button.disabled = false;
-        button.textContent = "重画";
+        redraw.disabled = false;
+        redraw.classList.remove("is-busy");
       }
     })();
   });
-  row.appendChild(button);
-  row.appendChild(status);
-  return row;
+  const download = make("下载这张图", "download");
+  download.title = "下载当前显示的这一版（带字 / 无字跟随页面）";
+  download.addEventListener("click", () => {
+    const bubbled = document.querySelector(`[data-sti-artifact-id="${artifact.id}"] img`);
+    void saveImageFile((bubbled == null ? void 0 : bubbled.src) ?? artifact.imagePath, `comic_${Date.now().toString(36)}.png`);
+  });
+  const dialog = make("气泡与台词", "dialog");
+  dialog.title = "打开大图：气泡开关、改台词、移动气泡位置";
+  dialog.addEventListener("click", () => openComicCardLightbox(floor, artifact.id, imgAlt(artifact)));
+  wrap.append(redraw, download, dialog, status);
+  return wrap;
+}
+function imgAlt(artifact) {
+  return `${MODE_LABELS[artifact.mode] || artifact.mode} 作品`;
 }
 function attachBubbleOverlay(card, img, artifact) {
   const settings2 = getSettings(DEFAULT_SETTINGS);
@@ -8118,7 +8218,6 @@ function attachBubbleOverlay(card, img, artifact) {
   });
 }
 function openComicCardLightbox(floor, artifactId, alt) {
-  var _a;
   const latest = getArtifacts(floor).find((a) => a.id === artifactId);
   if (!latest) return;
   const settings2 = getSettings(DEFAULT_SETTINGS);
@@ -8127,10 +8226,8 @@ function openComicCardLightbox(floor, artifactId, alt) {
     openLightbox(latest.imagePath, alt);
     return;
   }
-  const pageTitle = typeof ((_a = latest.metadata) == null ? void 0 : _a.pageTitle) === "string" ? latest.metadata.pageTitle : "";
   openComicLightbox({
     baseSrc: comicBaseImageOf(latest),
-    caption: pageTitle ? `${pageTitle}${alt ? ` · ${alt}` : ""}` : alt,
     plan,
     onSave: async (items) => {
       updateArtifact(floor, artifactId, { dialogue: items ?? [] });

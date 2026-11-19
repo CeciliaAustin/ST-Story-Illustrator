@@ -42,7 +42,7 @@ async function fetchBytes(src: string): Promise<Blob> {
   return await response.blob();
 }
 
-async function loadDrawableImage(
+export async function loadDrawableImage(
   src: string,
 ): Promise<{ image: HTMLImageElement; cleanup: () => void }> {
   if (/^(blob|data):/i.test(src)) {

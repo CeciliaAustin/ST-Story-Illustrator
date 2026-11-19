@@ -19,6 +19,7 @@ import { comicOverlayPlan, comicBaseImageOf } from '../manga/bubbleOverlay';
 import { compositeDialogue } from '../manga/bubbleComposite';
 import { openLightbox, openComicLightbox } from './lightbox';
 import { rerollComicPage } from '../manga/rerollPage';
+import { saveImageFile } from './saveImage';
 
 const INLINE_CLASS = 'sti-inline-card';
 const TRAILING_AREA_CLASS = 'sti-trailing-area';
@@ -52,64 +53,92 @@ const MODE_LABELS: Record<CreationMode, string> = {
 // 挂载入口
 // ============================================================
 
-/** 重挂单个楼层的所有作品卡片。先清理旧卡片，再按 mountMode 挂载。 */
+/**
+ * 重挂单个楼层的所有作品卡片。
+ *
+ * **增量挂载**：先算出这一楼「应该出现在 DOM 里」的 artifact 集合，只拆多余的、
+ * 补缺失的、换过期的，绝不把还正确的卡拆掉重建——以前的「先 unmountFloor 再全挂」
+ * 会被对账循环放大成闪屏（对账每 250ms 发现凑不齐 → 全拆重建 → 图片重新加载 → 又触发对账）。
+ */
 export function mountFloor(floor: number): void {
   const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
   if (!mes) return;
-  unmountFloor(floor);
 
-  const artifacts = getArtifacts(floor);
-  // 正文已嵌入的图片不再用 DOM 卡片呈现（图片已成为正文内容）
-  const visible = artifacts.filter(a => a.metadata?.embeddedInBody !== true);
-  const inline = visible.filter(a => a.mountMode === 'inline');
-  const trailing = visible.filter(a => a.mountMode !== 'inline');
+  const visible = getArtifacts(floor).filter(a => a.metadata?.embeddedInBody !== true);
+  const byId = new Map(visible.map(a => [a.id, a]));
+  const refs = parseManwaTags(getMessage(floor)?.mes ?? '');
+  const tagged = refs.length > 0;
+
+  // 期望集合：与下方挂载规则一一对应，对账（ensureFloorMounted）也用它判断齐不齐
+  const expected = new Set<string>();
+  if (tagged) {
+    for (const ref of refs) if (byId.has(ref.id)) expected.add(ref.id);
+    // 有 tag 时默认不再行内挂；只有「当时就没写进正文」的那几页单独放行
+    for (const artifact of visible) {
+      if (artifact.mountMode === 'inline' && artifact.metadata?.inlineFallback === true) expected.add(artifact.id);
+    }
+  } else {
+    for (const artifact of visible) {
+      if (artifact.mountMode === 'inline') expected.add(artifact.id);
+    }
+  }
+  for (const artifact of visible) {
+    if (artifact.mountMode !== 'inline') expected.add(artifact.id);
+  }
+
+  // ── 拆：不在期望集合里的（swipe 切换后残留的旧页等）──
+  for (const node of Array.from(mes.querySelectorAll<HTMLElement>(`[${MOUNTED_ATTR}="${floor}"]`))) {
+    if (node.classList.contains(TRAILING_AREA_CLASS)) continue; // 容器单独处理
+    const id = node.getAttribute('data-sti-artifact-id') ?? '';
+    const artifact = byId.get(id);
+    const stale = !expected.has(id)
+      // 图换过（重画成功）：内容过期，整卡重建
+      || (artifact && node.getAttribute('data-sti-src') !== artifact.imagePath);
+    if (stale) {
+      revokeCardOverlay(node);
+      node.remove();
+    }
+  }
+
+  // ── 补 ──
+  const missing = (id: string): VisualArtifact | undefined => {
+    if (!expected.has(id)) return undefined;
+    if (mes.querySelector(`[data-sti-artifact-id="${id}"]`)) return undefined; // 已在 DOM，别动它（动了就闪）
+    return byId.get(id);
+  };
 
   // 漫画页一律走 `<bbi_manwa>` 锚点：位置由正文里的 tag 决定，刷新后正则重建锚点、
   // 卡片跟着回来。只有**上线前生成的老卡**（正文里一条漫画 tag 都没有）才退回旧的行内插入。
-  const manwa = mountManwa(mes, floor, visible);
+  let anchored = 0;
+  if (tagged) {
+    const anchors = manwaAnchors(floor);
+    const count = Math.min(anchors.length, refs.length);
+    for (let i = 0; i < count; i += 1) {
+      const artifact = missing(refs[i].id);
+      if (!artifact) continue; // 锚点在、数据不在：留空，不猜；已在 DOM 的也不重挂
+      anchors[i].appendChild(buildCard(artifact, floor, true));
+      anchored += 1;
+    }
+  }
 
-  // 正文里有漫画 tag = 这一条 swipe 的漫画已经各自归位。
-  // 此时**不能再把剩下的 artifact 行内挂一遍**：那些多半属于另一条 swipe
-  // （tag 只存在于它自己那条 `mes` 里），挂出来就是「切了 swipe 图还在」。
-  for (const artifact of inline) {
-    if (manwa.consumed.has(artifact.id)) continue;
-    // 有 tag 时默认不再行内挂（剩下的多半属于别的 swipe）；
-    // 只有「当时就没写进正文」的那几页才单独放行。
-    if (manwa.tagged && artifact.metadata?.inlineFallback !== true) continue;
+  // 正文里有漫画 tag = 这一条 swipe 的漫画已经各自归位。此时只放行 inlineFallback 的那几页。
+  for (const artifact of visible) {
+    if (artifact.mountMode !== 'inline') continue;
+    if (tagged && artifact.metadata?.inlineFallback !== true) continue;
+    if (!missing(artifact.id)) continue;
     mountInline(mes, floor, artifact);
   }
+
+  const trailing = visible.filter(a => a.mountMode !== 'inline' && missing(a.id));
   if (trailing.length > 0) mountTrailing(mes, floor, trailing);
-}
-
-/**
- * 把漫画卡片挂进正文里的 `<bbi_manwa>` 锚点（按 tag 出现顺序一一对应）。
- *
- * 返回已挂载的 artifact id 与「这一楼到底有没有漫画 tag」：调用方据此决定
- * 要不要把剩余的 artifact 用旧方式挂一遍（有 tag 就一律不挂，见调用处）。
- */
-function mountManwa(
-  mes: HTMLElement,
-  floor: number,
-  artifacts: VisualArtifact[],
-): { consumed: Set<string>; tagged: boolean } {
-  const consumed = new Set<string>();
-  const refs = parseManwaTags(getMessage(floor)?.mes ?? '');
-  if (!refs.length) return { consumed, tagged: false };
-
-  const anchors = manwaAnchors(floor);
-  if (!anchors.length) return { consumed, tagged: true };
-
-  const byId = new Map(artifacts.map(a => [a.id, a]));
-  const count = Math.min(anchors.length, refs.length);
-
-  for (let i = 0; i < count; i += 1) {
-    const artifact = byId.get(refs[i].id);
-    if (!artifact) continue; // 锚点在、数据不在：留空，不猜
-    if (anchors[i].querySelector(`[${MOUNTED_ATTR}]`)) { consumed.add(artifact.id); continue; }
-    anchors[i].appendChild(buildCard(artifact, floor, true));
-    consumed.add(artifact.id);
+  else {
+    // 期望里没有 trailing 作品了：把空壳区域拆掉（删除作品后不留「ST 创作」空标题）
+    const wantsTrailing = visible.some(a => a.mountMode !== 'inline' && expected.has(a.id));
+    if (!wantsTrailing) {
+      const area = mes.querySelector(`#${CSS.escape(`${TRAILING_AREA_ID}${floor}`)}`);
+      if (area) area.remove();
+    }
   }
-  return { consumed, tagged: true };
 }
 
 /** 清理某楼层的所有本插件卡片。 */
@@ -133,24 +162,13 @@ export function remountAll(): void {
 }
 
 /**
- * 对账：这一楼该有的卡片在不在，缺了才重挂。
+ * 对账：这一楼该有的卡片在不在，缺了才补。
  *
- * 与 `mountFloor` 的区别是**幂等且便宜**——它被 `#chat` 的 MutationObserver
- * 每帧调用，不能每次都拆掉重建（重建会让正在看的图闪烁，也会自己喂自己 mutation）。
- * 判定按 artifact id 逐个核对，所以「两张卡被 ST 重渲冲掉一张」这种半残状态也能修好。
+ * 跑在 `#chat` 的 MutationObserver 上。`mountFloor` 已是**增量挂载**（只拆多余的、
+ * 补缺失的，不重建还正确的卡），所以这里直接委托它即可——即使被观察器每 250ms
+ * 调一次，也不会再出现「拆了又建、图片反复重载」的闪屏。
  */
 export function ensureFloorMounted(floor: number): void {
-  const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  const visible = getArtifacts(floor).filter(a => a.metadata?.embeddedInBody !== true);
-  if (visible.length === 0) return;
-
-  const present = new Set<string>();
-  for (const node of Array.from(mes.querySelectorAll<HTMLElement>('[data-sti-artifact-id]'))) {
-    const id = node.getAttribute('data-sti-artifact-id');
-    if (id) present.add(id);
-  }
-  if (visible.every(a => present.has(a.id))) return;
   mountFloor(floor);
 }
 
@@ -286,6 +304,7 @@ function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HT
   ].join(' ');
   card.setAttribute(MOUNTED_ATTR, String(floor));
   card.setAttribute('data-sti-artifact-id', artifact.id);
+  card.setAttribute('data-sti-src', artifact.imagePath);
 
   const img = document.createElement('img');
   img.className = 'sti-card-image';
@@ -302,59 +321,102 @@ function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HT
   }
   card.appendChild(img);
 
-  const caption = document.createElement('div');
-  caption.className = 'sti-card-caption';
-  // 只显示简短自然语言描述，不再显示插画 tag / 模式标签（用户不想要那些 tag）
-  caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ''));
-  if (caption.textContent) card.appendChild(caption);
-
-  // 漫画页不再走柏宝绘卡片，它那套「重绘」也就跟着没了——补一个。
-  // 只换种子重画同一套词（prompt + nl + 角色块），台词气泡重新合成。
-  if (artifact.mode === 'comic') card.appendChild(buildComicActions(artifact, floor));
+  if (comic) {
+    // 柏宝绘同款：操作收在图上的悬浮图标组（hover 淡显），图底下不放任何文字行
+    card.appendChild(buildComicActions(artifact, floor));
+  } else {
+    const caption = document.createElement('div');
+    caption.className = 'sti-card-caption';
+    // 只显示简短自然语言描述，不再显示插画 tag / 模式标签（用户不想要那些 tag）
+    caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ''));
+    if (caption.textContent) card.appendChild(caption);
+  }
 
   return card;
 }
 
-/** 漫画卡片的操作行：重画 + 一句状态（失败原因直接写在图上，不弹窗打断）。 */
+// ============================================================
+// 漫画卡片操作（柏宝绘同款：右上角悬浮图标组）
+// ============================================================
+
+/** 内联 SVG 图标（与柏宝绘的 icon 风格一致：细线、24 视窗）。 */
+function svgIcon(name: 'redraw' | 'download' | 'dialog'): string {
+  const paths: Record<string, string> = {
+    // 循环箭头（重绘）
+    redraw: '<path d="M20 11a8 8 0 1 0-2.34 5.66M20 5v6h-6" fill="none"/>',
+    // 下载
+    download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14" fill="none"/>',
+    // 对话气泡（气泡 / 台词）
+    dialog: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z" fill="none"/>',
+  };
+  return `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
+}
+
+/**
+ * 漫画卡片的悬浮操作组：重画 / 下载 / 气泡与台词（打开灯箱）。
+ * 平时淡显几乎不可见，hover 卡片才浮出来——图片平时只有一颗小点，柏宝绘同款。
+ */
 function buildComicActions(artifact: VisualArtifact, floor: number): HTMLElement {
-  const row = document.createElement('div');
-  row.className = 'sti-card-actions';
+  const wrap = document.createElement('div');
+  wrap.className = 'sti-figure-actions';
+
+  const make = (label: string, icon: 'redraw' | 'download' | 'dialog'): HTMLButtonElement => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sti-figure-fab';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.innerHTML = svgIcon(icon);
+    // 防止点按钮触发图片的灯箱
+    btn.addEventListener('click', e => e.stopPropagation());
+    return btn;
+  };
 
   const status = document.createElement('span');
   status.className = 'sti-card-status';
 
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = 'sti-card-btn';
-  button.textContent = '重画';
-  button.title = '同一套提示词、换一个种子重画这一页（台词气泡会重新合成）';
-  button.addEventListener('click', event => {
-    event.stopPropagation();
-    if (button.disabled) return;
-    button.disabled = true;
-    button.textContent = '重画中…';
+  const redraw = make('重画这一页', 'redraw');
+  redraw.title = '同一套提示词、换一个种子重画这一页（台词气泡会重新合成）';
+  redraw.addEventListener('click', () => {
+    if (redraw.disabled) return;
+    redraw.disabled = true;
+    redraw.classList.add('is-busy');
     status.textContent = '';
     void (async () => {
       try {
         const result = await rerollComicPage(floor, artifact.id);
         if (!result.ok) {
           status.textContent = result.message ?? '重画失败。';
-          button.disabled = false;
-          button.textContent = '重画';
+          redraw.disabled = false;
+          redraw.classList.remove('is-busy');
           return;
         }
-        mountFloor(floor); // 新图 / 新种子，重新挂一遍
+        mountFloor(floor); // 新图 / 新种子，增量重挂（旧卡因 data-sti-src 过期会被换掉）
       } catch (err) {
         status.textContent = err instanceof Error ? err.message : String(err);
-        button.disabled = false;
-        button.textContent = '重画';
+        redraw.disabled = false;
+        redraw.classList.remove('is-busy');
       }
     })();
   });
 
-  row.appendChild(button);
-  row.appendChild(status);
-  return row;
+  const download = make('下载这张图', 'download');
+  download.title = '下载当前显示的这一版（带字 / 无字跟随页面）';
+  download.addEventListener('click', () => {
+    const bubbled = document.querySelector<HTMLImageElement>(`[data-sti-artifact-id="${artifact.id}"] img`);
+    void saveImageFile(bubbled?.src ?? artifact.imagePath, `comic_${Date.now().toString(36)}.png`);
+  });
+
+  const dialog = make('气泡与台词', 'dialog');
+  dialog.title = '打开大图：气泡开关、改台词、移动气泡位置';
+  dialog.addEventListener('click', () => openComicCardLightbox(floor, artifact.id, imgAlt(artifact)));
+
+  wrap.append(redraw, download, dialog, status);
+  return wrap;
+}
+
+function imgAlt(artifact: VisualArtifact): string {
+  return `${MODE_LABELS[artifact.mode] || artifact.mode} 作品`;
 }
 
 // ============================================================
@@ -401,10 +463,8 @@ function openComicCardLightbox(floor: number, artifactId: string, alt: string): 
     openLightbox(latest.imagePath, alt);
     return;
   }
-  const pageTitle = typeof latest.metadata?.pageTitle === 'string' ? latest.metadata.pageTitle : '';
   openComicLightbox({
     baseSrc: comicBaseImageOf(latest),
-    caption: pageTitle ? `${pageTitle}${alt ? ` · ${alt}` : ''}` : alt,
     plan,
     onSave: async items => {
       // 写回 artifact（台词 + 手动钉的位置一起存），落盘、重挂卡片
