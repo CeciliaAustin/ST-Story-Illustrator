@@ -124,7 +124,10 @@ function initQueue(): void {
           ...(task.progress?.totalPages ? { totalPages: task.progress.totalPages } : {}),
         });
       } else if (status === 'completed') {
-        finishRunStatus('ok');
+        // 成功但需要提醒的事（例如「角色库里没有 Julian」）走这里：
+        // 不报的话用户只会觉得「怎么又不像我的人」，永远想不到是角色库缺条目。
+        finishRunStatus('ok', task.progress?.message ?? '');
+        if (task.progress?.message) showToast(task.progress.message, 'warn');
         runTaskId = '';
       } else if (status === 'failed') {
         finishRunStatus('error', task.error ?? '未知错误');

@@ -18,7 +18,14 @@ import { speakersOf } from './store';
 // 注入的依赖
 // ============================================================
 
-export type TheaterLlmCaller = (prompt: string) => Promise<string>;
+/**
+ * 读剧情用的模型调用。
+ *
+ * system 与 user **必须分开传**：以前它们被拼成一条塞进 user，system 是空串。
+ * 后果是模型把「JSON 格式要求」当成正文的一部分，输出稳定性明显更差；日志里也只剩
+ * 一坨看不出哪段是规则、哪段是正文。
+ */
+export type TheaterLlmCaller = (system: string, user: string) => Promise<string>;
 
 export interface TheaterImageInput {
   prompt: string;
@@ -27,6 +34,11 @@ export interface TheaterImageInput {
   negative?: string;
   seed: number;
   size?: 'portrait' | 'landscape';
+  /**
+   * 角色外貌：走柏宝绘原生的 character prompt 通道（NAI4.5/V5 的 v4_prompt.char_captions）。
+   * 这是它自己画多角色时用的同一条通道——不再把外貌串拼进正向词。
+   */
+  characters?: CharacterLook[];
 }
 
 export interface TheaterImageResult {
@@ -57,6 +69,16 @@ export interface RunOneInput {
   mangaSafe: boolean;
   /** 黑白漫：要不要台词（要了才在 system 里问模型，并叠气泡） */
   dialogue?: boolean;
+  /**
+   * 柏宝绘角色库里的名字。**读剧情时就把名单给模型**，让它照抄这些名字，
+   * 否则模型会写「Elias（他）」这类变体，出图时匹配不上角色库 → 没有外貌 tag。
+   */
+  roster?: string[];
+  /**
+   * 后端是否支持原生多角色提示（NAI4.5/V5）。true = 外貌走 characters 通道；
+   * false（NAI3/ComfyUI）= 只能回落成把外貌拼进正向词。
+   */
+  supportsCharacters?: boolean;
   backend: 'nai' | 'comfyui' | 'webui';
   profile?: VisualProfile;
   /** 依赖注入 */
@@ -72,6 +94,8 @@ export interface RunOneResult {
   stories: BbiStatusInfo[];
   error?: string;
   hits: string[];
+  /** 模型写了、但柏宝绘角色库里没有的名字（外貌会缺，必须让用户知道） */
+  missingLooks?: string[];
 }
 
 // ============================================================
@@ -162,9 +186,10 @@ export async function readTheater(
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe,
     dialogue: input.dialogue === true,
+    ...(input.roster?.length ? { roster: input.roster } : {}),
   });
   const finalSystem = extraInstruction ? `${system}\n\n【追加要求】${extraInstruction}` : system;
-  const raw = await input.llm(`${finalSystem}\n\n---\n\n${user}`);
+  const raw = await input.llm(finalSystem, user);
   let reading = parseStatusReply(raw, input.kind);
 
   const hits: string[] = [];
@@ -185,12 +210,16 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
     // 不合格就重问一次：读剧情是文本调用，便宜；出图贵，而且废图看不出是坏在哪。
     if (!check.ok) {
       console.warn(`[ST-Story-Illustrator] ${input.kind} 读剧情不合格（${check.reason}），重问一次。`);
+      const rosterHint = input.roster?.length
+        ? `角色名只能从这几个里选：${input.roster.join('、')}（照抄，不要改写）。`
+        : '';
       const retried = await readTheater(
         input,
         `上一次的输出不合格：${check.reason}。` +
           '这次必须做到：tags 与 characters[].act 写的都是**正文里真的发生的事**，' +
           '动作具体到能画出来（例如 holding sword, sitting on bed, crying, looking away），' +
-          '不许只给 1girl / solo / standing 这类空景词；角色名照抄正文里的叫法。',
+          '不许只给 1girl / solo / standing 这类空景词；角色名照抄正文里的叫法。' +
+          rosterHint,
       );
       reading = retried.reading;
       hits = [...hits, ...retried.hits];
@@ -218,17 +247,34 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
     const fixedSeed = statusSeedFor([...names]);
 
     const stories: BbiStatusInfo[] = [];
+    const missingLooks = new Set<string>();
+    // 支持原生多角色（NAI4.5/V5）时，外貌走 characters 通道；不支持的才回落到拼进正向词
+    const nativeCharacters = input.supportsCharacters !== false;
     for (let i = 0; i < reading.panels.length; i += 1) {
       const panel = reading.panels[i];
       input.onPanel?.(i, reading.panels.length);
       // 外貌**按格取**：以前是把整段剧情里所有角色的外貌串拼一次、套给每一格，
       // 于是只有一个人在的格子里也塞进了另一个人的「1boy / 1girl + 全身外貌」，
-      // 模型只能把两个人都画进来或折中成一张头像。这一格没写角色时才回落到全体。
+      // 模型只能把两个人都画进来或折中成一张头像。
+      //
+      // 这一格没点名任何人时也不能无脑回落到全体：那正是「画到第四格忽然冒出两个
+      // 无关小人」的来源（第四格只是在讲阳光，模型没写角色，我们却把全场都塞了进去）。
+      // 只认 nl/title 里真的提到的人；全场只有一个人时才兜底。
       const panelNames = panel.characters.length
         ? panel.characters
-        : [...names].filter(n => String(panel.nl ?? '').includes(n));
-      const looks = input.readLooks(panelNames.length ? panelNames : [...names]);
-      const appearances = looks.map(l => l.tag).filter(Boolean);
+        : [...names].filter(n => `${panel.nl ?? ''} ${panel.title ?? ''}`.includes(n));
+      const resolvedNames = panelNames.length ? panelNames : names.size === 1 ? [...names] : [];
+      const looks = input.readLooks(resolvedNames);
+      for (const look of looks) if (!look.tag) missingLooks.add(look.name);
+      // 柏宝绘自己画多角色走的就是 v4_prompt.char_captions（公开接口的 characters）。
+      // 它的注释写得很清楚：不要把多份完整外貌拼进正向词，否则会重叠躯干 / 互相污染。
+      // 之前我们正是拼进正向词的——「人物不像我的人」有一半是这么来的。
+      const characters = nativeCharacters
+        ? looks
+            .filter(look => look.tag)
+            .map(look => ({ name: look.name, tag: look.tag, ...(look.nl ? { nl: look.nl } : {}) }))
+        : [];
+      const appearances = nativeCharacters ? [] : looks.map(look => look.tag).filter(Boolean);
       // tags + characters[].act 一起拼：act 才是「这个人在做什么」，上一版丢掉了它
       const prompt = buildTheaterImagePrompt(
         input.kind,
@@ -246,6 +292,7 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
           prompt,
           ...(nl ? { nl } : {}),
           ...(negative ? { negative } : {}),
+          ...(characters.length ? { characters } : {}),
           seed,
           size: 'portrait',
         },
@@ -269,15 +316,21 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
         // 重画这张要用的原始参数：不存就只能「整条重出」，单格没法还原
         prompt,
         ...(negative ? { negative } : {}),
+        ...(characters.length ? { characters } : {}),
         seed: result.seed ?? seed,
         ...(input.profile?.id ? { profileId: input.profile.id } : {}),
       });
     }
 
     if (stories.length === 0) {
-      return { ok: false, stories, error: '所有分格出图均失败。', hits };
+      return { ok: false, stories, error: '所有分格出图均失败。', hits, ...(missingLooks.size ? { missingLooks: [...missingLooks] } : {}) };
     }
-    return { ok: true, stories, hits };
+    return {
+      ok: true,
+      stories,
+      hits,
+      ...(missingLooks.size ? { missingLooks: [...missingLooks] } : {}),
+    };
   } catch (err) {
     return {
       ok: false,

@@ -45,7 +45,7 @@ import {
   promptHash,
 } from '../baibai/bbiTag';
 import { mountTheater } from '../theater/mount';
-import { recordImageLog, recordLlmError } from '../log/imageLog';
+import { recordImageLog, recordLlmError, recordNotice } from '../log/imageLog';
 import { saveSet, newSetId } from '../theater/store';
 import type { QueueRunContext } from './taskQueue';
 
@@ -434,6 +434,24 @@ async function runTheaterMode(
 
   if (!result.ok) throw new Error(result.error ?? '小剧场生成失败。');
 
+  // 角色库里没有的人，出图一定不像。这在成图上看不出来（只像「画风随便」），
+  // 所以必须单独记一条，让用户知道该去柏宝绘补角色。
+  // 角色库里没有的人，出图一定不像。成图上完全看不出来（只像「画风随便」），
+  // 所以既记一条日志、也在收尾时告诉用户该去柏宝绘补角色。
+  if (result.missingLooks?.length) {
+    recordNotice({
+      mode,
+      floor,
+      text: `柏宝绘角色库里没有：${result.missingLooks.join('、')}。`
+        + '这几个人这次没有外貌 tag，画出来不会是他们的样子。'
+        + '到柏宝绘 →「角色」里补上；如果整个角色库是空的，先让柏宝绘的自动打标跑一遍，'
+        + '角色（发型/眼睛/服装）建好后再重出即可。',
+    });
+  }
+  const warning = result.missingLooks?.length
+    ? `角色库里没有 ${result.missingLooks.join('、')}：这几个人这次没带上外貌。`
+    : '';
+
   // 一次生成的 N 格合成一张卡片：共用 setId，卡片头显示「黑白漫 · 4 格」+ 标题，
   // 格内可单独重画，整条可重出（都要靠这些字段还原当时的输入）。
   const setId = newSetId();
@@ -467,7 +485,7 @@ async function runTheaterMode(
   await saveChatSafe();
 
   mountTheater(floor);
-  ctx.report({ stage: 'completed' });
+  ctx.report({ stage: 'completed', ...(warning ? { message: warning } : {}) });
 }
 
 // ============================================================

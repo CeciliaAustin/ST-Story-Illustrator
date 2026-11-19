@@ -311,6 +311,9 @@ const CHANCE_OPTIONS: Array<[string, string]> = [
 ];
 
 /** 改设置 → 落盘 → 重绘面板 → 通知运行中的队列重建。 */
+/** 正在处理开关点击：这段时间里 patchSettings 不重建面板。 */
+let insideToggle = false;
+
 function patchSettings(mutate: (s: StoryIllustratorSettings) => void): void {
   const next = getSettings(DEFAULT_SETTINGS);
   // 旧存档可能缺某些模式的字段：先补齐再改，避免点一下就抛错
@@ -323,7 +326,10 @@ function patchSettings(mutate: (s: StoryIllustratorSettings) => void): void {
   }
   mutate(next);
   saveSettings(next);
-  showConfigPanel();
+  // 开关就地生效，不需要把整个面板重画一遍：
+  // 重建会丢滚动位置，还会把鼠标正按着的那个 checkbox 换掉——
+  // 表现就是「点了没反应 / 看着还勾着」，得再点一次才正常。
+  if (!insideToggle) showConfigPanel();
   window.dispatchEvent(new CustomEvent('sti-settings-changed'));
 }
 
@@ -353,14 +359,36 @@ function toggleRow(
   checked: boolean,
   onChange: (value: boolean) => void,
   hint?: string,
+  key?: string,
 ): HTMLElement {
   const { el, control } = settingRow(label, hint);
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.checked = checked;
-  cb.addEventListener('change', () => onChange(cb.checked));
+  if (key) cb.dataset.stiToggle = key;
+  cb.addEventListener('change', () => {
+    insideToggle = true;
+    try {
+      onChange(cb.checked);
+    } finally {
+      insideToggle = false;
+    }
+    // 点完就取消焦点：不少主题把 checkbox 的焦点环画成粉/红色，看着像「还勾着」，
+    // 用户会以为没关掉（其实值已经改了）。键盘 Tab 过来仍走 :focus-visible。
+    cb.blur();
+    if (key) syncToggles(key, cb.checked);
+  });
   control.appendChild(cb);
   return el;
+}
+
+/**
+ * 同一个设置可能有两个开关（「自动出图」组里一个，小剧场分组里还有一个）。
+ * 改一个就必须把另一个也改成同一状态，否则界面上两处自相矛盾。
+ */
+function syncToggles(key: string, value: boolean): void {
+  const nodes = document.querySelectorAll<HTMLInputElement>(`input[data-sti-toggle="${key}"]`);
+  for (const node of nodes) node.checked = value;
 }
 
 function selectRow(
@@ -422,6 +450,7 @@ function renderAutomationSettings(): HTMLElement {
       !!conf.autoTrigger,
       v => patchSettings(st => { st.modes[mode].autoTrigger = v; }),
       hint,
+      `mode:${mode}:autoTrigger`,
     ));
   }
 
@@ -716,14 +745,22 @@ function buildLogRow(entry: ImageLogEntry): HTMLElement {
   const row = document.createElement('details');
   row.className = `sti-log-item ${entry.status === 'error' ? 'is-error' : ''}`;
 
+  const kindText = entry.kind === 'llm'
+    ? '读剧情'
+    : entry.kind === 'plan'
+      ? '切方案'
+      : entry.kind === 'notice'
+        ? '提示'
+        : '出图';
+
   const summary = document.createElement('summary');
   summary.className = 'sti-log-summary';
   summary.textContent = [
     formatTime(entry.at),
-    entry.kind === 'llm' ? '读剧情' : entry.kind === 'plan' ? '切方案' : '出图',
+    kindText,
     MODE_LABEL[entry.mode] ?? entry.mode,
     entry.kind === 'plan' ? '' : `#${entry.floor}`,
-    entry.status === 'error' ? '失败' : '成功',
+    entry.kind === 'notice' ? '' : entry.status === 'error' ? '失败' : '成功',
     entry.durationMs !== undefined ? `${(entry.durationMs / 1000).toFixed(1)}s` : '',
     entry.plan ? `方案 ${entry.plan}` : '',
     entry.seed !== undefined ? `seed ${entry.seed}` : '',
@@ -745,9 +782,22 @@ function buildLogRow(entry: ImageLogEntry): HTMLElement {
     row.appendChild(body);
     return row;
   }
+  if (entry.kind === 'notice') {
+    if (entry.prompt) body.appendChild(logField('说明', entry.prompt));
+    row.appendChild(body);
+    return row;
+  }
   body.appendChild(logField('正向', entry.prompt));
   if (entry.nl) body.appendChild(logField('nl', entry.nl));
   if (entry.negative) body.appendChild(logField('负面', entry.negative));
+  // 角色外貌：走柏宝绘原生的 character prompt 通道，不在这段正向词里。
+  // 「人物不像」时先看这里——空的就是当时没匹配上角色库。
+  body.appendChild(logField(
+    '角色（柏宝绘角色库）',
+    entry.characters?.length
+      ? entry.characters.map(c => `${c.name}：${c.tag}`).join('\n')
+      : '（这次没有带上任何角色外貌 —— 要么模型没写角色，要么名字没对上角色库）',
+  ));
   if (entry.plan) body.appendChild(logField('出图方案', entry.plan));
   if (entry.model) body.appendChild(logField('模型', entry.model));
   if (entry.source) body.appendChild(logField('来源', entry.source === 'card' ? '柏宝绘卡片' : '公开出图接口'));

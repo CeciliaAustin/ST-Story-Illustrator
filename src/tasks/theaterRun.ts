@@ -16,7 +16,7 @@ import type {
 import { resolveModeSettings } from '../types';
 import { readOutConfig } from '../baibai/planConfig';
 import { getCharacters } from '../baibai/bridge';
-import { baiBaiAdapter } from '../baibai/imageAdapter';
+import { baiBaiAdapter, readBackendState } from '../baibai/imageAdapter';
 import { makeModeLlmCaller } from '../manga/planGenerator';
 import { runTheaterOne, type LookReader } from '../theater/runtime';
 import { recordImageLog, recordLlmError } from '../log/imageLog';
@@ -86,8 +86,12 @@ function normalizeName(name: string): string {
  *
  * 为什么不能只做 name 精确匹配：正文里的称呼与柏宝绘角色库里的条目名经常差一点
  * （带括号注、繁简、昵称）。匹配不上就等于**没有外貌 tag**，出图会变成一张
- * 「随便哪个人」——用户看到的就是「跟剧情毫无关系」。所以退让两级：
- * 归一后比对 → 场上只有唯一角色时直接用它。
+ * 「随便哪个人」——用户看到的就是「跟剧情毫无关系」。
+ *
+ * 但也不能瞎兜底：以前任何没匹配上的名字都会套上「主角」的外貌，
+ * 于是模型写了 Julian（角色库里没有），画出来却是 Elias 的样子——比没外貌更糟。
+ * 现在只对**代词**（他/她/the man…）且**角色库里只有一个条目**时兜底，
+ * 其余一律留空，并把名字冒泡到日志里，让用户去柏宝绘补角色。
  */
 export function makeLookReader(
   characters: BaiBaiCharacter[],
@@ -103,13 +107,19 @@ export function makeLookReader(
   }
   const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : undefined;
   const onlyOne = characters.length === 1 ? characters[0] : undefined;
+  const pronoun = /^(他|她|它|他们|她们|你|我|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|you|i|the man|the woman)$/i;
 
   return names =>
     names.map(name => {
       const key = normalizeName(name);
       const base = normalizeName(String(name ?? '').split(/[（(【\[]/)[0]);
-      const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : undefined) ?? primary ?? onlyOne;
-      return hit ? { name, tag: hit.tag, ...(hit.nl ? { nl: hit.nl } : {}) } : { name, tag: '' };
+      const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : undefined);
+      if (hit) return { name, tag: hit.tag, ...(hit.nl ? { nl: hit.nl } : {}) };
+      // 代词 + 库里只有一个人 → 只能是这个人，兜底安全
+      const fallback = pronoun.test(String(name ?? '').trim()) ? (onlyOne ?? primary) : undefined;
+      return fallback
+        ? { name, tag: fallback.tag, ...(fallback.nl ? { nl: fallback.nl } : {}) }
+        : { name, tag: '' };
     });
 }
 
@@ -129,6 +139,8 @@ export interface TheaterTaskResult {
   ok: boolean;
   stories: BbiStatusInfo[];
   error?: string;
+  /** 角色库里找不到的名字（外貌缺失，要明确告诉用户） */
+  missingLooks?: string[];
 }
 
 /** 读剧情 → 逐格出图，返回未落盘的格数据。 */
@@ -138,6 +150,10 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
   const modeSettings = resolveModeSettings(settings, mode);
   const characters = await getCharacters(floor);
   const profile = pickProfile(settings.profiles ?? [], mode);
+  // NAI4.5/V5 支持原生多角色提示 → 外貌走 characters 通道（柏宝绘自己也是这么画的）；
+  // NAI3/ComfyUI 不支持，只能回落成拼进正向词。
+  const backendState = await readBackendState().catch(() => null);
+  const supportsCharacters = backendState?.supportsCharacters !== false;
 
   const result = await runTheaterOne({
     kind,
@@ -150,15 +166,22 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     chibi: kind !== 'manga' && modeSettings.chibiStyle !== 'thumb',
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     dialogue: kind === 'manga' && modeSettings.bwMangaDialogue !== false,
+    roster: characters.characters.map(c => c.name),
+    supportsCharacters,
     backend: 'nai',
     ...(profile ? { profile } : {}),
     ...(input.onPanel ? { onPanel: input.onPanel } : {}),
     // 副 API 报错即停，不回退主 API（并把原文记进日志）
-    llm: async (prompt) => {
+    llm: async (system, user) => {
       try {
-        return await makeModeLlmCaller(settings, mode)('', prompt);
+        return await makeModeLlmCaller(settings, mode)(system, user);
       } catch (err) {
-        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
+        recordLlmError({
+          mode,
+          floor,
+          error: err instanceof Error ? err.message : String(err),
+          prompt: `【system】\n${system}\n\n【user】\n${user}`,
+        });
         throw err;
       }
     },
@@ -172,6 +195,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
           prompt: genInput.prompt,
           ...(genInput.nl ? { nl: genInput.nl } : {}),
           ...(genInput.negative ? { negative: genInput.negative } : {}),
+          ...(genInput.characters?.length ? { characters: genInput.characters } : {}),
           seed: genInput.seed,
           size: genInput.size,
           save: true,
@@ -182,6 +206,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
           prompt: genInput.prompt,
           ...(genInput.nl ? { nl: genInput.nl } : {}),
           ...(genInput.negative ? { negative: genInput.negative } : {}),
+          ...(genInput.characters?.length ? { characters: genInput.characters } : {}),
           ...(genInput.size ? { size: genInput.size } : {}),
           ...(typeof r.seed === 'number' ? { seed: r.seed } : typeof genInput.seed === 'number' ? { seed: genInput.seed } : {}),
           status: 'ok',
@@ -195,6 +220,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
           prompt: genInput.prompt,
           ...(genInput.nl ? { nl: genInput.nl } : {}),
           ...(genInput.negative ? { negative: genInput.negative } : {}),
+          ...(genInput.characters?.length ? { characters: genInput.characters } : {}),
           ...(genInput.size ? { size: genInput.size } : {}),
           status: 'error',
           error: err instanceof Error ? err.message : String(err),
@@ -206,5 +232,10 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     readLooks: makeLookReader(characters.characters, input.characterName),
   });
 
-  return { ok: result.ok, stories: result.stories, ...(result.error ? { error: result.error } : {}) };
+  return {
+    ok: result.ok,
+    stories: result.stories,
+    ...(result.error ? { error: result.error } : {}),
+    ...(result.missingLooks?.length ? { missingLooks: result.missingLooks } : {}),
+  };
 }

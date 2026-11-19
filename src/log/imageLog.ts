@@ -11,7 +11,7 @@
  * 内存级（刷新即清），与柏宝绘的定位一致，不写进聊天或 settings。
  */
 
-export type ImageLogKind = 'image' | 'llm' | 'plan';
+export type ImageLogKind = 'image' | 'llm' | 'plan' | 'notice';
 export type ImageLogStatus = 'ok' | 'error';
 
 export interface ImageLogEntry {
@@ -25,6 +25,11 @@ export interface ImageLogEntry {
   prompt: string;
   nl?: string;
   negative?: string;
+  /**
+   * 这次出图用的角色外貌（取柏宝绘角色库，走它原生的 character prompt 通道）。
+   * 「人物不像」时要看的就是这一段：空 = 当时没匹配上角色。
+   */
+  characters?: Array<{ name: string; tag: string; nl?: string }>;
   size?: string;
   /** 这次出图实际用的柏宝绘方案名（排查「明明分了方案却用旧的」的关键证据） */
   plan?: string;
@@ -71,6 +76,11 @@ export function recordImageLog(input: {
   prompt: string;
   nl?: string;
   negative?: string;
+  /**
+   * 这次出图用的角色外貌（取柏宝绘角色库，走它原生的 character prompt 通道）。
+   * 「人物不像」时要看的就是这一段：空 = 当时没匹配上角色。
+   */
+  characters?: Array<{ name: string; tag: string; nl?: string }>;
   size?: string;
   /** 这次出图实际用的柏宝绘方案名（排查「明明分了方案却用旧的」的关键证据） */
   plan?: string;
@@ -125,9 +135,29 @@ export function recordPlanSwitch(input: {
   });
 }
 
-export function getImageLog(): readonly ImageLogEntry[] {
-  return entries;
+/**
+ * 记一条「没失败、但用户必须知道」的提示。
+ *
+ * 目前只有一个来源：模型写了某个角色，但柏宝绘角色库里没有这个人 →
+ * 这一格没有外貌 tag，画出来必然不像。不报的话用户只会看到「怎么又不像」，
+ * 而根本原因（角色库缺条目）在图上是看不出来的。
+ */
+export function recordNotice(input: {
+  mode: string;
+  floor: number;
+  text: string;
+}): ImageLogEntry {
+  return push({
+    kind: 'notice',
+    mode: input.mode,
+    floor: input.floor,
+    prompt: input.text,
+    status: 'ok',
+  });
 }
+
+export function getImageLog(): readonly ImageLogEntry[] {
+  return entries;}
 
 export function clearImageLog(): void {
   entries.length = 0;

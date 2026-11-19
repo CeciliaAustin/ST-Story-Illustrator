@@ -349,6 +349,11 @@ export interface BbiStatusInfo {
   prompt?: string;
   negative?: string;
   seed?: number;
+  /**
+   * 重画这张用：当时从柏宝绘角色库取到的外貌（原生 character prompt 通道）。
+   * 外貌不再拼进 prompt，不存这份的话单格重画会丢掉人物、变成路人脸。
+   */
+  characters?: Array<{ name: string; tag: string; nl?: string }>;
   /** 当时用的出图 profile id（重画沿用同一套参数） */
   profileId?: string;
 }
@@ -420,6 +425,8 @@ export interface VisualTask {
     panel?: number;
     totalPages?: number;
     totalPanels?: number;
+    /** 收尾时要说的一句话（例如「角色库里缺 Julian」）；成功但需要提醒时用 */
+    message?: string;
   };
 }
 

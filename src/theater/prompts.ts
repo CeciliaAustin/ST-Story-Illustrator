@@ -30,9 +30,13 @@ const COMMON_RULES = [
   '只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。',
   'characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。',
   'nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。',
-  'tags 只写四类：① 人数与互动；② 表情；③ 动作或姿态；④ 手里/身上的道具、与场景的互动。',
+  // 这一条是照柏宝绘自己的规范写的：它要求模型补全「怎么拍」（景别/光线/色调），
+  // 因为正文是散文，从来不会写机位。我们之前反过来禁止模型写景别与光线，
+  // 结果是每格都成了同一张平光半身像——画面里看不出「在哪、什么时候、什么气氛」。
+  'tags 里必须交代这三件事：① 人数与互动；② 地点或环境（classroom / dormitory / arched corridor / street / outdoors）；③ 光线或时间（sunlight / backlighting / golden hour / night / indoor lighting）。',
+  'characters[].act 只写「这个人」的动作、表情、以及和场景/道具的接触；外貌、发型、瞳色、服装由柏宝绘角色库提供，这里**绝对不要写**。',
   'nl 用英文自然语言写同一件事，不要分点、不要换行。',
-  '禁止写：画风、画质、镜头景别、光照颜色、服装细节、角色外貌——这些另有固定来源。',
+  '禁止写：画风、画质（masterpiece / best quality / absurdres）、画师名、角色外貌与服装细节、负面词——这些由柏宝绘的方案负责。',
   '不要解释，不要 markdown 代码块，不要多余文字。',
 ];
 
@@ -42,6 +46,7 @@ function statusSingleSystem(): string {
     `格式：${JSON_FIELDS}`,
     'tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。',
     ...COMMON_RULES,
+    '景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。',
     '没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。',
   ].join('\n');
 }
@@ -53,6 +58,7 @@ function statusManySystem(count: number): string {
     'panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。',
     '每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。',
     ...COMMON_RULES,
+    '每格景别只写 close-up / upper body / medium shot 里的一个，相邻两格不要一样（卡片是偏半身构图，不要写 full body 或 wide shot）。',
     '没有角色出场时输出 {"title":"","panels":[]}。',
   ].join('\n');
 }
@@ -120,6 +126,11 @@ export interface TheaterPromptInput {
   mangaSafe?: boolean;
   /** 黑白漫是否要台词（可关；关掉就完全不问模型要 lines） */
   dialogue?: boolean;
+  /**
+   * 柏宝绘角色库里的名字。给了就把名单写进 prompt，让模型照抄——
+   * 名字对不上角色库，出图时就取不到那个人的外貌 tag（这是「人物不像」的常见来源）。
+   */
+  roster?: string[];
 }
 
 /** 构建读剧情的 system + user 文本（合成一条给 generateQuietPrompt）。 */
@@ -147,9 +158,14 @@ export function buildTheaterPrompt(input: TheaterPromptInput): { system: string;
       break;
   }
 
+  const roster = (input.roster ?? []).map(n => String(n ?? '').trim()).filter(Boolean).slice(0, 12);
+  const rosterLine = roster.length
+    ? `可用角色（柏宝绘角色库；characters[].name 必须照抄其中一项，不要自己造人）：${roster.join('、')}\n`
+    : '';
+
   return {
     system,
-    user: `角色：${name}\n${bodyLabel}\n${body}`,
+    user: `${rosterLine}角色：${name}\n${bodyLabel}\n${body}`,
   };
 }
 

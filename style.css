@@ -1379,6 +1379,17 @@
   accent-color: var(--SmartThemeEmColor, #6b8cff);
 }
 
+/* 只给键盘焦点画环：鼠标点完留一圈粉/红，看起来像「还勾着」，是误报的源头。 */
+.sti-set-control input[type="checkbox"]:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.sti-set-control input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--SmartThemeEmColor, #6b8cff);
+  outline-offset: 2px;
+}
+
 .sti-set-control select {
   max-width: 210px;
   font-size: 11.5px;

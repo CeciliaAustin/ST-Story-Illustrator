@@ -265,6 +265,28 @@ function getApi() {
 function isAvailable() {
   return checkAvailability().status === "available";
 }
+function unconfiguredBackendStatus() {
+  return {
+    apiVersion: 1,
+    pluginVersion: "",
+    backend: "nai",
+    configured: false,
+    model: "",
+    supportsCharacters: false,
+    reason: "柏宝绘 API 不可用"
+  };
+}
+async function getBackendStatus() {
+  if (!isAvailable()) {
+    return unconfiguredBackendStatus();
+  }
+  try {
+    const api = getApi();
+    return await api.getBackendStatus();
+  } catch {
+    return unconfiguredBackendStatus();
+  }
+}
 async function getCharacters(floor) {
   if (!isAvailable()) {
     return { apiVersion: 1, pluginVersion: "", revision: 0, floor: null, characters: [] };
@@ -2444,6 +2466,15 @@ function recordPlanSwitch(input) {
     status: input.status
   });
 }
+function recordNotice(input) {
+  return push({
+    kind: "notice",
+    mode: input.mode,
+    floor: input.floor,
+    prompt: input.text,
+    status: "ok"
+  });
+}
 function getImageLog() {
   return entries;
 }
@@ -2801,6 +2832,7 @@ const CHANCE_OPTIONS = [
   ["50", "50% · 一半"],
   ["100", "100% · 每楼都出"]
 ];
+let insideToggle = false;
 function patchSettings(mutate) {
   const next = getSettings(DEFAULT_SETTINGS);
   const empty = {
@@ -2815,7 +2847,7 @@ function patchSettings(mutate) {
   }
   mutate(next);
   saveSettings(next);
-  showConfigPanel();
+  if (!insideToggle) showConfigPanel();
   window.dispatchEvent(new CustomEvent("sti-settings-changed"));
 }
 function settingRow(label, hint) {
@@ -2835,14 +2867,28 @@ function settingRow(label, hint) {
   el2.appendChild(control);
   return { el: el2, control };
 }
-function toggleRow(label, checked, onChange, hint) {
+function toggleRow(label, checked, onChange, hint, key) {
   const { el: el2, control } = settingRow(label, hint);
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = checked;
-  cb.addEventListener("change", () => onChange(cb.checked));
+  if (key) cb.dataset.stiToggle = key;
+  cb.addEventListener("change", () => {
+    insideToggle = true;
+    try {
+      onChange(cb.checked);
+    } finally {
+      insideToggle = false;
+    }
+    cb.blur();
+    if (key) syncToggles(key, cb.checked);
+  });
   control.appendChild(cb);
   return el2;
+}
+function syncToggles(key, value) {
+  const nodes = document.querySelectorAll(`input[data-sti-toggle="${key}"]`);
+  for (const node of nodes) node.checked = value;
 }
 function selectRow(label, value, options, onChange, hint) {
   const { el: el2, control } = settingRow(label, hint);
@@ -2885,7 +2931,8 @@ function renderAutomationSettings() {
       (v) => patchSettings((st) => {
         st.modes[mode].autoTrigger = v;
       }),
-      hint
+      hint,
+      `mode:${mode}:autoTrigger`
     ));
   }
   group.appendChild(toggleRow(
@@ -3151,16 +3198,18 @@ function renderLogSection() {
   return box;
 }
 function buildLogRow(entry) {
+  var _a;
   const row = document.createElement("details");
   row.className = `sti-log-item ${entry.status === "error" ? "is-error" : ""}`;
+  const kindText = entry.kind === "llm" ? "读剧情" : entry.kind === "plan" ? "切方案" : entry.kind === "notice" ? "提示" : "出图";
   const summary = document.createElement("summary");
   summary.className = "sti-log-summary";
   summary.textContent = [
     formatTime(entry.at),
-    entry.kind === "llm" ? "读剧情" : entry.kind === "plan" ? "切方案" : "出图",
+    kindText,
     MODE_LABEL[entry.mode] ?? entry.mode,
     entry.kind === "plan" ? "" : `#${entry.floor}`,
-    entry.status === "error" ? "失败" : "成功",
+    entry.kind === "notice" ? "" : entry.status === "error" ? "失败" : "成功",
     entry.durationMs !== void 0 ? `${(entry.durationMs / 1e3).toFixed(1)}s` : "",
     entry.plan ? `方案 ${entry.plan}` : "",
     entry.seed !== void 0 ? `seed ${entry.seed}` : ""
@@ -3180,9 +3229,18 @@ function buildLogRow(entry) {
     row.appendChild(body);
     return row;
   }
+  if (entry.kind === "notice") {
+    if (entry.prompt) body.appendChild(logField("说明", entry.prompt));
+    row.appendChild(body);
+    return row;
+  }
   body.appendChild(logField("正向", entry.prompt));
   if (entry.nl) body.appendChild(logField("nl", entry.nl));
   if (entry.negative) body.appendChild(logField("负面", entry.negative));
+  body.appendChild(logField(
+    "角色（柏宝绘角色库）",
+    ((_a = entry.characters) == null ? void 0 : _a.length) ? entry.characters.map((c) => `${c.name}：${c.tag}`).join("\n") : "（这次没有带上任何角色外貌 —— 要么模型没写角色，要么名字没对上角色库）"
+  ));
   if (entry.plan) body.appendChild(logField("出图方案", entry.plan));
   if (entry.model) body.appendChild(logField("模型", entry.model));
   if (entry.source) body.appendChild(logField("来源", entry.source === "card" ? "柏宝绘卡片" : "公开出图接口"));
@@ -3551,6 +3609,9 @@ const baiBaiAdapter = {
     };
   }
 };
+async function readBackendState() {
+  return await getBackendStatus();
+}
 let savedPlanId = null;
 let savedPlanName = "";
 async function ensureModeOutPlan(mode, settings2) {
@@ -4373,9 +4434,13 @@ const COMMON_RULES = [
   "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
   "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
   "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
-  "tags 只写四类：① 人数与互动；② 表情；③ 动作或姿态；④ 手里/身上的道具、与场景的互动。",
+  // 这一条是照柏宝绘自己的规范写的：它要求模型补全「怎么拍」（景别/光线/色调），
+  // 因为正文是散文，从来不会写机位。我们之前反过来禁止模型写景别与光线，
+  // 结果是每格都成了同一张平光半身像——画面里看不出「在哪、什么时候、什么气氛」。
+  "tags 里必须交代这三件事：① 人数与互动；② 地点或环境（classroom / dormitory / arched corridor / street / outdoors）；③ 光线或时间（sunlight / backlighting / golden hour / night / indoor lighting）。",
+  "characters[].act 只写「这个人」的动作、表情、以及和场景/道具的接触；外貌、发型、瞳色、服装由柏宝绘角色库提供，这里**绝对不要写**。",
   "nl 用英文自然语言写同一件事，不要分点、不要换行。",
-  "禁止写：画风、画质、镜头景别、光照颜色、服装细节、角色外貌——这些另有固定来源。",
+  "禁止写：画风、画质（masterpiece / best quality / absurdres）、画师名、角色外貌与服装细节、负面词——这些由柏宝绘的方案负责。",
   "不要解释，不要 markdown 代码块，不要多余文字。"
 ];
 function statusSingleSystem() {
@@ -4384,6 +4449,7 @@ function statusSingleSystem() {
     `格式：${JSON_FIELDS}`,
     "tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。",
     ...COMMON_RULES,
+    "景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。",
     '没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。'
   ].join("\n");
 }
@@ -4394,6 +4460,7 @@ function statusManySystem(count) {
     "panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。",
     "每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。",
     ...COMMON_RULES,
+    "每格景别只写 close-up / upper body / medium shot 里的一个，相邻两格不要一样（卡片是偏半身构图，不要写 full body 或 wide shot）。",
     '没有角色出场时输出 {"title":"","panels":[]}。'
   ].join("\n");
 }
@@ -4467,9 +4534,12 @@ function buildTheaterPrompt(input) {
       system = many ? statusManySystem(count) : statusSingleSystem();
       break;
   }
+  const roster = (input.roster ?? []).map((n) => String(n ?? "").trim()).filter(Boolean).slice(0, 12);
+  const rosterLine = roster.length ? `可用角色（柏宝绘角色库；characters[].name 必须照抄其中一项，不要自己造人）：${roster.join("、")}
+` : "";
   return {
     system,
-    user: `角色：${name}
+    user: `${rosterLine}角色：${name}
 ${bodyLabel}
 ${body}`
   };
@@ -4656,22 +4726,20 @@ function checkReading(reading, body, kind) {
   return { ok: true };
 }
 async function readTheater(input, extraInstruction = "") {
+  var _a;
   const { system, user } = buildTheaterPrompt({
     kind: input.kind,
     characterName: input.characterName,
     body: input.body,
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe,
-    dialogue: input.dialogue === true
+    dialogue: input.dialogue === true,
+    ...((_a = input.roster) == null ? void 0 : _a.length) ? { roster: input.roster } : {}
   });
   const finalSystem = extraInstruction ? `${system}
 
 【追加要求】${extraInstruction}` : system;
-  const raw = await input.llm(`${finalSystem}
-
----
-
-${user}`);
+  const raw = await input.llm(finalSystem, user);
   let reading = parseStatusReply(raw, input.kind);
   const hits = [];
   if (input.kind === "manga" && input.mangaSafe) {
@@ -4682,15 +4750,16 @@ ${user}`);
   return { reading, hits };
 }
 async function runTheaterOne(input) {
-  var _a, _b;
+  var _a, _b, _c;
   try {
     let { reading, hits } = await readTheater(input);
     let check = checkReading(reading, input.body, input.kind);
     if (!check.ok) {
       console.warn(`[ST-Story-Illustrator] ${input.kind} 读剧情不合格（${check.reason}），重问一次。`);
+      const rosterHint = ((_a = input.roster) == null ? void 0 : _a.length) ? `角色名只能从这几个里选：${input.roster.join("、")}（照抄，不要改写）。` : "";
       const retried = await readTheater(
         input,
-        `上一次的输出不合格：${check.reason}。这次必须做到：tags 与 characters[].act 写的都是**正文里真的发生的事**，动作具体到能画出来（例如 holding sword, sitting on bed, crying, looking away），不许只给 1girl / solo / standing 这类空景词；角色名照抄正文里的叫法。`
+        `上一次的输出不合格：${check.reason}。这次必须做到：tags 与 characters[].act 写的都是**正文里真的发生的事**，动作具体到能画出来（例如 holding sword, sitting on bed, crying, looking away），不许只给 1girl / solo / standing 这类空景词；角色名照抄正文里的叫法。` + rosterHint
       );
       reading = retried.reading;
       hits = [...hits, ...retried.hits];
@@ -4714,12 +4783,17 @@ async function runTheaterOne(input) {
     }
     const fixedSeed = statusSeedFor([...names]);
     const stories = [];
+    const missingLooks = /* @__PURE__ */ new Set();
+    const nativeCharacters = input.supportsCharacters !== false;
     for (let i = 0; i < reading.panels.length; i += 1) {
       const panel = reading.panels[i];
-      (_a = input.onPanel) == null ? void 0 : _a.call(input, i, reading.panels.length);
-      const panelNames = panel.characters.length ? panel.characters : [...names].filter((n) => String(panel.nl ?? "").includes(n));
-      const looks = input.readLooks(panelNames.length ? panelNames : [...names]);
-      const appearances = looks.map((l) => l.tag).filter(Boolean);
+      (_b = input.onPanel) == null ? void 0 : _b.call(input, i, reading.panels.length);
+      const panelNames = panel.characters.length ? panel.characters : [...names].filter((n) => `${panel.nl ?? ""} ${panel.title ?? ""}`.includes(n));
+      const resolvedNames = panelNames.length ? panelNames : names.size === 1 ? [...names] : [];
+      const looks = input.readLooks(resolvedNames);
+      for (const look of looks) if (!look.tag) missingLooks.add(look.name);
+      const characters = nativeCharacters ? looks.filter((look) => look.tag).map((look) => ({ name: look.name, tag: look.tag, ...look.nl ? { nl: look.nl } : {} })) : [];
+      const appearances = nativeCharacters ? [] : looks.map((look) => look.tag).filter(Boolean);
       const prompt = buildTheaterImagePrompt(
         input.kind,
         appearances,
@@ -4734,6 +4808,7 @@ async function runTheaterOne(input) {
           prompt,
           ...nl ? { nl } : {},
           ...negative ? { negative } : {},
+          ...characters.length ? { characters } : {},
           seed,
           size: "portrait"
         },
@@ -4757,14 +4832,20 @@ async function runTheaterOne(input) {
         // 重画这张要用的原始参数：不存就只能「整条重出」，单格没法还原
         prompt,
         ...negative ? { negative } : {},
+        ...characters.length ? { characters } : {},
         seed: result.seed ?? seed,
-        ...((_b = input.profile) == null ? void 0 : _b.id) ? { profileId: input.profile.id } : {}
+        ...((_c = input.profile) == null ? void 0 : _c.id) ? { profileId: input.profile.id } : {}
       });
     }
     if (stories.length === 0) {
-      return { ok: false, stories, error: "所有分格出图均失败。", hits };
+      return { ok: false, stories, error: "所有分格出图均失败。", hits, ...missingLooks.size ? { missingLooks: [...missingLooks] } : {} };
     }
-    return { ok: true, stories, hits };
+    return {
+      ok: true,
+      stories,
+      hits,
+      ...missingLooks.size ? { missingLooks: [...missingLooks] } : {}
+    };
   } catch (err) {
     return {
       ok: false,
@@ -5352,19 +5433,25 @@ function makeLookReader(characters, primaryName = "") {
   }
   const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : void 0;
   const onlyOne = characters.length === 1 ? characters[0] : void 0;
+  const pronoun = /^(他|她|它|他们|她们|你|我|对方|那人|那个人|男子|男人|少年|少女|女孩|男孩|he|she|they|him|her|you|i|the man|the woman)$/i;
   return (names) => names.map((name) => {
     const key = normalizeName(name);
     const base = normalizeName(String(name ?? "").split(/[（(【\[]/)[0]);
-    const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0) ?? primary ?? onlyOne;
-    return hit ? { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} } : { name, tag: "" };
+    const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0);
+    if (hit) return { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} };
+    const fallback = pronoun.test(String(name ?? "").trim()) ? onlyOne ?? primary : void 0;
+    return fallback ? { name, tag: fallback.tag, ...fallback.nl ? { nl: fallback.nl } : {} } : { name, tag: "" };
   });
 }
 async function runTheaterTask(input) {
+  var _a;
   const { mode, settings: settings2, floor } = input;
   const kind = kindOfMode(mode);
   const modeSettings = resolveModeSettings(settings2, mode);
   const characters = await getCharacters(floor);
   const profile = pickProfile(settings2.profiles ?? [], mode);
+  const backendState = await readBackendState().catch(() => null);
+  const supportsCharacters = (backendState == null ? void 0 : backendState.supportsCharacters) !== false;
   const result = await runTheaterOne({
     kind,
     chatId: input.chatId,
@@ -5376,19 +5463,31 @@ async function runTheaterTask(input) {
     chibi: kind !== "manga" && modeSettings.chibiStyle !== "thumb",
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
     dialogue: kind === "manga" && modeSettings.bwMangaDialogue !== false,
+    roster: characters.characters.map((c) => c.name),
+    supportsCharacters,
     backend: "nai",
     ...profile ? { profile } : {},
     ...input.onPanel ? { onPanel: input.onPanel } : {},
     // 副 API 报错即停，不回退主 API（并把原文记进日志）
-    llm: async (prompt) => {
+    llm: async (system, user) => {
       try {
-        return await makeModeLlmCaller(settings2, mode)("", prompt);
+        return await makeModeLlmCaller(settings2, mode)(system, user);
       } catch (err) {
-        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
+        recordLlmError({
+          mode,
+          floor,
+          error: err instanceof Error ? err.message : String(err),
+          prompt: `【system】
+${system}
+
+【user】
+${user}`
+        });
         throw err;
       }
     },
     generate: async (genInput, genProfile) => {
+      var _a2, _b, _c;
       const startedAt = Date.now();
       try {
         await ensureModeOutPlan(mode, settings2);
@@ -5396,6 +5495,7 @@ async function runTheaterTask(input) {
           prompt: genInput.prompt,
           ...genInput.nl ? { nl: genInput.nl } : {},
           ...genInput.negative ? { negative: genInput.negative } : {},
+          ...((_a2 = genInput.characters) == null ? void 0 : _a2.length) ? { characters: genInput.characters } : {},
           seed: genInput.seed,
           size: genInput.size,
           save: true
@@ -5408,6 +5508,7 @@ async function runTheaterTask(input) {
           prompt: genInput.prompt,
           ...genInput.nl ? { nl: genInput.nl } : {},
           ...genInput.negative ? { negative: genInput.negative } : {},
+          ...((_b = genInput.characters) == null ? void 0 : _b.length) ? { characters: genInput.characters } : {},
           ...genInput.size ? { size: genInput.size } : {},
           ...typeof r.seed === "number" ? { seed: r.seed } : typeof genInput.seed === "number" ? { seed: genInput.seed } : {},
           status: "ok",
@@ -5423,6 +5524,7 @@ async function runTheaterTask(input) {
           prompt: genInput.prompt,
           ...genInput.nl ? { nl: genInput.nl } : {},
           ...genInput.negative ? { negative: genInput.negative } : {},
+          ...((_c = genInput.characters) == null ? void 0 : _c.length) ? { characters: genInput.characters } : {},
           ...genInput.size ? { size: genInput.size } : {},
           status: "error",
           error: err instanceof Error ? err.message : String(err),
@@ -5433,13 +5535,18 @@ async function runTheaterTask(input) {
     },
     readLooks: makeLookReader(characters.characters, input.characterName)
   });
-  return { ok: result.ok, stories: result.stories, ...result.error ? { error: result.error } : {} };
+  return {
+    ok: result.ok,
+    stories: result.stories,
+    ...result.error ? { error: result.error } : {},
+    ...((_a = result.missingLooks) == null ? void 0 : _a.length) ? { missingLooks: result.missingLooks } : {}
+  };
 }
 function randomSeed() {
   return Math.floor(Math.random() * 4294967295);
 }
 async function rerollPanel(floor, kind, setId, index2) {
-  var _a;
+  var _a, _b, _c;
   const settings2 = getSettings(DEFAULT_SETTINGS);
   const set = getSets(floor, kind).find((s) => s.setId === setId);
   const panel = set == null ? void 0 : set.panels.find((p) => p.index === index2);
@@ -5458,6 +5565,9 @@ async function rerollPanel(floor, kind, setId, index2) {
         prompt: panel.prompt,
         ...nl ? { nl } : {},
         ...panel.negative ? { negative: panel.negative } : {},
+        // 外貌不再拼在 prompt 里，重画时必须把当时那几个人一起带上，
+        // 否则重画出来的脸会换人（用户看到的就是「重画一次变了个角色」）。
+        ...((_a = panel.characters) == null ? void 0 : _a.length) ? { characters: panel.characters } : {},
         seed,
         size: "portrait",
         save: true
@@ -5474,6 +5584,7 @@ async function rerollPanel(floor, kind, setId, index2) {
       prompt: panel.prompt,
       ...nl ? { nl } : {},
       ...panel.negative ? { negative: panel.negative } : {},
+      ...((_b = panel.characters) == null ? void 0 : _b.length) ? { characters: panel.characters } : {},
       size: "portrait",
       ...typeof result.seed === "number" ? { seed: result.seed } : { seed },
       status: "ok",
@@ -5481,7 +5592,7 @@ async function rerollPanel(floor, kind, setId, index2) {
     });
     let path = raw;
     let originalPath;
-    if (kind === "manga" && ((_a = panel.lines) == null ? void 0 : _a.length)) {
+    if (kind === "manga" && ((_c = panel.lines) == null ? void 0 : _c.length)) {
       const baked = await bakeTheaterLines(raw, panel.lines, settings2, kind);
       if (baked.baked) {
         originalPath = raw;
@@ -6910,7 +7021,7 @@ async function runComic(task, ctx, deps) {
   ctx.report({ stage: "completed" });
 }
 async function runTheaterMode(task, ctx, deps) {
-  var _a, _b, _c, _d;
+  var _a, _b, _c, _d, _e, _f;
   const segment = task.source;
   const mode = task.mode;
   const floor = getAnchorFloor(segment);
@@ -6930,14 +7041,22 @@ async function runTheaterMode(task, ctx, deps) {
     onPanel: (index2, total2) => ctx.report({ stage: "generating", page: index2 + 1, totalPages: total2 })
   });
   if (!result.ok) throw new Error(result.error ?? "小剧场生成失败。");
+  if ((_c = result.missingLooks) == null ? void 0 : _c.length) {
+    recordNotice({
+      mode,
+      floor,
+      text: `柏宝绘角色库里没有：${result.missingLooks.join("、")}。这几个人这次没有外貌 tag，画出来不会是他们的样子。到柏宝绘 →「角色」里补上；如果整个角色库是空的，先让柏宝绘的自动打标跑一遍，角色（发型/眼睛/服装）建好后再重出即可。`
+    });
+  }
+  const warning = ((_d = result.missingLooks) == null ? void 0 : _d.length) ? `角色库里没有 ${result.missingLooks.join("、")}：这几个人这次没带上外貌。` : "";
   const setId = newSetId();
-  const setTitle = ((_c = result.stories[0]) == null ? void 0 : _c.title) ?? "";
+  const setTitle = ((_e = result.stories[0]) == null ? void 0 : _e.title) ?? "";
   const total = result.stories.length;
   const stories = [];
   for (const story of result.stories) {
     let imagePath = story.imagePath;
     let originalPath;
-    if (kind === "manga" && ((_d = story.lines) == null ? void 0 : _d.length) && imagePath) {
+    if (kind === "manga" && ((_f = story.lines) == null ? void 0 : _f.length) && imagePath) {
       const baked = await bakeTheaterLines(imagePath, story.lines, deps.fullSettings, kind);
       if (baked.baked) {
         originalPath = imagePath;
@@ -6958,7 +7077,7 @@ async function runTheaterMode(task, ctx, deps) {
   if (!saveSet(floor, kind, stories)) throw new Error("小剧场已生成，但写不进本楼（聊天上下文不可用）。");
   await saveChatSafe();
   mountTheater(floor);
-  ctx.report({ stage: "completed" });
+  ctx.report({ stage: "completed", ...warning ? { message: warning } : {} });
 }
 function createTaskRunner(deps) {
   return async (task, ctx) => {
@@ -7055,7 +7174,7 @@ function initQueue() {
   queue = new TaskQueue(runner, {
     taskTimeoutMs: 12 * 60 * 1e3,
     onStatusChange: (task, status) => {
-      var _a, _b;
+      var _a, _b, _c, _d;
       console.log(`[ST-Story-Illustrator] 任务 ${task.id} → ${status}`);
       if (status === "queued" || status === "reading" || status === "review" || status === "generating") {
         if (runTaskId !== task.id) {
@@ -7069,7 +7188,8 @@ function initQueue() {
           ...((_b = task.progress) == null ? void 0 : _b.totalPages) ? { totalPages: task.progress.totalPages } : {}
         });
       } else if (status === "completed") {
-        finishRunStatus("ok");
+        finishRunStatus("ok", ((_c = task.progress) == null ? void 0 : _c.message) ?? "");
+        if ((_d = task.progress) == null ? void 0 : _d.message) showToast(task.progress.message, "warn");
         runTaskId = "";
       } else if (status === "failed") {
         finishRunStatus("error", task.error ?? "未知错误");

@@ -191,9 +191,14 @@ describe('makeLookReader（角色外貌匹配）', () => {
     expect(looks[0].tag).toContain('long red hair');
   });
 
-  it('对不上时回落到主角色，而不是给空串（否则出图就是随便哪个人）', () => {
-    const looks = makeLookReader(lib, '小明')(['阿强']);
+  it('库里有这个人、但模型写的是代词时，只有一个候选才兜底', () => {
+    const looks = makeLookReader([lib[0]], '小明')(['他']);
     expect(looks[0].tag).toContain('short black hair');
+  });
+
+  it('库里没有的名字不给外貌，也不套别人的（否则会画成另一个人）', () => {
+    const looks = makeLookReader(lib, '小明')(['阿强']);
+    expect(looks[0].tag).toBe('');
   });
 
   it('库为空时给空 tag，不抛错', () => {

@@ -57,6 +57,9 @@ export async function rerollPanel(
         prompt: panel.prompt,
         ...(nl ? { nl } : {}),
         ...(panel.negative ? { negative: panel.negative } : {}),
+        // 外貌不再拼在 prompt 里，重画时必须把当时那几个人一起带上，
+        // 否则重画出来的脸会换人（用户看到的就是「重画一次变了个角色」）。
+        ...(panel.characters?.length ? { characters: panel.characters } : {}),
         seed,
         size: 'portrait',
         save: true,
@@ -72,6 +75,7 @@ export async function rerollPanel(
       prompt: panel.prompt,
       ...(nl ? { nl } : {}),
       ...(panel.negative ? { negative: panel.negative } : {}),
+      ...(panel.characters?.length ? { characters: panel.characters } : {}),
       size: 'portrait',
       ...(typeof result.seed === 'number' ? { seed: result.seed } : { seed }),
       status: 'ok',
