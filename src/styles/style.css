@@ -1391,6 +1391,30 @@
 .sti-prompt-dlg__area.is-nl {
   min-height: 72px;
 }
+/* 角色词：每个角色一张小卡，名字在左上（漫画的「谁穿什么」全在这里） */
+.sti-prompt-dlg__char {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.sti-prompt-dlg__char-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(160, 200, 255, 0.95);
+}
+.sti-prompt-dlg__area.is-char {
+  min-height: 58px;
+  font-size: 11.5px;
+}
+.sti-prompt-dlg__area.is-char-nl {
+  min-height: 40px;
+  font-size: 11px;
+  opacity: 0.9;
+}
 .sti-prompt-dlg__hint {
   margin: 6px 0 0;
   font-size: 11px;

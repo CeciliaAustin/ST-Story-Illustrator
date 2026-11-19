@@ -36,7 +36,7 @@ import { splitSegments, characterPromptsFromLibrary } from '../manga/tagSplit';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { resolvePanelsPerPage } from '../manga/panelPlan';
 import { hasStoryContent } from '../manga/panelRelevance';
-import { composePagePrompt } from '../manga/pageCompose';
+import { composePagePrompt, findCastShortfall } from '../manga/pageCompose';
 import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
 import {
   buildManwaTag,
@@ -298,7 +298,8 @@ async function runComic(
   const comicNativeCharacters = (await readBackendState()).supportsCharacters !== false;
   // 与插图、与柏宝绘自己同一套取证：柏宝书当前状态 + 整份角色库 + 谁是谁。
   // 漫画页人物最多，只发「名字: tag」时模型最容易自己编人。
-  const comicBook = readBookRoles(floor, segment.text, readPersonaName());
+  const personaName = readPersonaName();
+  const comicBook = readBookRoles(floor, segment.text, personaName);
   const comicLibrary = buildLibraryBlock(characters.characters);
   const comicCast = buildCastBlock(readCastContext(segment.messages.find(m => !m.isUser)?.speaker ?? ''));
   const comicBlocks = {
@@ -361,6 +362,54 @@ async function runComic(
     }
   }
 
+  // 人数体检：Base 说「两个人」而角色块只建出一个 —— 那条「永远只有 char」的根因。
+  // 代码能补的（人设进库 / 库内固定双人）上面 composePagePrompt 已经补了；
+  // 补不出来的情况只能让模型补 `look`，所以这里重问一次，并把它错在哪讲清楚。
+  const castGap = findCastShortfall(plan.data, characters.characters, {
+    nativeCharacters: comicNativeCharacters,
+    selectedText: segment.text,
+    ...(personaName ? { personaName } : {}),
+  });
+  if (castGap) {
+    console.warn(
+      `[ST-Story-Illustrator] 第 ${castGap.pageIndex + 1} 页 Base 声称 ${castGap.declared} 人，` +
+        `但只建出 ${castGap.blocks} 个角色块，重问一次分镜。`,
+    );
+    plan = await generateComicPlan({
+      scene: sceneFromSegment(segment),
+      characters: characters.characters,
+      ...comicBlocks,
+      options: {
+        ...planOptions,
+        extraInstruction:
+          `上一版第 ${castGap.pageIndex + 1} 页的 tags 写了 ${castGap.declared} 个人，` +
+          `但 panels[].characters 只写了 ${castGap.blocks} 个——画面里那个人会成为没有外貌约束的陌生人。` +
+          '这次必须让「人数词 = characters 条数」：每个出场的人各写一条，' +
+          '角色库里没有的那位（通常是用户扮演的「你」）**必须给它 look**（英文外貌短语：发色/瞳色/体型/当前着装），' +
+          '取自【角色参考】或【本聊天的人物对应】里的人设摘要；实在拿不到外貌就把人数词改成 1，绝不写空。',
+      },
+      caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
+      promptOverrides: deps.fullSettings.promptOverrides,
+    });
+    if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
+    const after = findCastShortfall(plan.data, characters.characters, {
+      nativeCharacters: comicNativeCharacters,
+      selectedText: segment.text,
+      ...(personaName ? { personaName } : {}),
+    });
+    if (after) {
+      // 重问一次还是对不上：这条必须让用户看见，否则他只会看到「又是只有一个人」。
+      recordNotice({
+        mode: 'comic',
+        floor,
+        text:
+          `第 ${after.pageIndex + 1} 页写着 ${after.declared} 个人，但只能给出 ${after.blocks} 个角色词。` +
+          `多半是柏宝绘角色库里没有「${personaName || '你'}」这一条（或没填外貌），模型也补不出英文外貌。` +
+          '到柏宝绘「角色管理」给人设建一条（1girl/1boy + 发色/瞳色/体型），之后这一页就会有两个完整的人。',
+      });
+    }
+  }
+
   // 整本漫画用同一套出图方案，只在开始前切一次
   await ensureModeOutPlan('comic', deps.fullSettings);
 
@@ -400,6 +449,7 @@ async function runComic(
     const composed = composePagePrompt(pageForCompose, characters.characters, {
       nativeCharacters: comicNativeCharacters,
       selectedText: segment.text,
+      ...(personaName ? { personaName } : {}),
     });
     const enforced = enforceForGeneration({
       prompt: composed.prompt,

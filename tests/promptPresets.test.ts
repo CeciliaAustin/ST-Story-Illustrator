@@ -149,10 +149,11 @@ describe('nl 跟随方案：关掉时提示词里不能还有「必须写 nl」'
     };
     const off = buildComicSystemPrompt({ ...base, nl: false });
     const on = buildComicSystemPrompt({ ...base, nl: true });
-    expect(off).not.toContain('"nl":"英文分区描述"');
+    expect(off).not.toContain('"nl":"整页 nl（可省略：各格 nl 优先）"');
     expect(off).toContain('没有自然语言通道');
-    expect(on).toContain('"nl":"英文分区描述"');
-    expect(on).toContain('In the upper panel');
+    expect(on).toContain('"nl":"整页 nl（可省略：各格 nl 优先）"');
+    expect(on).toContain('每一格都必须写 nl');
+    expect(on).toContain('"shot"');
   });
 
   it('小剧场（状态栏/彩蛋/黑白漫）同样跟着关', () => {

@@ -30,6 +30,11 @@ export interface ComicRerollOptions {
   prompt?: string;
   /** 传空串表示「这次不要 nl」；不传 = 沿用原值。 */
   nl?: string;
+  /**
+   * 角色词（每人一条）。给了就整套替换并写回 artifact：
+   * 漫画里「谁穿什么、谁在做什么」大半在这里，只让改正向词是不完整的。
+   */
+  characters?: Array<{ name: string; tag: string; nl?: string }>;
 }
 
 /** NAI 种子上限；超了会被服务端拒。 */
@@ -59,9 +64,10 @@ export async function rerollComicPage(
   const settings = getSettings(DEFAULT_SETTINGS);
   const comic = resolveModeSettings(settings, 'comic');
   const meta = artifact.metadata ?? {};
-  const characters = Array.isArray(meta.characters)
+  const storedCharacters = Array.isArray(meta.characters)
     ? (meta.characters as Array<{ name: string; tag: string; nl?: string }>)
     : [];
+  const characters = overrides.characters ?? storedCharacters;
   // 页型优先用这一页自己的元数据：显示层合成按它重放，改全局设置不影响历史页
   const pageType = (meta.pageType ?? comic.comicPageType ?? 'auto') as PanelPageType;
 
@@ -105,13 +111,15 @@ export async function rerollComicPage(
       imagePath: rawPath,
       originalImagePath: undefined,
       // 改过词就把新词落回 artifact：再点「重画」用的就是改后的版本
-      ...(edited ? { prompt, nl: nl || undefined } : {}),
+      ...(edited || overrides.characters ? { prompt, nl: nl || undefined } : {}),
       metadata: {
         ...meta,
+        // 角色词改动一并落回：重画要还原「当时画的是谁、穿什么」
+        ...(overrides.characters ? { characters: overrides.characters } : {}),
         rawImagePath: rawPath,
         bubbleBakedPath: undefined,
         ...(meta.pageType ? {} : { pageType }),
-        ...(edited ? { promptEditedAt: Date.now() } : {}),
+        ...(edited || overrides.characters ? { promptEditedAt: Date.now() } : {}),
         ...(typeof result.seed === 'number' ? { seed: result.seed } : { seed }),
       },
     });

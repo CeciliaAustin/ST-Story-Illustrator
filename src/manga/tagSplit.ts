@@ -155,6 +155,139 @@ export function ensurePageCast(
 }
 
 /**
+ * 模型/正文里指「用户扮演的那个人」的写法。
+ *
+ * 为什么必须有这一张表：漫画的 Base 写着 `1girl, 1boy` / `two people`，
+ * 而 `panels[].characters` 里那一位常被写成「你」「User」——这个名字在柏宝绘
+ * 角色库里根本不存在（库里存的是人设名），于是 `characterPromptsFromLibrary`
+ * 老老实实把它丢掉，画面上就只剩另一个人。用户看到的就是「两个人却永远只画一个」。
+ */
+const PERSONA_ALIASES: readonly string[] = [
+  '你', '您', '我', 'user', '{{user}}', 'the user', 'player', 'protagonist', '主角', '主人公',
+];
+
+function nameKey(value: string): string {
+  return String(value ?? '').replace(/\s+/g, '').toLowerCase();
+}
+
+export interface ResolveCastOptions {
+  /** ST 的人设名（`name1`）：别名最终映射到它 */
+  personaName?: string;
+  /** Base 里的人数词（`1girl, 1boy` → 2）；0/缺省表示不补人 */
+  declared?: number;
+  /** 最多补到几人（漫画同框超过 3 人基本必崩） */
+  max?: number;
+  /** 模型给「库里没有的人」补的外貌；别名会被重挂到人设名下 */
+  looks?: ReadonlyMap<string, string>;
+  /** 每个名字的动作；别名（「你」）的动作同样要挂到人设名下，否则动作会丢 */
+  acts?: ReadonlyMap<string, readonly string[]>;
+}
+
+export interface ResolvedCast {
+  cast: string[];
+  /** 重挂过键的 looks（人设别名 → 人设名） */
+  looks: Map<string, string>;
+  /** 重挂过键的 acts */
+  acts: Map<string, string[]>;
+}
+
+/**
+ * 名字归一 + 按人数补齐。
+ *
+ * 三件事，缺一都是「Base 说 2 人、画面只有 1 人」：
+ * 1. **别名归一**：「你 / User / 我」→ 人设名（库里那条才是唯一有外貌的人）；
+ * 2. **按人数补齐**：Base 声称 2 人而只解析出 1 条时，把人设补进去
+ *    （同框双人戏十有八九就是「角色 + 用户」）；
+ * 3. **库内固定阵容兜底**：库总共只有 ≤2 个可用条目时，缺的那位直接补上
+ *    ——这种库基本就是固定双人组，不存在「补错人」。
+ */
+export function resolveCastNames(
+  names: readonly string[],
+  library: readonly BaiBaiCharacter[],
+  options: ResolveCastOptions = {},
+): ResolvedCast {
+  const looks = new Map<string, string>(options.looks ?? []);
+  const acts = new Map<string, string[]>(
+    [...(options.acts ?? [])].map(([key, list]) => [key, [...list]]),
+  );
+  const usable = library.filter(c => String(c.name ?? '').trim() && characterTagOf(c));
+  const byKey = new Map(usable.map(c => [nameKey(String(c.name)), String(c.name).trim()]));
+
+  const personaName = String(options.personaName ?? '').trim();
+  const personaKey = nameKey(personaName);
+  // 人设名可能只是库条目名的一部分（「Sissy」vs「Sissy Hu」），唯一匹配才认
+  let personaEntry = personaKey ? usable.find(c => nameKey(String(c.name)) === personaKey) : undefined;
+  if (!personaEntry && personaKey) {
+    const partial = usable.filter(c => {
+      const key = nameKey(String(c.name));
+      return key.length >= 2 && (personaKey.includes(key) || key.includes(personaKey));
+    });
+    if (partial.length === 1) personaEntry = partial[0];
+  }
+  const personaResolved = personaEntry ? String(personaEntry.name).trim() : personaName;
+
+  const aliasKeys = new Set(PERSONA_ALIASES.map(nameKey));
+  if (personaKey) aliasKeys.add(personaKey);
+  if (personaResolved) aliasKeys.add(nameKey(personaResolved));
+
+  const cast: string[] = [];
+  const push = (name: string): void => {
+    const clean = String(name ?? '').trim();
+    if (!clean || cast.includes(clean)) return;
+    cast.push(clean);
+  };
+
+  for (const raw of names) {
+    const clean = String(raw ?? '').trim();
+    if (!clean) continue;
+    const key = nameKey(clean);
+    if (aliasKeys.has(key)) {
+      // 「你」这一类：挂到人设名下，模型给别名的 look / 动作也跟着搬过去
+      //（不搬动作的话，人设那块只剩外貌，这一格「在做什么」全丢了）
+      const supplied = looks.get(clean);
+      if (supplied && personaResolved && !looks.has(personaResolved)) looks.set(personaResolved, supplied);
+      if (personaResolved) {
+        const personaActs = acts.get(clean);
+        if (personaActs?.length) {
+          const merged = acts.get(personaResolved) ?? [];
+          for (const act of personaActs) if (!merged.includes(act)) merged.push(act);
+          acts.set(personaResolved, merged);
+          acts.delete(clean);
+        }
+        push(personaResolved);
+        continue;
+      }
+      // 连人设名都取不到：保留原写法，后面靠 looks 兜底
+      push(clean);
+      continue;
+    }
+    push(byKey.get(key) ?? clean);
+  }
+
+  // 按 Base 的人数补人：只补「人设」与「库内唯一固定阵容」，绝不随机拉路人
+  const declared = Math.max(0, Math.round(Number(options.declared) || 0));
+  const max = Math.max(1, Math.min(4, Math.round(Number(options.max) || 3)));
+  if (declared >= 2 && cast.length < Math.min(declared, max)) {
+    if (personaResolved && !cast.includes(personaResolved)) {
+      if (personaEntry || looks.has(personaResolved) || looks.get(personaName)) {
+        if (!looks.has(personaResolved) && looks.get(personaName)) {
+          looks.set(personaResolved, looks.get(personaName) as string);
+        }
+        push(personaResolved);
+      }
+    }
+  }
+  if (declared >= 2 && cast.length < Math.min(declared, max) && usable.length <= 2) {
+    for (const entry of usable) {
+      if (cast.length >= Math.min(declared, max)) break;
+      push(String(entry.name));
+    }
+  }
+
+  return { cast, looks, acts };
+}
+
+/**
  * 插画的段 → Base + characters。
  *
  * `native` = 这台后端支持原生 Character Prompts（NAI 4.5/V5）。

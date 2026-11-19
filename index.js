@@ -2611,16 +2611,16 @@ function scoreInSlot(rect, point, inner, slot, item, page, placed, noGo, busy) {
   }
   return score;
 }
-function nameKey(v) {
+function nameKey$1(v) {
   return String(v ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～\-—_]/g, "").toLowerCase();
 }
 function slotBySpeaker(item, casts) {
-  const speaker = nameKey(item.speaker ?? "");
+  const speaker = nameKey$1(item.speaker ?? "");
   if (!speaker || !(casts == null ? void 0 : casts.length)) return -1;
   const hits = [];
   casts.forEach((names, i) => {
     if ((names ?? []).some((name) => {
-      const key = nameKey(name);
+      const key = nameKey$1(name);
       return key.length > 0 && (key === speaker || key.includes(speaker) || speaker.includes(key));
     })) hits.push(i);
   });
@@ -3373,6 +3373,7 @@ function openComicLightbox(ctx) {
     moveIndex: 0,
     draft: ctx.plan.items.map((item) => ({ ...item })),
     imgToken: 0,
+    saveToken: 0,
     current: null
   };
   const bar = document.createElement("div");
@@ -3591,12 +3592,13 @@ function iconButton(icon, title) {
   return btn;
 }
 async function persist(state2, img) {
-  const saved = await state2.ctx.onSave(normalizeDialogueEdits(state2.draft));
-  if (saved) {
-    state2.ctx.plan = saved;
-    state2.draft = saved.items.map((item) => ({ ...item }));
-  }
+  const token = ++state2.saveToken;
   refreshImage(state2, img);
+  const draft = normalizeDialogueEdits(state2.draft);
+  const saved = await state2.ctx.onSave(draft);
+  if (token !== state2.saveToken) return;
+  if (!saved) return;
+  state2.ctx.plan = { items: state2.ctx.plan.items, opts: saved.opts };
 }
 function refreshImage(state2, img) {
   var _a;
@@ -3783,9 +3785,38 @@ function openPromptDialog(options) {
   nlArea.spellcheck = false;
   nlArea.rows = 4;
   body.append(nlLabel, nlArea);
+  const charAreas = [];
+  const characters = (options.characters ?? []).filter((c) => String(c.name ?? "").trim());
+  if (characters.length) {
+    const cap = document.createElement("div");
+    cap.className = "sti-prompt-dlg__label";
+    cap.textContent = "角色词（每个人自己的 prompts，NAI 用它们锁定本人外貌与动作）";
+    body.appendChild(cap);
+    for (const character of characters) {
+      const box = document.createElement("div");
+      box.className = "sti-prompt-dlg__char";
+      const head2 = document.createElement("div");
+      head2.className = "sti-prompt-dlg__char-name";
+      head2.textContent = character.name;
+      const area = document.createElement("textarea");
+      area.className = "sti-prompt-dlg__area is-char";
+      area.value = character.tag ?? "";
+      area.spellcheck = false;
+      area.rows = 3;
+      const nl = document.createElement("textarea");
+      nl.className = "sti-prompt-dlg__area is-nl is-char-nl";
+      nl.value = String(character.nl ?? "");
+      nl.spellcheck = false;
+      nl.rows = 2;
+      nl.placeholder = "这个角色的外观句（nl，可留空；仅 NAI 4.5/V5 生效）";
+      box.append(head2, area, nl);
+      body.appendChild(box);
+      charAreas.push({ name: character.name, area, nlArea: nl });
+    }
+  }
   const hint = document.createElement("p");
   hint.className = "sti-prompt-dlg__hint";
-  hint.textContent = "角色块（<characters>）不受影响；保存后立刻用新词重画这一页，台词气泡会按当前台词重新合成。";
+  hint.textContent = characters.length ? "改完点保存会立刻用新词重画这一页，台词气泡按当前台词重新合成。角色词留空等于把这个人从画面里去掉。" : "角色块（<characters>）不受影响；保存后立刻用新词重画这一页，台词气泡会按当前台词重新合成。";
   body.appendChild(hint);
   const foot = document.createElement("div");
   foot.className = "sti-prompt-dlg__foot";
@@ -3818,7 +3849,12 @@ function openPromptDialog(options) {
     apply.textContent = "重画中…";
     void (async () => {
       try {
-        const result = await options.onApply(prompt, nlArea.value.trim());
+        const editedCharacters = charAreas.map((entry) => ({
+          name: entry.name,
+          tag: entry.area.value.replace(/\s+/g, " ").trim(),
+          ...entry.nlArea.value.trim() ? { nl: entry.nlArea.value.replace(/\s+/g, " ").trim() } : {}
+        })).filter((entry) => entry.tag);
+        const result = await options.onApply(prompt, nlArea.value.trim(), editedCharacters);
         if (result.ok) {
           close();
           return;
@@ -4001,7 +4037,11 @@ function navButtons(root) {
   return Array.from(root.querySelectorAll("button.bbi-nav-item"));
 }
 function tabButtons(root) {
-  return Array.from(root.querySelectorAll('button[role="tab"]'));
+  return Array.from(
+    root.querySelectorAll(
+      'button[role="tab"], button.bbi-seg, button.bbi-tab, .bbi-segmented button'
+    )
+  );
 }
 function planRadios(root) {
   return Array.from(root.querySelectorAll('.plan-item button.item-main[role="radio"]'));
@@ -4032,11 +4072,15 @@ async function gotoNai(root) {
   const tabs = tabButtons(root);
   if (nav && !nav.classList.contains("is-active")) {
     nav.click();
-    await sleep$2(240);
+    await waitFor(() => tabButtons(shadowRoot() ?? root).length ? true : null, 2500);
     return "pending";
   }
   if (!nav && tabs.length === 0) return "pending";
-  const tab = pickTab(tabButtons(shadowRoot() ?? root), TAB_LABEL);
+  let tab = pickTab(tabButtons(shadowRoot() ?? root), TAB_LABEL);
+  if (!tab) {
+    const all = tabButtons(shadowRoot() ?? root);
+    if (all.length === 1) tab = all[0];
+  }
   if (!tab) return "stuck";
   if (!tab.classList.contains("is-on")) {
     tab.click();
@@ -4484,17 +4528,20 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 {{/hasFlags}}`;
 const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"英文分区描述"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"整页 nl（可省略：各格 nl 优先）"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","shot":"wide shot|medium shot|close-up|extreme close-up","subject":"这一格的信息点(一句中文：读者要看到什么)","characters":[{"name":"角色","act":"English danbooru phrases: 这一格在做什么","look":"English 外貌短语，仅角色库里没有的人填"}],"mood":"氛围"{{#nl}},"nl":"English，一句 20~35 词：镜头距离 + 谁在画面哪一侧 + 在做什么 + 空白留在哪"{{/nl}}}]}]}
 硬要求：
 1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
-2. page.tags 必须写出：在场的人**在做什么**（共享动作与互动）、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。**单个角色的外貌、发色、瞳色、服装一律不写进 page.tags**——它们由 panels[].characters[].name 对应的角色库条目提供，代码会拼成每个角色自己的提示词；两边都写会把两套衣服糊给同框所有人。
+2. page.tags 必须写出：在场的人**在做什么**（共享动作与互动）、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。**单个角色的外貌、发色、瞳色、服装一律不写进 page.tags**——它们由 panels[].characters[].name 对应的角色库条目提供，代码会拼成每个角色自己的提示词；两边都写会把两套衣服糊给同框所有人。tag 写足 15~25 个没关系（构图、地点、道具、共享动作、光线都算），但每一个都必须是画面里真的有的东西。
 3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
 4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），{{#nl}}各格远近只写在 nl 里{{/nl}}{{^nl}}各格远近只能用构图 tag 区分{{/nl}}。
-5. {{#nl}}page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}
+5. {{#nl}}**每一格都必须写 nl**（page.nl 可以省略）：一句英文，20~35 词，写清「镜头距离 + 谁在画面哪一侧 + 正在做什么 + 画面的空白留在哪」。只写「两人在桌边」这种没有镜头信息的句子，两格就会长得一模一样。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}
+5b. **每格必须换镜头**：给每格写 shot（wide shot / medium shot / close-up / extreme close-up）与 subject（这一格的信息点）。相邻两格不许同景别；同一页要同时有「交代空间」的大景与「推近」的特写。
+5c. **禁止重播**：两格不许画同一个姿势、同一个动作。至少换掉「谁在动」「动的是哪只手/哪一侧」「镜头在人物哪一边」里的两项。
+5d. **人数与角色块必须对得上**：page.tags 写了 1girl, 1boy 就必须有两条 characters；角色库里没有的那位（通常是用户扮演的「你」）**必须给 look 字段**（以 1girl 或 1boy 开头的英文外貌短语：发色/瞳色/体型/特征，从角色参考/正文/人设摘要里取），否则这个人的脸没有任何约束，画出来就是陌生人。
 6. panels 数组只用来标「每一格画了什么」：{{#fixedPanels}}**每页固定 {{panelsPerPage}} 格**——panels 必须正好 {{panelsPerPage}} 条，nl 必须按 {{panelsPerPage}} 格分区写，版面也必须真的切出 {{panelsPerPage}} 格。{{/fixedPanels}}{{^fixedPanels}}2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致；**版面必须真的切出这么多格**——说 three panels 就要画三格，不能拿两格模板套四段内容。{{/fixedPanels}}
 7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。panel 字段是这句出现在第几格（1 起，按阅读顺序）——气泡只会画在那**一格**里，所以必须与该格 characters 里说话的人对得上；对不上就别写这句。speaker 写说话人名字（照抄 characters 里的名字）：它不会被画进气泡，只用来定位，写对了气泡才会贴着说话的人。
 8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。
-9. 有台词的页，nl 里要让人物偏下、上方留出干净空间给气泡；人物头顶顶到页边时气泡只能盖在脸上。
+9. 有台词的页，nl 里要让人物偏下、格内上方留出干净空间给气泡；人物头顶顶到页边时气泡只能盖在脸上。**但不要为了留白把有地点、有道具、有互动的页改成白底档**——那等于把剧情发生的世界删掉，只让人偏下就够了。
 {{#hasRule}}
 
 【分镜规则（必须遵守）】
@@ -5799,7 +5846,7 @@ async function restoreOutPlan(settings2) {
   let lastMessage = "";
   for (let attempt = 1; attempt <= RESTORE_ATTEMPTS; attempt += 1) {
     try {
-      const result = await switchPlan(target, { force: true, timeoutMs: 8e3 });
+      const result = await switchPlan(target, { force: true, timeoutMs: 12e3 });
       if (result.ok) {
         const detail = attempt === 1 ? result.message : `${result.message}（第 ${attempt} 次尝试）`;
         recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "ok", detail });
@@ -5923,6 +5970,91 @@ function ensurePageCast(page, library, selectedText = "", looks) {
   usable.forEach((c) => add(String(c.name)));
   return picked;
 }
+const PERSONA_ALIASES = [
+  "你",
+  "您",
+  "我",
+  "user",
+  "{{user}}",
+  "the user",
+  "player",
+  "protagonist",
+  "主角",
+  "主人公"
+];
+function nameKey(value) {
+  return String(value ?? "").replace(/\s+/g, "").toLowerCase();
+}
+function resolveCastNames(names, library, options = {}) {
+  const looks = new Map(options.looks ?? []);
+  const acts = new Map(
+    [...options.acts ?? []].map(([key, list]) => [key, [...list]])
+  );
+  const usable = library.filter((c) => String(c.name ?? "").trim() && characterTagOf(c));
+  const byKey = new Map(usable.map((c) => [nameKey(String(c.name)), String(c.name).trim()]));
+  const personaName = String(options.personaName ?? "").trim();
+  const personaKey = nameKey(personaName);
+  let personaEntry = personaKey ? usable.find((c) => nameKey(String(c.name)) === personaKey) : void 0;
+  if (!personaEntry && personaKey) {
+    const partial = usable.filter((c) => {
+      const key = nameKey(String(c.name));
+      return key.length >= 2 && (personaKey.includes(key) || key.includes(personaKey));
+    });
+    if (partial.length === 1) personaEntry = partial[0];
+  }
+  const personaResolved = personaEntry ? String(personaEntry.name).trim() : personaName;
+  const aliasKeys = new Set(PERSONA_ALIASES.map(nameKey));
+  if (personaKey) aliasKeys.add(personaKey);
+  if (personaResolved) aliasKeys.add(nameKey(personaResolved));
+  const cast = [];
+  const push2 = (name) => {
+    const clean = String(name ?? "").trim();
+    if (!clean || cast.includes(clean)) return;
+    cast.push(clean);
+  };
+  for (const raw of names) {
+    const clean = String(raw ?? "").trim();
+    if (!clean) continue;
+    const key = nameKey(clean);
+    if (aliasKeys.has(key)) {
+      const supplied = looks.get(clean);
+      if (supplied && personaResolved && !looks.has(personaResolved)) looks.set(personaResolved, supplied);
+      if (personaResolved) {
+        const personaActs = acts.get(clean);
+        if (personaActs == null ? void 0 : personaActs.length) {
+          const merged = acts.get(personaResolved) ?? [];
+          for (const act of personaActs) if (!merged.includes(act)) merged.push(act);
+          acts.set(personaResolved, merged);
+          acts.delete(clean);
+        }
+        push2(personaResolved);
+        continue;
+      }
+      push2(clean);
+      continue;
+    }
+    push2(byKey.get(key) ?? clean);
+  }
+  const declared = Math.max(0, Math.round(Number(options.declared) || 0));
+  const max = Math.max(1, Math.min(4, Math.round(Number(options.max) || 3)));
+  if (declared >= 2 && cast.length < Math.min(declared, max)) {
+    if (personaResolved && !cast.includes(personaResolved)) {
+      if (personaEntry || looks.has(personaResolved) || looks.get(personaName)) {
+        if (!looks.has(personaResolved) && looks.get(personaName)) {
+          looks.set(personaResolved, looks.get(personaName));
+        }
+        push2(personaResolved);
+      }
+    }
+  }
+  if (declared >= 2 && cast.length < Math.min(declared, max) && usable.length <= 2) {
+    for (const entry of usable) {
+      if (cast.length >= Math.min(declared, max)) break;
+      push2(String(entry.name));
+    }
+  }
+  return { cast, looks, acts };
+}
 function splitSegments(segments, native) {
   const all = [...segments];
   if (!native) {
@@ -5987,7 +6119,8 @@ const PANEL_TAGS_BY_LAYOUT = {
   ]
 };
 const PANEL_FORBIDDEN_CLAUSE = "8. 不要写 speech bubble、text、english text、dialogue、caption —— 这些词会让画面出现气泡或对白条，而生成的字全是乱码，比留白难看得多。分镜靠画面说话。";
-const PANEL_SELF_CHECK = "【输出前自检，逐条核对后再输出】\n- tag 里是否原样包含了本档要求的构图词（含权重写法）？漏了必须补上。\n- nl 的第一句是否说清了版面？只描述画面内容而不提版面，等于没写。\n- 景别 tag 是否只有一个？\n- 这是漫画分镜图，不是一张普通插画。任何一条不满足，就重写再输出。";
+const PANEL_SELF_CHECK = "【输出前自检，逐条核对后再输出】\n- tag 里是否原样包含了本档要求的构图词（含权重写法）？漏了必须补上。\n- nl 的第一句是否说清了版面？只描述画面内容而不提版面，等于没写。\n- 景别 tag 是否只有一个？\n- 每一格是否写了 nl，且相邻两格的镜头距离、信息点都不一样？（两格画同一个动作 = 白画一格）\n- 这是漫画分镜图，不是一张普通插画。任何一条不满足，就重写再输出。";
+const PANEL_ART_CLAUSE = "【分镜设计（每一格都要过一遍，这是漫画好不好看的分水岭）】\n- **镜头距离要分配**：整页至少一格交代空间（wide shot / full body，看得到环境与两人的相对位置），至少一格推近（close-up 或 extreme close-up：脸、手、接触点、关键道具）。相邻两格不许用同一个景别。\n- **每格的信息点必须不同**：建立空间 / 动作发生 / 反应表情 / 细节放大，四种角色轮着来；同一页里四格才允许出现两次同类，而且必须换机位。\n- **禁止重播**：两格不许画同一个姿势、同一个动作。至少换掉「谁在动」「动的是哪只手/哪一侧」「镜头在人物哪一边」里的两项。\n- **每格都要写 nl**（一句，20~35 词），必须写清四件事：镜头距离 + 谁在画面哪一侧 + 正在做什么 + 画面的空白留在哪。只写「两人在桌边」这种没有镜头信息的句子，两格就会长得一模一样。\n- **留白是版面的一部分**：格间只留细黑 gutter，白底档的小格与主画之间留宽白边；人物不要填满每一个角，大面积空白不是浪费，是让读者的眼睛休息、也是气泡要落的地方。\n- **人物大小要有变化**：远景里人小、特写里脸大，不要每格都是半身居中。";
 const PANEL_NO_POS_CLAUSE = "分格图不需要 pos：NAI 的坐标是整张图的坐标系，一格里的角色会被拉到整图某个位置、也就是被拉出格子。这个字段整个省略。";
 function compositionTags(layout) {
   return PANEL_TAGS_BY_LAYOUT[layout].join(", ");
@@ -6224,12 +6357,12 @@ function unframedRule(nlOn, pageType) {
 }
 function autoRule(nlOn, panels) {
   const table = [
-    `- "regular"（规整等分）：构图词 ${compositionTags("regular")}。2 格上下等分；3 格是上方一条宽格 + 下方左右两格。适合「同一个动作的上下两拍」「一问一答」「递进（上格动作、下格结果）」，最稳、最容易画对，拿不准就用它。`,
+    `- "regular"（规整等分）：构图词 ${compositionTags("regular")}。2 格上下等分；3 格是上方一条宽格 + 下方左右两格。适合「同一个动作的上下两拍」「一问一答」「递进（上格动作、下格结果）」，最稳、最容易画对，**有场景、有道具、有互动就用它**。`,
     `- "irregular"（大小不等拼版）：构图词 ${compositionTags("irregular")}。2～4 格，至少一格面积是另一格两倍以上。适合有主次的场面：一个大格交代全景，一到两个小格给反应或细节。禁止上下各一半这种等分。`,
-    `- "inset"（白底人物页 + 带框特写格）：构图词 ${compositionTags("inset")}。白底、只有人物，几乎没有场景；1～2 个带细黑框的小格浮在白边上。适合对话、独白、心情、身体接触这类「只有人」的瞬间。`,
+    `- "inset"（白底人物页 + 带框特写格）：构图词 ${compositionTags("inset")}。白底、只有人物，**几乎没有场景**（环境最多一两件小道具）；2~3 个带细黑框的小格浮在白边上。**只有「纯情绪、纯独白、没有地点可画」的页才用它**；有餐厅/教室/街道这类明确地点时用它是错的，会把场景全删掉。`,
     `- "unframed"（白底无框大字插画 + 带框特写格）：构图词 ${compositionTags("unframed")}。主插画无边框、人物占画面八成以上、手臂伸到页外；只有特写格带框。最像日系漫画的跨页感，适合名场面、情绪爆点。`
   ].join("\n");
-  const ninth = nlOn ? "9. 先按你选的档位写 nl 的第一句版面句（regular/irregular 说清怎么分格、inset/unframed 说清白底主画与特写格的位置），再逐格/逐区写内容。不要用 Panel 1 / Panel 2 编号，不要写对白。" : "9. 本次没有 nl 通道：各格内容只能靠 tag 表达，让人物动作在格与格之间发生变化。";
+  const ninth = nlOn ? "9. 先按你选的档位写 nl 的第一句版面句（regular/irregular 说清怎么分格、inset/unframed 说清白底主画与特写格的位置），再**逐格写一句该格自己的 nl**（镜头 + 谁在哪 + 在做什么 + 空白在哪）。不要用 Panel 1 / Panel 2 编号，不要写对白。" : "9. 本次没有 nl 通道：各格内容只能靠 tag 表达，让人物动作与镜头在格与格之间发生变化。";
   return [
     "[漫画分镜｜版面自选]",
     "",
@@ -6237,14 +6370,15 @@ function autoRule(nlOn, panels) {
     "",
     "1. **版面由你按剧情挑**，并在这一页的 `layout` 字段里写出你选的那一档（只能是下面四个值之一）：",
     table,
-    "2. 挑法：先问「这一段的重点是动作还是情绪」。有明确动作与场景 → regular 或 irregular；只有人、只有情绪 → inset 或 unframed。**拿不准就用 regular。**",
-    "3. 有台词的一页优先给气泡留地方：选 inset / unframed 这类白底档，或让人物偏下、画面上方留出安静空白。人物头顶顶到页边时，气泡只能盖在脸上。",
-    "3a. 无论哪一档，格与格之间只留细黑 gutter（约页宽 3%）；白底档里特写小格与主画之间必须留出宽白边（至少约页高 5%），小格绝不贴在主画上——挤在一起会糊成一坨。",
-    panels >= 2 ? `4. **每页固定 ${panels} 格**：不管选哪一档，版面都必须真的切出 ${panels} 格，panels 条数与 nl 分区句数也必须是 ${panels}。` : "4. 格数 2～4。**同一页的 layout、panels 条数、nl 里的分区句数必须三者一致**：说 3 格就真的画 3 格，不能拿两格模板套三段内容。",
+    "2. 挑法（按顺序判断）：① 这段有明确地点、道具、两人以上的互动 → **regular 或 irregular**，不要用白底档；② 只有人、只有情绪、没有地点可画 → inset（白底为主）或 unframed（跨页感）；③ 拿不准 → regular。",
+    "3. **格数默认 3 格**：两拍就说完的用 2 格，有明确的三段（建立空间 → 动作/接触 → 反应或细节）用 3 格，情绪爆点最多 4 格。只画 2 格时，那 2 格必须承担不同的信息（不是同一个动作画两遍）。",
+    "3a. 有台词的一页**不要为了留白换档位**：在 regular/irregular 里让人物偏下、格内上方留出安静空白就够了；把有餐厅、教室、街道的页改成白底档，等于把剧情发生的世界全删了。",
+    "3b. 无论哪一档，格与格之间只留细黑 gutter（约页宽 3%）；白底档里特写小格与主画之间必须留出宽白边（至少约页高 5%），小格绝不贴在主画上，也不许把每一格都塞满——留白是版面的一部分。",
+    panels >= 2 ? `4. **每页固定 ${panels} 格**：不管选哪一档，版面都必须真的切出 ${panels} 格，panels 条数与 nl 分区句数也必须是 ${panels}。` : "4. 格数 2～4（默认 3）。**同一页的 layout、panels 条数、nl 里的分区句数必须三者一致**：说 3 格就真的画 3 格，不能拿两格模板套三段内容。",
     "5. 构图词只照抄你选的那一档那几行，原样保留 1.4:: 这类权重写法；**不要把两档的构图词混着写**（混写必然画出四不像的版面）。",
     "6. 多页时相邻两页不要用同一档，同一档也别连续画同样的格数，节奏会平。",
-    "7. 景别 tag 整页只写一个；各格远近写在 nl 里。",
-    "8. 同一批人在每一格保持同一套外观词；focus tag 全图最多 1~2 个。",
+    "7. 景别 tag 整页只写一个；各格远近写在每格自己的 shot 与 nl 里。",
+    "8. 同一批人在每一格保持同一套外观词；focus tag 全图最多 1~2 个。**page.tags 的人数词必须和 characters 条数对得上**：写了 `1girl, 1boy` 就要有两个角色块，否则另一个人的脸没有任何约束，画出来就是陌生人。",
     PANEL_FORBIDDEN_CLAUSE,
     ninth
   ].join("\n");
@@ -6276,7 +6410,7 @@ function buildPanelRule(enabled, options) {
         break;
     }
   }
-  const parts = [body, PANEL_SELF_CHECK];
+  const parts = [body, PANEL_ART_CLAUSE, PANEL_SELF_CHECK];
   if (options.backend === "nai" && options.charPrompts === true) {
     parts.push(PANEL_NO_POS_CLAUSE);
   }
@@ -6314,6 +6448,8 @@ function normalizePanel(raw, index2) {
     title: typeof o.title === "string" ? o.title.trim().slice(0, 120) : `第 ${index2 + 1} 格`,
     characters: normalizeCharacters(o.characters),
     mood: typeof o.mood === "string" ? o.mood.trim().slice(0, 120) : "",
+    ...typeof o.shot === "string" && o.shot.trim() ? { shot: o.shot.trim().slice(0, 60) } : {},
+    ...typeof o.subject === "string" && o.subject.trim() ? { subject: o.subject.trim().slice(0, 200) } : {},
     tags,
     ...typeof o.nl === "string" && o.nl.trim() ? { nl: o.nl.trim().slice(0, 2e3) } : {},
     ...(() => {
@@ -7355,11 +7491,26 @@ function normalizeName$1(name) {
   return String(name ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, "").toLowerCase();
 }
 const PEOPLE_COUNT_RE = /(?:^|,)\s*\d+\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi;
+const WORD_NUMBER = {
+  single: 1,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5
+};
 function declaredPeople(tags) {
+  const text = String(tags ?? "");
   let total = 0;
-  for (const match of String(tags ?? "").matchAll(/\b(\d+)\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi)) {
+  for (const match of text.matchAll(/\b(\d+)\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi)) {
     total += Number(match[1]) || 0;
   }
+  if (!total) {
+    for (const match of text.matchAll(/\b(single|one|two|three|four|five)\s+(?:people|girls|boys|others|girl|boy|other|person)\b/gi)) {
+      total += WORD_NUMBER[match[1].toLowerCase()] ?? 0;
+    }
+  }
+  if (!total && /\b(couple|pair)\b/i.test(text)) total = 2;
   return total;
 }
 function alignPeopleCount(tags, blocks) {
@@ -7979,7 +8130,8 @@ async function rerollComicPage(floor, artifactId, overrides = {}) {
   const settings2 = getSettings(DEFAULT_SETTINGS);
   const comic = resolveModeSettings(settings2, "comic");
   const meta = artifact.metadata ?? {};
-  const characters = Array.isArray(meta.characters) ? meta.characters : [];
+  const storedCharacters = Array.isArray(meta.characters) ? meta.characters : [];
+  const characters = overrides.characters ?? storedCharacters;
   const pageType = meta.pageType ?? comic.comicPageType ?? "auto";
   const seed = randomSeed$1();
   const startedAt = Date.now();
@@ -8018,13 +8170,15 @@ async function rerollComicPage(floor, artifactId, overrides = {}) {
       imagePath: rawPath,
       originalImagePath: void 0,
       // 改过词就把新词落回 artifact：再点「重画」用的就是改后的版本
-      ...edited ? { prompt, nl: nl || void 0 } : {},
+      ...edited || overrides.characters ? { prompt, nl: nl || void 0 } : {},
       metadata: {
         ...meta,
+        // 角色词改动一并落回：重画要还原「当时画的是谁、穿什么」
+        ...overrides.characters ? { characters: overrides.characters } : {},
         rawImagePath: rawPath,
         bubbleBakedPath: void 0,
         ...meta.pageType ? {} : { pageType },
-        ...edited ? { promptEditedAt: Date.now() } : {},
+        ...edited || overrides.characters ? { promptEditedAt: Date.now() } : {},
         ...typeof result.seed === "number" ? { seed: result.seed } : { seed }
       }
     });
@@ -8332,17 +8486,23 @@ function buildComicActions(artifact, floor) {
   return wrap;
 }
 function editComicPrompt(floor, artifactId) {
-  var _a, _b;
+  var _a, _b, _c;
   const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
   if (!artifact) return;
   const page = typeof ((_a = artifact.metadata) == null ? void 0 : _a.pageTitle) === "string" ? artifact.metadata.pageTitle : "";
   const panelCount = typeof ((_b = artifact.metadata) == null ? void 0 : _b.panelCount) === "number" ? artifact.metadata.panelCount : 0;
+  const cast = Array.isArray((_c = artifact.metadata) == null ? void 0 : _c.characters) ? artifact.metadata.characters.filter((c) => c && typeof c.name === "string" && typeof c.tag === "string").map((c) => ({ name: c.name, tag: c.tag, ...c.nl ? { nl: c.nl } : {} })) : [];
   openPromptDialog({
     prompt: artifact.prompt ?? "",
     nl: artifact.nl ?? "",
-    ...page || panelCount ? { subtitle: [page, panelCount ? `${panelCount} 格` : ""].filter(Boolean).join(" · ") } : {},
-    onApply: async (prompt, nl) => {
-      const result = await rerollComicPage(floor, artifactId, { prompt, nl });
+    ...cast.length ? { characters: cast } : {},
+    ...page || panelCount ? { subtitle: [page, panelCount ? `${panelCount} 格` : "", cast.length ? `${cast.length} 人` : ""].filter(Boolean).join(" · ") } : {},
+    onApply: async (prompt, nl, characters) => {
+      const result = await rerollComicPage(floor, artifactId, {
+        prompt,
+        nl,
+        ...characters.length ? { characters } : {}
+      });
       if (result.ok) mountFloor(floor);
       return result;
     }
@@ -9509,6 +9669,25 @@ const LAYOUT_NL_HEAD = {
   inset: "A manga page on a white background: an unframed character illustration in the center with narrow white margins, plus one or two small close-up panels with thin black borders.",
   unframed: "A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders."
 };
+const LAYOUT_GAP_NOTE = {
+  regular: "The gutters between panels are narrow, clean white bands about 3% of the page width; panels never overlap and the page is filled edge to edge.",
+  irregular: "Every panel has its own thin black border with a narrow white gutter between panels; the page is filled edge to edge rather than floating in the middle.",
+  inset: "The bordered close-up panels float on the white page with a wide, completely empty white gap between them and the main illustration (at least 5% of the page height); they never touch the characters or each other.",
+  unframed: "Only the small inset panels have thin black borders, and each floats on clean white space with a wide empty margin; the main illustration has no frame at all and its white margins stay completely empty."
+};
+function panelNlBody(panel) {
+  const nl = String(panel.nl ?? "").trim();
+  const shot = String(panel.shot ?? "").trim();
+  const subject = String(panel.subject ?? "").trim();
+  const acts = (panel.characters ?? []).map((c) => [String(c.name ?? "").trim(), String(c.act ?? "").trim()].filter(Boolean).join(" ")).filter(Boolean).join("; ");
+  const detail = subject || acts || String(panel.title ?? "").trim();
+  if (nl) {
+    if (shot && !nl.toLowerCase().includes(shot.toLowerCase())) return `${shot}: ${nl}`;
+    return nl;
+  }
+  if (!detail) return "";
+  return shot ? `${shot}: ${detail}` : detail;
+}
 function layoutNlHead(layout, count) {
   if (layout !== "regular" || count < 3) return LAYOUT_NL_HEAD[layout] ?? LAYOUT_NL_HEAD.regular;
   if (count >= 4) {
@@ -9547,12 +9726,13 @@ function buildPageNl(page) {
   const parts = [head];
   let wrote = false;
   (_b = page.panels) == null ? void 0 : _b.forEach((panel, index2) => {
-    const body = String(panel.nl ?? "").trim();
+    const body = panelNlBody(panel);
     if (!body) return;
     const lead = leads[Math.min(index2, leads.length - 1)];
     parts.push(lead.endsWith("shows") ? `${lead} ${body}` : `${lead}, ${body}`);
     wrote = true;
   });
+  parts.push(LAYOUT_GAP_NOTE[page.layout] ?? LAYOUT_GAP_NOTE.regular);
   if (!wrote) {
     const titles = (page.panels ?? []).map((p) => p.title).filter(Boolean);
     if (titles.length > 0) parts.push(`The panels in reading order: ${titles.join(" / ")}.`);
@@ -9570,6 +9750,23 @@ function collectPageDialogue(page) {
     }
   }
   return out;
+}
+function findCastShortfall(pages, characters, options = {}) {
+  if (options.nativeCharacters === false) return null;
+  for (const page of pages) {
+    const declared = declaredPeople(String(page.tags ?? "").trim() || mergePanelTags(page));
+    if (declared < 2) continue;
+    const composed = composePagePrompt(page, [...characters], options);
+    if (composed.characters.length > 0 && composed.characters.length < declared) {
+      return {
+        pageIndex: page.pageIndex,
+        title: page.title,
+        declared,
+        blocks: composed.characters.length
+      };
+    }
+  }
+  return null;
 }
 function composePagePrompt(page, characters = [], options = {}) {
   const base = String(page.tags ?? "").trim() || mergePanelTags(page);
@@ -9590,11 +9787,28 @@ function composePagePrompt(page, characters = [], options = {}) {
       }
     }
   }
-  const cast = names.length ? names.slice(0, 6) : ensurePageCast(page, characters, options.selectedText ?? "", looks);
+  const declared = options.declared ?? declaredPeople(base);
+  const rawCast = names.length ? names.slice(0, 6) : ensurePageCast(page, characters, options.selectedText ?? "", looks);
+  const resolved = resolveCastNames(rawCast, characters, {
+    ...options.personaName ? { personaName: options.personaName } : {},
+    declared,
+    max: 3,
+    looks,
+    acts
+  });
+  const cast = resolved.cast;
   const native = options.nativeCharacters !== false;
-  const characterPrompts = native ? characterPromptsFromLibrary(cast, characters, acts, looks) : [];
+  const multiPanel = (page.panels ?? []).length > 1;
+  const characterPrompts = native ? characterPromptsFromLibrary(cast, characters, multiPanel ? void 0 : resolved.acts, resolved.looks) : [];
   const prompt = characterPrompts.length ? base : mergeCharacterTags(base, cast, characters);
-  const nl = String(page.nl ?? "").trim() || buildPageNl(page);
+  const panelHasDetail = (page.panels ?? []).some(
+    (panel) => !!String(panel.nl ?? "").trim() || !!String(panel.shot ?? "").trim() || !!String(panel.subject ?? "").trim()
+  );
+  const pageNl = String(page.nl ?? "").trim();
+  let nl = panelHasDetail || !pageNl ? buildPageNl(page) : pageNl;
+  if (nl === pageNl && !/gutter|white space|white gap/i.test(nl)) {
+    nl = `${nl} ${LAYOUT_GAP_NOTE[page.layout] ?? LAYOUT_GAP_NOTE.regular}`;
+  }
   return {
     prompt,
     nl,
@@ -10019,7 +10233,8 @@ async function runComic(task, ctx, deps) {
   ctx.report({ stage: "reading" });
   const characters = await getCharacters(floor);
   const comicNativeCharacters = (await readBackendState()).supportsCharacters !== false;
-  const comicBook = readBookRoles(floor, segment.text, readPersonaName());
+  const personaName = readPersonaName();
+  const comicBook = readBookRoles(floor, segment.text, personaName);
   const comicLibrary = buildLibraryBlock(characters.characters);
   const comicCast = buildCastBlock(readCastContext(((_b = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _b.speaker) ?? ""));
   const comicBlocks = {
@@ -10075,6 +10290,40 @@ async function runComic(task, ctx, deps) {
       throw new Error("分镜计划里只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。");
     }
   }
+  const castGap = findCastShortfall(plan.data, characters.characters, {
+    nativeCharacters: comicNativeCharacters,
+    selectedText: segment.text,
+    ...personaName ? { personaName } : {}
+  });
+  if (castGap) {
+    console.warn(
+      `[ST-Story-Illustrator] 第 ${castGap.pageIndex + 1} 页 Base 声称 ${castGap.declared} 人，但只建出 ${castGap.blocks} 个角色块，重问一次分镜。`
+    );
+    plan = await generateComicPlan({
+      scene: sceneFromSegment(segment),
+      characters: characters.characters,
+      ...comicBlocks,
+      options: {
+        ...planOptions,
+        extraInstruction: `上一版第 ${castGap.pageIndex + 1} 页的 tags 写了 ${castGap.declared} 个人，但 panels[].characters 只写了 ${castGap.blocks} 个——画面里那个人会成为没有外貌约束的陌生人。这次必须让「人数词 = characters 条数」：每个出场的人各写一条，角色库里没有的那位（通常是用户扮演的「你」）**必须给它 look**（英文外貌短语：发色/瞳色/体型/当前着装），取自【角色参考】或【本聊天的人物对应】里的人设摘要；实在拿不到外貌就把人数词改成 1，绝不写空。`
+      },
+      caller: makeModeLlmCaller(deps.fullSettings, "comic"),
+      promptOverrides: deps.fullSettings.promptOverrides
+    });
+    if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
+    const after = findCastShortfall(plan.data, characters.characters, {
+      nativeCharacters: comicNativeCharacters,
+      selectedText: segment.text,
+      ...personaName ? { personaName } : {}
+    });
+    if (after) {
+      recordNotice({
+        mode: "comic",
+        floor,
+        text: `第 ${after.pageIndex + 1} 页写着 ${after.declared} 个人，但只能给出 ${after.blocks} 个角色词。多半是柏宝绘角色库里没有「${personaName || "你"}」这一条（或没填外貌），模型也补不出英文外貌。到柏宝绘「角色管理」给人设建一条（1girl/1boy + 发色/瞳色/体型），之后这一页就会有两个完整的人。`
+      });
+    }
+  }
   await ensureModeOutPlan("comic", deps.fullSettings);
   const pinnedLayout = layout === "auto" ? void 0 : layout;
   const mesTextEl = document.querySelector(`.mes[mesid="${floor}"] .mes_text`);
@@ -10095,7 +10344,8 @@ async function runComic(task, ctx, deps) {
     const pageForCompose = { ...page, layout: pageLayout };
     const composed = composePagePrompt(pageForCompose, characters.characters, {
       nativeCharacters: comicNativeCharacters,
-      selectedText: segment.text
+      selectedText: segment.text,
+      ...personaName ? { personaName } : {}
     });
     const enforced = enforceForGeneration({
       prompt: composed.prompt,

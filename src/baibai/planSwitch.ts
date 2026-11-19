@@ -195,7 +195,13 @@ function navButtons(root: ShadowRoot): HTMLElement[] {
 }
 
 function tabButtons(root: ShadowRoot): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>('button[role="tab"]'));
+  // 页签的类名在不同版本里换过（`.bbi-seg` / `[role=tab]`），只认一个选择器
+  // 就会在升级后「页签[空]」——用户看到的正是「明明有风乎却找不到方案」。
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button[role="tab"], button.bbi-seg, button.bbi-tab, .bbi-segmented button',
+    ),
+  );
 }
 
 /** 只认方案行里的单选按钮，避开接入点 / ComfyUI 预设行。 */
@@ -241,13 +247,20 @@ async function gotoNai(root: ShadowRoot): Promise<'ready' | 'pending' | 'stuck'>
   // 导航按钮存在但没高亮 → 还在别的页；点它。
   if (nav && !nav.classList.contains('is-active')) {
     nav.click();
-    await sleep(240); // 页面切换是 out-in 过渡，旧页先卸载
+    // 页面切换是 out-in 过渡 + 组件懒挂载：只等 240ms 时经常「点了还没渲染完」，
+    // 下一轮又把它当成没点 → 循环到超时。这里直接等页签出现。
+    await waitFor(() => (tabButtons(shadowRoot() ?? root).length ? true : null), 2500);
     return 'pending';
   }
   // 没有导航按钮、也没有页签：可能正处于过渡中
   if (!nav && tabs.length === 0) return 'pending';
 
-  const tab = pickTab(tabButtons(shadowRoot() ?? root), TAB_LABEL);
+  // 单页签时不用挑：webui 入口已隐藏，只剩 NAI / ComfyUI 中的一个也认
+  let tab = pickTab(tabButtons(shadowRoot() ?? root), TAB_LABEL);
+  if (!tab) {
+    const all = tabButtons(shadowRoot() ?? root);
+    if (all.length === 1) tab = all[0];
+  }
   if (!tab) return 'stuck'; // 在渠道页却找不到 NAI 页签
   // 页签没选中 → 点它（ComfyUI 页签也有 .plan-item，不点开就会去点错方案）
   if (!tab.classList.contains('is-on')) {

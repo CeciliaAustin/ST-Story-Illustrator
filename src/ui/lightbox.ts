@@ -90,6 +90,8 @@ interface ComicState {
   draft: PanelDialogueItem[];
   /** 图的合成代次：只有图的输入变了才 ++，UI 状态变化不碰它 */
   imgToken: number;
+  /** 保存代次：连点几次移动时，只认最后一次的结果，避免旧快照把新位置盖回去 */
+  saveToken: number;
   current: { url: string; revoke: () => void } | null;
 }
 
@@ -112,6 +114,7 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
     moveIndex: 0,
     draft: ctx.plan.items.map(item => ({ ...item })),
     imgToken: 0,
+    saveToken: 0,
     current: null,
   };
 
@@ -354,14 +357,24 @@ function iconButton(
   return btn;
 }
 
-/** 保存草稿 → ctx.onSave → 以返回的最新参数重建草稿，并重合成一次图。 */
+/**
+ * 应用草稿 → 立即重合成上屏 → 保存放后台。
+ *
+ * 关键顺序（旧实现的坑）：以前先 `await onSave()` 再重画，而 onSave 要过保存队列
+ * （合并窗口 1.5s），于是「点一下图上的位置，两秒内什么都没发生」——
+ * 用户以为移动功能坏了。现在本地草稿就是唯一真相：先按新位置画出来，
+ * 落盘在后台跑；连续拖动时只认最后一次（saveToken）。
+ */
 async function persist(state: ComicState, img: HTMLImageElement): Promise<void> {
-  const saved = await state.ctx.onSave(normalizeDialogueEdits(state.draft));
-  if (saved) {
-    state.ctx.plan = saved;
-    state.draft = saved.items.map(item => ({ ...item }));
-  }
-  refreshImage(state, img);
+  const token = ++state.saveToken;
+  refreshImage(state, img); // 立即上屏，不等存盘
+  const draft = normalizeDialogueEdits(state.draft);
+  const saved = await state.ctx.onSave(draft);
+  if (token !== state.saveToken) return; // 期间又改过：以更新的草稿为准，别回滚
+  if (!saved) return;
+  // 只更新排版参数（格位/禁区可能被重算），**不回写草稿**：
+  // 回写会把用户正在拖的那一条位置打回上一次保存的状态。
+  state.ctx.plan = { items: state.ctx.plan.items, opts: saved.opts };
 }
 
 /**

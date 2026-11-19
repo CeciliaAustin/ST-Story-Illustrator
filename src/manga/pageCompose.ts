@@ -6,9 +6,10 @@
  * 让 NAI 一次画出多格版面）。按格各出一张图，出来永远是一堆单幅插画，不是漫画。
  */
 
-import type { BaiBaiCharacter, ComicDialogue, ComicPagePlan, PanelLayout } from '../types';
+import type { BaiBaiCharacter, ComicDialogue, ComicPagePlan, ComicPanelPlan, PanelLayout } from '../types';
 import { mergeCharacterTags } from './panelRelevance';
-import { characterPromptsFromLibrary, ensurePageCast } from './tagSplit';
+import { characterPromptsFromLibrary, ensurePageCast, resolveCastNames } from './tagSplit';
+import { declaredPeople } from './peopleCount';
 import type { BbiTagCharacter } from '../baibai/bbiTag';
 
 /** 四档版面的总述句（与 enforcePanelPrompt 的档位同义，供 nl 兜底用）。 */
@@ -22,6 +23,46 @@ export const LAYOUT_NL_HEAD: Record<PanelLayout, string> = {
   unframed:
     'A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders.',
 };
+
+/**
+ * 「留白长什么样」的收束句。
+ *
+ * 用户点名过的问题：「原来的分镜还有那种空白的地方，为什么现在没有了」。
+ * 版面首句只说了「有白底」，模型可以把它理解成一整张白底大图就完事；
+ * 必须把**格间 gutter / 小格与主画之间的宽白边**写成一句具体的画面要求，
+ * 它才会真的把空白留在那里。
+ */
+export const LAYOUT_GAP_NOTE: Record<PanelLayout, string> = {
+  regular:
+    'The gutters between panels are narrow, clean white bands about 3% of the page width; panels never overlap and the page is filled edge to edge.',
+  irregular:
+    'Every panel has its own thin black border with a narrow white gutter between panels; the page is filled edge to edge rather than floating in the middle.',
+  inset:
+    'The bordered close-up panels float on the white page with a wide, completely empty white gap between them and the main illustration (at least 5% of the page height); they never touch the characters or each other.',
+  unframed:
+    'Only the small inset panels have thin black borders, and each floats on clean white space with a wide empty margin; the main illustration has no frame at all and its white margins stay completely empty.',
+};
+
+/** 单格的画面内容：模型给了 nl 就用它，没有就用 shot/subject/act 拼一句。 */
+export function panelNlBody(panel: ComicPanelPlan): string {
+  const nl = String(panel.nl ?? '').trim();
+  const shot = String(panel.shot ?? '').trim();
+  const subject = String(panel.subject ?? '').trim();
+  const acts = (panel.characters ?? [])
+    .map(c => [String(c.name ?? '').trim(), String(c.act ?? '').trim()].filter(Boolean).join(' '))
+    .filter(Boolean)
+    .join('; ');
+  const detail = subject || acts || String(panel.title ?? '').trim();
+  if (nl) {
+    // 模型写的 nl 里常忘了镜头距离（写一句「两人在桌边」，两个格就长得一样）。
+    // shot 是独立字段，补在最前面不会重复。
+    if (shot && !nl.toLowerCase().includes(shot.toLowerCase())) return `${shot}: ${nl}`;
+    return nl;
+  }
+  if (!detail) return '';
+  return shot ? `${shot}: ${detail}` : detail;
+}
+
 
 /**
  * 规整档按实际格数换首句。
@@ -75,12 +116,15 @@ export function buildPageNl(page: ComicPagePlan): string {
 
   let wrote = false;
   page.panels?.forEach((panel, index) => {
-    const body = String(panel.nl ?? '').trim();
+    const body = panelNlBody(panel);
     if (!body) return;
     const lead = leads[Math.min(index, leads.length - 1)];
     parts.push(lead.endsWith('shows') ? `${lead} ${body}` : `${lead}, ${body}`);
     wrote = true;
   });
+
+  // 留白/格间必须单独成句：只靠版面首句，模型会画成「一整张大图」
+  parts.push(LAYOUT_GAP_NOTE[page.layout] ?? LAYOUT_GAP_NOTE.regular);
 
   if (!wrote) {
     const titles = (page.panels ?? []).map(p => p.title).filter(Boolean);
@@ -103,6 +147,45 @@ export function collectPageDialogue(page: ComicPagePlan): ComicDialogue[] {
     }
   }
   return out;
+}
+
+export interface CastShortfall {
+  pageIndex: number;
+  title: string;
+  /** Base 声称几个人 */
+  declared: number;
+  /** 实际能建出几个角色块 */
+  blocks: number;
+}
+
+/**
+ * 「Base 说 1girl,1boy，角色块却只有一个人」的体检。
+ *
+ * 为什么要单独查一遍再重问：人数词是模型对画面的承诺，块是唯一的约束手段。
+ * 只补代码侧（resolveCastNames）时，人设没进角色库、模型又没给 look，就补不出来；
+ * 这种事只能在提示词层修（让它给 look），而一次重问远比出一张「另一个是陌生人」便宜。
+ */
+export function findCastShortfall(
+  pages: readonly ComicPagePlan[],
+  characters: readonly BaiBaiCharacter[],
+  options: { nativeCharacters?: boolean; selectedText?: string; personaName?: string } = {},
+): CastShortfall | null {
+  if (options.nativeCharacters === false) return null;
+  for (const page of pages) {
+    const declared = declaredPeople(String(page.tags ?? '').trim() || mergePanelTags(page));
+    if (declared < 2) continue;
+    const composed = composePagePrompt(page, [...characters], options);
+    // 只有「一条都没建出来」时不报：那种情况 Base 的人数由 NAI 自由分配，属于无库可依
+    if (composed.characters.length > 0 && composed.characters.length < declared) {
+      return {
+        pageIndex: page.pageIndex,
+        title: page.title,
+        declared,
+        blocks: composed.characters.length,
+      };
+    }
+  }
+  return null;
 }
 
 export interface ComposedPage {
@@ -131,7 +214,14 @@ export interface ComposedPage {
 export function composePagePrompt(
   page: ComicPagePlan,
   characters: BaiBaiCharacter[] = [],
-  options: { nativeCharacters?: boolean; selectedText?: string } = {},
+  options: {
+    nativeCharacters?: boolean;
+    selectedText?: string;
+    /** ST 人设名（`name1`）：用来把「你 / User」这类写法对回角色库里那一条 */
+    personaName?: string;
+    /** Base 声称的人数（不给就自己从 tags 里数） */
+    declared?: number;
+  } = {},
 ): ComposedPage {
   const base = String(page.tags ?? '').trim() || mergePanelTags(page);
   const names: string[] = [];
@@ -155,21 +245,56 @@ export function composePagePrompt(
     }
   }
 
+  // Base 声称几个人：人数词是模型写的，也是它承诺「画面里该有几个人」的唯一凭据。
+  // 之前只按 clauses 里的名字建块，模型漏写一个人 → 块少一个 → 那一格只剩一个确定的人。
+  const declared = options.declared ?? declaredPeople(base);
+
   // 模型漏写 panels[].characters 时补人：否则角色块空着，外貌只能并回 Base
   //（= 「两套衣服糊在一个提示词里」的老毛病）
   //
   // 模型写了的名字**不裁**：裁掉的那个人会连外貌一起消失，比多一块提示词糟得多。
   // 只有「代码自己补」时才按协议上限（2 人）收着补，免得把库里的路人甲乙也塞进画面。
-  const cast = names.length
+  const rawCast = names.length
     ? names.slice(0, 6)
     : ensurePageCast(page, characters, options.selectedText ?? '', looks);
+  // 名字归一（你/User → 人设名）+ 按人数补齐：这一步才是「两个人却只画一个」的正解
+  const resolved = resolveCastNames(rawCast, characters, {
+    ...(options.personaName ? { personaName: options.personaName } : {}),
+    declared,
+    max: 3,
+    looks,
+    acts,
+  });
+  const cast = resolved.cast;
   const native = options.nativeCharacters !== false;
+  /**
+   * 多格页**不把各格动作塞进角色块**。
+   *
+   * 这是「两格动作差不多」的机械原因：NAI 的 character prompt 是**整页共用**的，
+   * 把第 1 格的「前倾递餐巾」和第 2 格的「拿餐巾擦嘴」一起并进同一个人的块里，
+   * 两格拿到的是同一串动作 → 画出来必然长得一样。
+   * 各格的动作归各格的 nl（buildPageNl 会按格写）；角色块只留固定外貌，
+   * 单格页没有这个问题，动作照旧并进块里。
+   */
+  const multiPanel = (page.panels ?? []).length > 1;
   const characterPrompts = native
-    ? characterPromptsFromLibrary(cast, characters, acts, looks)
+    ? characterPromptsFromLibrary(cast, characters, multiPanel ? undefined : resolved.acts, resolved.looks)
     : [];
   // 拆得出来就拆；拆不出来（角色库空 / 名字对不上）退回老口径，至少别丢外貌词
   const prompt = characterPrompts.length ? base : mergeCharacterTags(base, cast, characters);
-  const nl = String(page.nl ?? '').trim() || buildPageNl(page);
+  // 各格 nl 是分镜的全部信息量（哪一格是什么镜头、谁在哪里、留白在哪）：
+  // 只要有一格真的写了 nl / shot / subject，就用「按格拼出来的」，
+  // 而不是模型那句笼统的 page.nl（它经常只是版面首句的复述）。
+  const panelHasDetail = (page.panels ?? []).some(panel =>
+    !!String(panel.nl ?? '').trim() || !!String(panel.shot ?? '').trim() || !!String(panel.subject ?? '').trim(),
+  );
+  const pageNl = String(page.nl ?? '').trim();
+  let nl = panelHasDetail || !pageNl ? buildPageNl(page) : pageNl;
+  // 模型自己那版 nl 常只写「白底 + 有特写格」，没提格间留白 → 画面就会填满。
+  // 缺 gutter / white space 的说法时补一句，不改写它原有的描述。
+  if (nl === pageNl && !/gutter|white space|white gap/i.test(nl)) {
+    nl = `${nl} ${LAYOUT_GAP_NOTE[page.layout] ?? LAYOUT_GAP_NOTE.regular}`;
+  }
 
   return {
     prompt,

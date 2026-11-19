@@ -431,14 +431,24 @@ function editComicPrompt(floor: number, artifactId: string): void {
   if (!artifact) return;
   const page = typeof artifact.metadata?.pageTitle === 'string' ? artifact.metadata.pageTitle : '';
   const panelCount = typeof artifact.metadata?.panelCount === 'number' ? artifact.metadata.panelCount : 0;
+  const cast = Array.isArray(artifact.metadata?.characters)
+    ? (artifact.metadata.characters as Array<{ name: string; tag: string; nl?: string }>)
+      .filter(c => c && typeof c.name === 'string' && typeof c.tag === 'string')
+      .map(c => ({ name: c.name, tag: c.tag, ...(c.nl ? { nl: c.nl } : {}) }))
+    : [];
   openPromptDialog({
     prompt: artifact.prompt ?? '',
     nl: artifact.nl ?? '',
+    ...(cast.length ? { characters: cast } : {}),
     ...(page || panelCount
-      ? { subtitle: [page, panelCount ? `${panelCount} 格` : ''].filter(Boolean).join(' · ') }
+      ? { subtitle: [page, panelCount ? `${panelCount} 格` : '', cast.length ? `${cast.length} 人` : ''].filter(Boolean).join(' · ') }
       : {}),
-    onApply: async (prompt, nl) => {
-      const result = await rerollComicPage(floor, artifactId, { prompt, nl });
+    onApply: async (prompt, nl, characters) => {
+      const result = await rerollComicPage(floor, artifactId, {
+        prompt,
+        nl,
+        ...(characters.length ? { characters } : {}),
+      });
       if (result.ok) mountFloor(floor);
       return result;
     },

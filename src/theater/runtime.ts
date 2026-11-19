@@ -135,17 +135,9 @@ export interface RunOneResult {
  * 上一版只取了 tags、把 act 整段丢掉——最具体的画面信息（谁在做什么）就这么没了，
  * 出图自然只能靠几个泛词瞎猜。这里把 act 合进 tags（去重、保留原顺序）。
  */
-/** `2people` / `1girl, 1boy` / `2girls` 这类人数写法。 */
-const PEOPLE_COUNT_RE = /(?:^|,)\s*\d+\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi;
-
-/** 这条提示词声称画几个人（取所有人数词之和；没有人数词返回 0）。 */
-export function declaredPeople(tags: string): number {
-  let total = 0;
-  for (const match of String(tags ?? '').matchAll(/\b(\d+)\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi)) {
-    total += Number(match[1]) || 0;
-  }
-  return total;
-}
+// 人数判据只有一份（漫画页也要用），见 manga/peopleCount.ts
+export { declaredPeople } from '../manga/peopleCount';
+import { PEOPLE_COUNT_RE, declaredPeople } from '../manga/peopleCount';
 
 /**
  * 让人数词与**实际有几个角色块**对上。

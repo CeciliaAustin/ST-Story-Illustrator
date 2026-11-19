@@ -496,6 +496,13 @@ export interface ComicPanelPlan {
    */
   characters: Array<{ name: string; act: string; look?: string }>;
   mood: string;
+  /**
+   * 这一格的镜头距离（`wide shot` / `medium shot` / `close-up` / `extreme close-up`）。
+   * 相邻格必须不同——两格同一个镜头、同一个动作，出来就是「两幅差不多的画」。
+   */
+  shot?: string;
+  /** 这一格的**信息点**：一句话说清这格要让读者看到什么（不是动作的重复）。 */
+  subject?: string;
   tags: string;
   nl?: string;
   dialogue?: ComicDialogue[];

@@ -190,7 +190,7 @@ export async function restoreOutPlan(settings: StoryIllustratorSettings): Promis
   let lastMessage = '';
   for (let attempt = 1; attempt <= RESTORE_ATTEMPTS; attempt += 1) {
     try {
-      const result = await switchPlan(target, { force: true, timeoutMs: 8000 });
+      const result = await switchPlan(target, { force: true, timeoutMs: 12_000 });
       if (result.ok) {
         const detail = attempt === 1 ? result.message : `${result.message}（第 ${attempt} 次尝试）`;
         recordPlanSwitch({ mode: 'restore', plan: targetName || target, status: 'ok', detail });
