@@ -27,8 +27,10 @@ import { showSelectionPanel, hideSelectionPanel, destroySelectionPanel } from '.
 import { setSegmentCleanOptions } from './selection/storySegment';
 import { destroyLightbox } from './ui/lightbox';
 import { destroyConfigPanel, hideConfigPanel, showConfigPanel } from './ui/configPanel';
-import { remountAll, mountFloor } from './ui/floorCards';
-import { mountTheater, remountAllTheater } from './theater/mount';
+import { remountAll, mountFloor, ensureFloorMounted } from './ui/floorCards';
+import { mountTheater, remountAllTheater, ensureTheaterMounted } from './theater/mount';
+import { onChatMutation, destroyChatObserver } from './host/domObserver';
+import { ensureManwaRegexRegistered } from './baibai/manwaTag';
 import { registerStudio, openStudio } from './ui/studio';
 import { injectWandMenu, destroyWandMenu } from './ui/wandMenu';
 import { mountFloatingBall, syncFloatingBall, unmountFloatingBall } from './ui/floatingBall';
@@ -87,11 +89,14 @@ export async function onActivate(): Promise<void> {
     });
     setRunStatusLogOpener(() => openStudio('log'));
     registerEvents();
+    ensureManwaRegex();
     setupSelectionListener();
     cleanupFunctions.push(injectWandMenu());
     mountFloatingBall();
     initQueue();
     remountAllSafe();
+    // 刷新/切聊天/柏宝绘重写楼层都不会发渲染事件，自愈只能靠观察器
+    cleanupFunctions.push(onChatMutation(reconcileRendered));
 
     void waitForApi(10).then(result => {
       if (result.status === 'available') {
@@ -165,9 +170,41 @@ function initQueue(): void {
   });
 }
 
+/**
+ * 注册漫画 tag 的托管正则（`<bbi_manwa>` → 锚点 / 提示词侧删除）。
+ *
+ * 这一步必须在「能写 tag」之前成功，否则正文里会出现一串裸的 `<bbi_manwa>`。
+ * ST 的 `extension_settings` 在扩展激活早期偶尔还没就绪，所以失败要重试几次。
+ */
+function ensureManwaRegex(): void {
+  if (ensureManwaRegexRegistered()) return;
+  let tries = 0;
+  const timer = window.setInterval(() => {
+    tries += 1;
+    if (ensureManwaRegexRegistered() || tries > 20) window.clearInterval(timer);
+  }, 500);
+  cleanupFunctions.push(() => window.clearInterval(timer));
+}
+
 function remountAllSafe(): void {
   try { remountAll(); } catch (e) { console.warn('[ST-Story-Illustrator] 挂载历史作品失败:', e); }
   try { remountAllTheater(); } catch (e) { console.warn('[ST-Story-Illustrator] 挂载小剧场失败:', e); }
+}
+
+/**
+ * 逐楼对账：该有的卡片在不在，缺了才补。
+ *
+ * 跑在 `#chat` 的 MutationObserver 上。ST 打开聊天时是**整批重建** `.mes` 且
+ * **不发渲染事件**，所以「刷新后小剧场全没了」只能靠这条兜住；单条消息被
+ * `.mes_text.html()` 重写（柏宝绘图出来之后就会这么干）同样靠它补回来。
+ */
+function reconcileRendered(): void {
+  for (const node of Array.from(document.querySelectorAll<HTMLElement>('.mes[mesid]'))) {
+    const floor = parseInt(node.getAttribute('mesid') ?? '', 10);
+    if (!Number.isFinite(floor)) continue;
+    try { ensureFloorMounted(floor); } catch { /* 单楼失败不影响其它楼层 */ }
+    try { ensureTheaterMounted(floor); } catch { /* 同上 */ }
+  }
 }
 
 /** 把设置应用到各子模块（清洗策略等）。 */
@@ -468,6 +505,7 @@ export function onDisable(): void {
   destroyWandMenu();
   unmountFloatingBall();
   destroyRunStatus();
+  destroyChatObserver();
   for (const cleanup of cleanupFunctions) {
     try { cleanup(); } catch { /* ignore */ }
   }

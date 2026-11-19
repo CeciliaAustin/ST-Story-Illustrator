@@ -5,7 +5,7 @@
  * 坏 JSON 丢弃、不连累整条；旧格式兼容；超额/去重/清洗。
  */
 
-import type { StatusFrame, StatusOutfit, StatusReading, StatusLine, StatusRole, StoryKind } from '../types';
+import type { StatusFrame, StatusLook, StatusOutfit, StatusReading, StatusLine, StatusRole, StoryKind } from '../types';
 import { stripThinkingBlocks } from '../prompt/think';
 
 export const STATUS_MAX_CHARACTERS = 2;
@@ -126,6 +126,36 @@ export function parseOutfits(record: Record<string, unknown>): StatusOutfit[] {
   return out;
 }
 
+const MAX_LOOK_CHARS = 160;
+
+/**
+ * 「角色库里没有的人」的外貌：模型在 `cast[].look` 里补一次。
+ *
+ * 为什么需要：以前库里查不到就整条丢掉，于是 Base 写着 `2 people`、
+ * 角色块只有一个人——另一张脸全靠模型随手画，用户看到的就是
+ * 「明明是两个人，只生成了 Elias 一个」。
+ *
+ * 只收英文（NAI 只认 danbooru tag），带中文的整条丢，不做机翻。
+ */
+export function parseLooks(record: Record<string, unknown>): StatusLook[] {
+  const out: StatusLook[] = [];
+  const cast = record.cast ?? record.looks;
+  if (!Array.isArray(cast)) return out;
+  for (const item of cast) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    const name = typeof rec.name === 'string' ? rec.name.trim() : '';
+    const raw = rec.look ?? rec.appearance;
+    const look = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
+    if (!name || !look) continue;
+    if (out.length >= 4) continue;
+    if (out.some(x => x.name === name)) continue;
+    if (HAS_CJK.test(look) || !/[A-Za-z]/.test(look)) continue;
+    out.push({ name, look: look.slice(0, MAX_LOOK_CHARS) });
+  }
+  return out;
+}
+
 /** 容忍式解析模型 JSON → StatusReading。 */
 export function parseStatusReply(raw: string, kind: StoryKind = 'status'): StatusReading {
   const empty: StatusReading = { ...emptyFrame(), panels: [] };
@@ -223,11 +253,13 @@ export function parseStatusReply(raw: string, kind: StoryKind = 'status'): Statu
   if (!panels.length) return empty;
   const head = panels[0];
   const outfits = parseOutfits(record);
+  const looks = parseLooks(record);
   return {
     ...head,
     title: (pick(record.title) || head.title).slice(0, 40),
     panels,
     ...(outfits.length ? { outfits } : {}),
+    ...(looks.length ? { looks } : {}),
   };
 }
 

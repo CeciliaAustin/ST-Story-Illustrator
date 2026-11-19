@@ -2534,41 +2534,30 @@ async function switchBaiBaiPlan(planId, options = {}) {
   }
   return { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
 }
-const ITEMS = [
-  {
-    id: "sti-menu-generate",
-    label: "生成配图",
-    title: "ST 故事插画 · 生成配图（也可先划线）",
-    icon: "fa-wand-magic-sparkles",
-    tab: "generate"
-  },
-  {
-    id: "sti-menu-config",
-    label: "配图设置",
-    title: "ST 故事插画 · 出图方案 / 小剧场设置",
-    icon: "fa-images",
-    tab: "settings"
-  }
-];
-function buildItem(spec) {
+const ITEM = {
+  id: "sti-menu-studio",
+  label: "配图",
+  title: "ST 故事插画 · 生成配图 / 配图设置 / 提示词 / 出图日志"
+};
+function buildItem() {
   const wrap = document.createElement("div");
   wrap.className = "extension_container interactable";
   wrap.tabIndex = 0;
   const link = document.createElement("a");
-  link.id = spec.id;
+  link.id = ITEM.id;
   link.className = "list-group-item";
   link.href = "#";
-  link.title = spec.title;
+  link.title = ITEM.title;
   const icon = document.createElement("i");
-  icon.className = `fa-solid ${spec.icon}`;
+  icon.className = "fa-solid fa-wand-magic-sparkles";
   link.appendChild(icon);
   const text = document.createElement("span");
-  text.textContent = " " + spec.label;
+  text.textContent = " " + ITEM.label;
   link.appendChild(text);
   link.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openStudio(spec.tab);
+    openStudio("generate");
     const menu = document.getElementById("extensionsMenu");
     if (menu) {
       menu.style.display = "none";
@@ -2583,13 +2572,8 @@ function injectWandMenu() {
   const tryInject = () => {
     const menu = document.getElementById("extensionsMenu");
     if (!menu) return;
-    for (const spec of ITEMS) {
-      if (document.getElementById(spec.id)) continue;
-      menu.appendChild(buildItem(spec));
-    }
-    if (ITEMS.every((spec) => !!document.getElementById(spec.id))) {
-      window.clearInterval(timer2);
-    }
+    if (!document.getElementById(ITEM.id)) menu.appendChild(buildItem());
+    if (document.getElementById(ITEM.id)) window.clearInterval(timer2);
   };
   tryInject();
   timer2 = window.setInterval(tryInject, 800);
@@ -2597,10 +2581,8 @@ function injectWandMenu() {
 }
 function destroyWandMenu() {
   var _a, _b, _c;
-  for (const spec of ITEMS) {
-    (_b = (_a = document.getElementById(spec.id)) == null ? void 0 : _a.closest(".extension_container")) == null ? void 0 : _b.remove();
-    (_c = document.getElementById(spec.id)) == null ? void 0 : _c.remove();
-  }
+  (_b = (_a = document.getElementById(ITEM.id)) == null ? void 0 : _a.closest(".extension_container")) == null ? void 0 : _b.remove();
+  (_c = document.getElementById(ITEM.id)) == null ? void 0 : _c.remove();
 }
 const MAX_ENTRIES = 80;
 const MAX_TEXT = 4e3;
@@ -2673,6 +2655,7 @@ let onOpenLog = null;
 const STAGE_TEXT = {
   queued: "排队中",
   reading: "读剧情中",
+  waiting: "等柏宝绘出图",
   review: "整理提示词",
   generating: "出图中",
   completed: "完成"
@@ -2829,7 +2812,7 @@ function renderCompact(template, vars = {}) {
 function overrideKey(id, variant) {
   return variant === "many" ? `${id}@many` : id;
 }
-const CAST_SCHEMA = '"cast":[{"name":"角色名（照抄库里的名字）","outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）"}]';
+const CAST_SCHEMA = '"cast":[{"name":"角色名（照抄库里的名字；用户扮演的「你」写人设名）","outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）","look":"English danbooru phrases: 这个人的外貌（发色/瞳色/体型/特征）。**固定外貌库里有这个人的条目时留空**，库是权威、不要改写；库里没有的（例如用户扮演的「你」）必须按正文/角色参考补全"}]';
 const OUTFIT_RULE = "`cast` 是本批的**服装定妆**：每个出场角色一条，`outfit` 用英文写清版型、主色、关键配件（white dress shirt, black pleated skirt, brown loafers）。【角色固定外貌库】里该角色有「固定着装」时**照抄那一串，不要改写**；没有时按正文/角色卡/世界书定一次，正文没写就合理定一套具体的。同一批所有格共用这一串，**不许因为这一格没提衣服就换一套**；正文明确换装/穿脱/衣物破损时才写新的那一套。`characters[].act` 里**不要再写任何服装词**——服装只由 cast 提供，代码会把它拼到每一格。";
 const COMMON_RULES = [
   "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
@@ -3913,6 +3896,172 @@ let seq = 0;
 function createArtifactId() {
   seq += 1;
   return `sti-${Date.now().toString(36)}-${seq.toString(36)}`;
+}
+const MANWA_TAG_NAME = "bbi_manwa";
+const MANWA_SLOT_SELECTOR = "div[data-sti-manwa-slot]";
+const MANWA_TAG_REGEX = /<bbi_manwa>[\s\S]+?<\/bbi_manwa>/gi;
+const MANWA_SLOT_REGEX_ID = "sti-manwa-tag-slot";
+const MANWA_HIDE_REGEX_ID = "sti-manwa-tag-hide";
+function sanitizeId(id) {
+  return String(id ?? "").replace(/[^\w-]/g, "").slice(0, 64);
+}
+function buildManwaTag(artifactId) {
+  const id = sanitizeId(artifactId);
+  if (!id) return "";
+  return `<${MANWA_TAG_NAME}><id>${id}</id></${MANWA_TAG_NAME}>`;
+}
+function parseManwaTags(mes) {
+  var _a;
+  const text = String(mes ?? "");
+  const out = [];
+  const re = new RegExp(MANWA_TAG_REGEX.source, "gi");
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const raw = match[0];
+    const id = sanitizeId(((_a = /<id>([\s\S]*?)<\/id>/i.exec(raw)) == null ? void 0 : _a[1]) ?? "");
+    if (id) out.push({ id, raw });
+  }
+  return out;
+}
+function lastManwaTagEnd(mes) {
+  const text = String(mes ?? "");
+  const re = new RegExp(MANWA_TAG_REGEX.source, "gi");
+  let end = 0;
+  let match;
+  while ((match = re.exec(text)) !== null) end = match.index + match[0].length;
+  return end;
+}
+const PLACEMENTS = [1, 2, 3];
+const FIND_REGEX_LITERAL = "/<bbi_manwa>[\\s\\S]+?<\\/bbi_manwa>/gi";
+function manwaSlotScript() {
+  return {
+    id: MANWA_SLOT_REGEX_ID,
+    scriptName: "故事配图 · 漫画占位",
+    findRegex: FIND_REGEX_LITERAL,
+    replaceString: '<div data-sti-manwa-slot=""></div>',
+    trimStrings: [],
+    placement: [...PLACEMENTS],
+    disabled: false,
+    markdownOnly: true,
+    promptOnly: false,
+    runOnEdit: true,
+    substituteRegex: 0,
+    minDepth: null,
+    maxDepth: null
+  };
+}
+function manwaHideScript() {
+  return {
+    id: MANWA_HIDE_REGEX_ID,
+    scriptName: "故事配图 · 隐藏漫画标签",
+    findRegex: FIND_REGEX_LITERAL,
+    replaceString: "",
+    trimStrings: [],
+    placement: [...PLACEMENTS],
+    disabled: false,
+    markdownOnly: false,
+    promptOnly: true,
+    runOnEdit: true,
+    substituteRegex: 0,
+    minDepth: null,
+    maxDepth: null
+  };
+}
+const MANAGED_SCRIPTS = [manwaSlotScript, manwaHideScript];
+function ensureManwaRegexRegistered() {
+  var _a;
+  const ctx = getContext();
+  const settings2 = ctx == null ? void 0 : ctx.extensionSettings;
+  if (!settings2) return false;
+  if (!Array.isArray(settings2.regex)) settings2.regex = [];
+  const list = settings2.regex;
+  for (const make of MANAGED_SCRIPTS) {
+    const script = make();
+    const index2 = list.findIndex((item) => (item == null ? void 0 : item.id) === script.id);
+    if (index2 >= 0) list[index2] = { ...list[index2], ...script };
+    else list.push(script);
+  }
+  try {
+    (_a = ctx.saveSettingsDebounced) == null ? void 0 : _a.call(ctx);
+  } catch {
+  }
+  return true;
+}
+function isManwaRegexRegistered() {
+  var _a;
+  const ctx = getContext();
+  const list = (_a = ctx == null ? void 0 : ctx.extensionSettings) == null ? void 0 : _a.regex;
+  if (!Array.isArray(list)) return false;
+  return MANAGED_SCRIPTS.every((make) => list.some((item) => (item == null ? void 0 : item.id) === make().id));
+}
+async function insertManwaTag(input) {
+  const { floor, chatId, swipeId, sendDate, tag, anchorText } = input;
+  if (!tag) return { ok: false, reason: "no-context" };
+  const ctx = getContext();
+  if (!Array.isArray(ctx.chat) || typeof ctx.saveChat !== "function") return { ok: false, reason: "no-context" };
+  if (getCurrentChatId() !== chatId) return { ok: false, reason: "chat-changed" };
+  const msg = ctx.chat[floor];
+  if (!msg || typeof msg.mes !== "string") return { ok: false, reason: "floor-changed" };
+  if (sendDate) {
+    const actual = typeof msg.send_date === "string" ? msg.send_date.trim() : "";
+    if (actual && actual !== sendDate) return { ok: false, reason: "floor-changed" };
+  }
+  const curSwipe = typeof msg.swipe_id === "number" ? msg.swipe_id : 0;
+  if (curSwipe !== swipeId) return { ok: false, reason: "swipe-changed" };
+  const currentText = msg.mes;
+  if (currentText.includes(tag)) {
+    await refreshFloor$1(ctx, floor, msg);
+    return { ok: true, position: "after-anchor" };
+  }
+  const snippet = `
+
+${tag}
+`;
+  const range = anchorText && anchorText.length >= 2 ? findAnchorRange(currentText, anchorText) : null;
+  const anchorAt = range ? lineEndAfter(currentText, range.end) : -1;
+  const tail = lastManwaTagEnd(currentText);
+  let nextText;
+  let position;
+  if (anchorAt >= 0) {
+    const insertAt = tail > anchorAt ? lineEndAfter(currentText, tail) : anchorAt;
+    const head = currentText.slice(0, insertAt).replace(/[ \t]+$/, "");
+    nextText = head + snippet + currentText.slice(insertAt);
+    position = "after-anchor";
+  } else {
+    nextText = `${currentText.trimEnd()}${snippet}`;
+    position = "appended";
+  }
+  msg.mes = nextText;
+  const swipes = msg.swipes;
+  if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) swipes[swipeId] = nextText;
+  try {
+    await ctx.saveChat();
+  } catch {
+    msg.mes = currentText;
+    if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) swipes[swipeId] = currentText;
+    return { ok: false, reason: "save-failed" };
+  }
+  await refreshFloor$1(ctx, floor, msg);
+  return { ok: true, position };
+}
+async function refreshFloor$1(ctx, floor, msg) {
+  var _a;
+  try {
+    if (typeof ctx.updateMessageBlock === "function") {
+      await ctx.updateMessageBlock(floor, msg);
+    }
+  } catch {
+  }
+  try {
+    const types = getEventTypes();
+    (_a = ctx.eventSource) == null ? void 0 : _a.emit(types.MESSAGE_UPDATED ?? "message_updated", floor);
+  } catch {
+  }
+}
+function manwaAnchors(floor) {
+  const mesText = document.querySelector(`.mes[mesid="${floor}"] .mes_text`);
+  if (!mesText) return [];
+  return [...mesText.querySelectorAll(MANWA_SLOT_SELECTOR)];
 }
 function toBaiBaiRequest(input, character) {
   const size = input.size === "landscape" ? "landscape" : "portrait";
@@ -5237,7 +5386,7 @@ function characterTagOf(entry) {
   }
   return "";
 }
-function characterPromptsFromLibrary(names, library, acts) {
+function characterPromptsFromLibrary(names, library, acts, looks) {
   const byName = new Map(library.map((entry) => [entry.name, entry]));
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -5245,27 +5394,35 @@ function characterPromptsFromLibrary(names, library, acts) {
     const name = String(raw ?? "").trim();
     if (!name || seen.has(name)) continue;
     const entry = byName.get(name);
-    if (!entry) continue;
-    const appearance = characterTagOf(entry);
-    if (!appearance) continue;
+    const appearance = entry ? characterTagOf(entry) : "";
+    if (!appearance) {
+      const supplied = String((looks == null ? void 0 : looks.get(name)) ?? "").trim();
+      if (!supplied) continue;
+      const extraTags = ((acts == null ? void 0 : acts.get(name)) ?? []).map((a) => String(a ?? "").trim()).filter(Boolean);
+      seen.add(name);
+      out.push({ name, tag: [supplied, ...extraTags].join(", ") });
+      if (out.length >= 32) break;
+      continue;
+    }
     const extra = ((acts == null ? void 0 : acts.get(name)) ?? []).map((a) => String(a ?? "").trim()).filter(Boolean);
     const tag = [appearance, ...extra].join(", ");
     seen.add(name);
-    const nl = String(entry.nl ?? "").trim();
+    const nl = String((entry == null ? void 0 : entry.nl) ?? "").trim();
     out.push({ name, tag, ...nl ? { nl } : {} });
     if (out.length >= 32) break;
   }
   return out;
 }
-function ensurePageCast(page, library, selectedText = "") {
+function ensurePageCast(page, library, selectedText = "", looks) {
   const usable = library.filter((c) => String(c.name ?? "").trim() && characterTagOf(c));
-  if (!usable.length) return [];
+  const looked = new Set([...(looks == null ? void 0 : looks.keys()) ?? []].map((n) => String(n).trim()).filter(Boolean));
+  if (!usable.length && !looked.size) return [];
   const usableByName = new Map(usable.map((c) => [String(c.name).trim(), c]));
   const picked = [];
   const add = (name) => {
     const clean = String(name ?? "").trim();
     if (!clean || picked.includes(clean) || picked.length >= 2) return;
-    if (!usableByName.has(clean)) return;
+    if (!usableByName.has(clean) && !looked.has(clean)) return;
     picked.push(clean);
   };
   for (const panel of page.panels ?? []) {
@@ -5277,7 +5434,7 @@ function ensurePageCast(page, library, selectedText = "") {
     ...(page.panels ?? []).map((p) => `${p.tags ?? ""} ${p.title ?? ""} ${p.nl ?? ""}`),
     selectedText
   ].join(" ");
-  const mentioned = usable.map((c) => String(c.name).trim()).filter((name) => !picked.includes(name) && pageText.includes(name));
+  const mentioned = [...usable.map((c) => String(c.name).trim()), ...looked].filter((name) => !picked.includes(name) && pageText.includes(name));
   mentioned.forEach(add);
   if (picked.length || usable.length > 2) return picked;
   usable.forEach((c) => add(String(c.name)));
@@ -5653,7 +5810,9 @@ function normalizeCharacters(raw) {
     const o = c;
     const name = typeof o.name === "string" ? o.name.trim().slice(0, 32) : "";
     const act = typeof o.act === "string" ? o.act.trim().slice(0, 80) : "";
-    if (name) out.push({ name, act });
+    const look = typeof o.look === "string" ? o.look.replace(/\s+/g, " ").trim().slice(0, 160) : "";
+    if (!name) continue;
+    out.push(act ? { name, act, ...look && /[A-Za-z]/.test(look) && !/[\u3400-\u9fff]/.test(look) ? { look } : {} } : { name, act: "", ...look && /[A-Za-z]/.test(look) && !/[\u3400-\u9fff]/.test(look) ? { look } : {} });
   }
   return out;
 }
@@ -6124,6 +6283,25 @@ function parseOutfits(record) {
   }
   return out;
 }
+const MAX_LOOK_CHARS = 160;
+function parseLooks(record) {
+  const out = [];
+  const cast = record.cast ?? record.looks;
+  if (!Array.isArray(cast)) return out;
+  for (const item of cast) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const rec = item;
+    const name = typeof rec.name === "string" ? rec.name.trim() : "";
+    const raw = rec.look ?? rec.appearance;
+    const look = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
+    if (!name || !look) continue;
+    if (out.length >= 4) continue;
+    if (out.some((x) => x.name === name)) continue;
+    if (HAS_CJK.test(look) || !/[A-Za-z]/.test(look)) continue;
+    out.push({ name, look: look.slice(0, MAX_LOOK_CHARS) });
+  }
+  return out;
+}
 function parseStatusReply(raw, kind = "status") {
   const empty = { ...emptyFrame(), panels: [] };
   const manga = kind === "manga";
@@ -6216,11 +6394,13 @@ function parseStatusReply(raw, kind = "status") {
   if (!panels.length) return empty;
   const head = panels[0];
   const outfits = parseOutfits(record);
+  const looks = parseLooks(record);
   return {
     ...head,
     title: (pick(record.title) || head.title).slice(0, 40),
     panels,
-    ...outfits.length ? { outfits } : {}
+    ...outfits.length ? { outfits } : {},
+    ...looks.length ? { looks } : {}
   };
 }
 function clampMangaShots(raw) {
@@ -6691,6 +6871,22 @@ function readCastContext(fallbackCardName = "") {
 function normalizeName$1(name) {
   return String(name ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, "").toLowerCase();
 }
+const PEOPLE_COUNT_RE = /(?:^|,)\s*\d+\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi;
+function declaredPeople(tags) {
+  let total = 0;
+  for (const match of String(tags ?? "").matchAll(/\b(\d+)\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi)) {
+    total += Number(match[1]) || 0;
+  }
+  return total;
+}
+function alignPeopleCount(tags, blocks) {
+  const text = String(tags ?? "");
+  if (blocks <= 0) return text;
+  const declared = declaredPeople(text);
+  if (!declared || declared === blocks) return text;
+  const stripped = text.replace(PEOPLE_COUNT_RE, "").replace(/\s*,\s*,/g, ",").replace(/^\s*,\s*|\s*,\s*$/g, "").trim();
+  return stripped || text;
+}
 function combinedPanelTags(panel) {
   const pieces = [];
   for (const role of panel.roles ?? []) {
@@ -6799,6 +6995,16 @@ async function runTheaterOne(input) {
       const key = normalizeName$1(item.name);
       if (key && item.outfit && !outfitByName.has(key)) outfitByName.set(key, item.outfit);
     }
+    const lookByName = /* @__PURE__ */ new Map();
+    for (const item of reading.looks ?? []) {
+      const key = normalizeName$1(item.name);
+      if (key && item.look && !lookByName.has(key)) lookByName.set(key, item.look);
+    }
+    const lookOf = (name) => {
+      const key = normalizeName$1(name);
+      const base = normalizeName$1(String(name ?? "").split(/[（(【\[]/)[0]);
+      return lookByName.get(key) ?? (base ? lookByName.get(base) : void 0) ?? "";
+    };
     const outfitOf = (name, look) => {
       const key = normalizeName$1(name);
       const base = normalizeName$1(String(name ?? "").split(/[（(【\[]/)[0]);
@@ -6813,7 +7019,12 @@ async function runTheaterOne(input) {
       const panelNames = panel.characters.length ? panel.characters : [...names].filter((n) => `${panel.nl ?? ""} ${panel.title ?? ""}`.includes(n));
       const resolvedNames = panelNames.length ? panelNames : names.size === 1 ? [...names] : [];
       const looks = input.readLooks(resolvedNames);
-      for (const look of looks) if (!look.tag) missingLooks.add(look.name);
+      for (const look of looks) {
+        if (look.tag) continue;
+        const supplied = lookOf(look.name);
+        if (supplied) look.tag = supplied;
+        else missingLooks.add(look.name);
+      }
       const acts = /* @__PURE__ */ new Map();
       for (const role of panel.roles ?? []) {
         const name = String(role.name ?? "").trim();
@@ -6832,7 +7043,7 @@ async function runTheaterOne(input) {
       }) : [];
       const missingActs = looks.filter((look) => !look.tag).map((look) => [acts.get(look.name) ?? "", outfitOf(look.name, look)].filter(Boolean).join(", ")).filter(Boolean);
       const appearances = nativeCharacters ? [] : looks.map((look) => [look.tag, outfitOf(look.name, look)].filter(Boolean).join(", ")).filter(Boolean);
-      const baseTags = nativeCharacters ? [panel.tags, ...missingActs].filter(Boolean).join(", ") : combinedPanelTags(panel);
+      const baseTags = nativeCharacters ? alignPeopleCount([panel.tags, ...missingActs].filter(Boolean).join(", "), characters.length) : combinedPanelTags(panel);
       const prompt = buildTheaterImagePrompt(
         input.kind,
         appearances,
@@ -7336,18 +7547,45 @@ const MODE_LABELS = {
   "bw-manga": "黑白漫"
 };
 function mountFloor(floor) {
+  var _a;
   const mes = document.querySelector(`.mes[mesid="${floor}"]`);
   if (!mes) return;
   unmountFloor(floor);
   const artifacts = getArtifacts(floor);
   const visible = artifacts.filter((a) => {
-    var _a;
-    return ((_a = a.metadata) == null ? void 0 : _a.embeddedInBody) !== true;
+    var _a2;
+    return ((_a2 = a.metadata) == null ? void 0 : _a2.embeddedInBody) !== true;
   });
   const inline = visible.filter((a) => a.mountMode === "inline");
   const trailing = visible.filter((a) => a.mountMode !== "inline");
-  for (const artifact of inline) mountInline(mes, floor, artifact);
+  const manwa = mountManwa(mes, floor, visible);
+  for (const artifact of inline) {
+    if (manwa.consumed.has(artifact.id)) continue;
+    if (manwa.tagged && ((_a = artifact.metadata) == null ? void 0 : _a.inlineFallback) !== true) continue;
+    mountInline(mes, floor, artifact);
+  }
   if (trailing.length > 0) mountTrailing(mes, floor, trailing);
+}
+function mountManwa(mes, floor, artifacts) {
+  var _a;
+  const consumed = /* @__PURE__ */ new Set();
+  const refs = parseManwaTags(((_a = getMessage(floor)) == null ? void 0 : _a.mes) ?? "");
+  if (!refs.length) return { consumed, tagged: false };
+  const anchors = manwaAnchors(floor);
+  if (!anchors.length) return { consumed, tagged: true };
+  const byId = new Map(artifacts.map((a) => [a.id, a]));
+  const count = Math.min(anchors.length, refs.length);
+  for (let i = 0; i < count; i += 1) {
+    const artifact = byId.get(refs[i].id);
+    if (!artifact) continue;
+    if (anchors[i].querySelector(`[${MOUNTED_ATTR$1}]`)) {
+      consumed.add(artifact.id);
+      continue;
+    }
+    anchors[i].appendChild(buildCard$1(artifact, floor, true));
+    consumed.add(artifact.id);
+  }
+  return { consumed, tagged: true };
 }
 function unmountFloor(floor) {
   const mes = document.querySelector(`.mes[mesid="${floor}"]`);
@@ -7361,6 +7599,22 @@ function remountAll() {
     const floor = parseInt(node.getAttribute("mesid") ?? "", 10);
     if (Number.isFinite(floor)) mountFloor(floor);
   }
+}
+function ensureFloorMounted(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  const visible = getArtifacts(floor).filter((a) => {
+    var _a;
+    return ((_a = a.metadata) == null ? void 0 : _a.embeddedInBody) !== true;
+  });
+  if (visible.length === 0) return;
+  const present = /* @__PURE__ */ new Set();
+  for (const node of Array.from(mes.querySelectorAll("[data-sti-artifact-id]"))) {
+    const id = node.getAttribute("data-sti-artifact-id");
+    if (id) present.add(id);
+  }
+  if (visible.every((a) => present.has(a.id))) return;
+  mountFloor(floor);
 }
 function mountInline(mes, floor, artifact) {
   const mesText = mes.querySelector(".mes_text");
@@ -7442,7 +7696,11 @@ function mountTrailing(mes, floor, artifacts) {
 }
 function buildCard$1(artifact, floor, inline) {
   const card = document.createElement("div");
-  card.className = inline ? INLINE_CLASS : "sti-floor-card";
+  const comic = inline && artifact.mode === "comic";
+  card.className = [
+    inline ? INLINE_CLASS : "sti-floor-card",
+    ...comic ? ["is-comic"] : []
+  ].join(" ");
   card.setAttribute(MOUNTED_ATTR$1, String(floor));
   card.setAttribute("data-sti-artifact-id", artifact.id);
   const img = document.createElement("img");
@@ -7790,6 +8048,18 @@ function remountAllTheater() {
     }
   }
 }
+function ensureTheaterMounted(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  if (mes.querySelector(`[${MOUNTED_ATTR}="${floor}"]`)) {
+    const expected = KIND_ORDER.reduce((sum, kind) => sum + getSets(floor, kind).length, 0);
+    const actual = mes.querySelectorAll(`[${MOUNTED_ATTR}="${floor}"] .sti-cs-card`).length;
+    if (expected === actual) return;
+  }
+  const has = KIND_ORDER.some((kind) => getSets(floor, kind).length > 0);
+  if (!has) return;
+  mountTheater(floor);
+}
 function buildCard(floor, kind, set) {
   var _a;
   const card = document.createElement("details");
@@ -8071,6 +8341,54 @@ function notify(message, level) {
 function firstImage(panels) {
   var _a;
   return (_a = panels.find((p) => !!p.imagePath)) == null ? void 0 : _a.imagePath;
+}
+const listeners = /* @__PURE__ */ new Set();
+let observer = null;
+let scheduled = false;
+let lastFlush = 0;
+const MIN_INTERVAL_MS = 250;
+function flush() {
+  scheduled = false;
+  lastFlush = Date.now();
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch (error) {
+      console.error("[ST-Story-Illustrator] #chat 变更回调异常", error);
+    }
+  }
+}
+function schedule() {
+  if (scheduled) return;
+  scheduled = true;
+  const wait = Math.max(0, MIN_INTERVAL_MS - (Date.now() - lastFlush));
+  if (wait === 0) {
+    requestAnimationFrame(flush);
+    return;
+  }
+  window.setTimeout(() => requestAnimationFrame(flush), wait);
+}
+function ensureChatObserver() {
+  if (observer) return true;
+  const chat = document.getElementById("chat");
+  if (!chat) return false;
+  observer = new MutationObserver(schedule);
+  observer.observe(chat, { childList: true, subtree: true });
+  return true;
+}
+function onChatMutation(listener) {
+  listeners.add(listener);
+  ensureChatObserver();
+  return () => {
+    listeners.delete(listener);
+  };
+}
+function destroyChatObserver() {
+  listeners.clear();
+  observer == null ? void 0 : observer.disconnect();
+  observer = null;
+  scheduled = false;
+  lastFlush = 0;
 }
 const BALL_ID = "sti-fab";
 const HIDE_ID = "sti-fab-hide";
@@ -8605,10 +8923,13 @@ function composePagePrompt(page, characters = [], options = {}) {
   const base = String(page.tags ?? "").trim() || mergePanelTags(page);
   const names = [];
   const acts = /* @__PURE__ */ new Map();
+  const looks = /* @__PURE__ */ new Map();
   for (const panel of page.panels ?? []) {
     for (const c of panel.characters ?? []) {
       if (!(c == null ? void 0 : c.name)) continue;
       if (!names.includes(c.name)) names.push(c.name);
+      const look = String(c.look ?? "").trim();
+      if (look && !looks.has(c.name)) looks.set(c.name, look);
       const act = String(c.act ?? "").trim();
       if (act) {
         const list = acts.get(c.name) ?? [];
@@ -8617,9 +8938,9 @@ function composePagePrompt(page, characters = [], options = {}) {
       }
     }
   }
-  const cast = names.length ? names.slice(0, 6) : ensurePageCast(page, characters, options.selectedText ?? "");
+  const cast = names.length ? names.slice(0, 6) : ensurePageCast(page, characters, options.selectedText ?? "", looks);
   const native = options.nativeCharacters !== false;
-  const characterPrompts = native ? characterPromptsFromLibrary(cast, characters, acts) : [];
+  const characterPrompts = native ? characterPromptsFromLibrary(cast, characters, acts, looks) : [];
   const prompt = characterPrompts.length ? base : mergeCharacterTags(base, cast, characters);
   const nl = String(page.nl ?? "").trim() || buildPageNl(page);
   return {
@@ -8826,6 +9147,56 @@ async function waitForEntry(floor, swipeId, hash, seq2, timeoutMs = 9e4) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+const IMAGE_TAG = /<bbi_image>[\s\S]+?<\/bbi_image>/gi;
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function hasReadyImage(floor, swipeId, tag) {
+  const msg = getMessage(floor);
+  const extra = msg == null ? void 0 : msg.extra;
+  const store = extra == null ? void 0 : extra.bbiImage;
+  if (!store) return false;
+  const bucket = store[String(swipeId)];
+  if (!bucket) return false;
+  const list = bucket[promptHash(tag)];
+  if (!Array.isArray(list)) return false;
+  return list.some((entry) => (entry == null ? void 0 : entry.status) === "ready");
+}
+function imageTagsOf(floor) {
+  var _a;
+  const mes = String(((_a = getMessage(floor)) == null ? void 0 : _a.mes) ?? "");
+  return [...mes.matchAll(IMAGE_TAG)].map((m) => m[0]);
+}
+async function waitForBaiBaiImages(floor, options = {}) {
+  var _a;
+  const timeoutMs = options.timeoutMs ?? 9e4;
+  const graceMs = options.graceMs ?? 2500;
+  const pollMs = options.pollMs ?? 800;
+  const sleep2 = options.sleep ?? defaultSleep;
+  const startedAt = Date.now();
+  let notified = false;
+  let swipeId = 0;
+  try {
+    const msg = getMessage(floor);
+    if (typeof (msg == null ? void 0 : msg.swipe_id) === "number") swipeId = msg.swipe_id;
+  } catch {
+  }
+  for (; ; ) {
+    const tags = imageTagsOf(floor);
+    const elapsed = Date.now() - startedAt;
+    if (tags.length === 0) {
+      if (elapsed >= graceMs) return { tags: 0, pending: 0, timedOut: false, waitedMs: elapsed };
+      await sleep2(Math.min(pollMs, Math.max(0, graceMs - elapsed)));
+      continue;
+    }
+    const pending = tags.filter((tag) => !hasReadyImage(floor, swipeId, tag)).length;
+    if (pending === 0) return { tags: tags.length, pending: 0, timedOut: false, waitedMs: elapsed };
+    if (!notified) {
+      notified = true;
+      (_a = options.onWait) == null ? void 0 : _a.call(options, { tags: tags.length, pending });
+    }
+    if (elapsed >= timeoutMs) return { tags: tags.length, pending, timedOut: true, waitedMs: elapsed };
+    await sleep2(Math.min(pollMs, Math.max(0, timeoutMs - elapsed)));
+  }
+}
 function sceneFromSegment(segment) {
   const context = getSurroundingContext(segment, 1);
   return {
@@ -8981,7 +9352,7 @@ function cardFailureMessage(result) {
   return "正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。";
 }
 async function runComic(task, ctx, deps) {
-  var _a, _b;
+  var _a, _b, _c, _d;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
@@ -8993,6 +9364,8 @@ async function runComic(task, ctx, deps) {
   const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
   const showComposite = modeSettings.comicShowComposite !== false;
   const wantComicNl = nlForMode(deps.fullSettings, "comic");
+  ensureManwaRegexRegistered();
+  const manwaTagReady = isManwaRegexRegistered();
   ctx.report({ stage: "reading" });
   const characters = await getCharacters(floor);
   const comicNativeCharacters = (await readBackendState()).supportsCharacters !== false;
@@ -9185,6 +9558,27 @@ async function runComic(task, ctx, deps) {
       createdAt: Date.now()
     };
     appendArtifact(floor, artifact);
+    const tag = manwaTagReady ? buildManwaTag(artifact.id) : "";
+    const inserted = tag ? await insertManwaTag({
+      floor,
+      chatId: task.chatId,
+      swipeId: ((_c = segment.messages[0]) == null ? void 0 : _c.swipeId) ?? 0,
+      ...((_d = segment.messages[0]) == null ? void 0 : _d.sendDate) ? { sendDate: segment.messages[0].sendDate } : {},
+      tag,
+      anchorText: segment.text.slice(0, 120)
+    }) : { ok: false, reason: "no-context" };
+    if (inserted.ok) {
+      updateArtifact(floor, artifact.id, { metadata: { ...artifact.metadata, manwaTag: tag } });
+    } else {
+      updateArtifact(floor, artifact.id, {
+        metadata: { ...artifact.metadata, inlineFallback: true }
+      });
+      recordNotice({
+        mode: "comic",
+        floor,
+        text: `第 ${page.pageIndex + 1} 页已出图，但没能写进正文（${inserted.reason}）。这一页会临时挂在楼层里；它不是靠正文 tag 定位的，刷新后位置可能变。`
+      });
+    }
     done += 1;
   }
   await saveChatSafe();
@@ -9255,6 +9649,19 @@ function createTaskRunner(deps) {
   return async (task, ctx) => {
     acquirePlanGuard();
     try {
+      const waitFloor = getAnchorFloor(task.source);
+      if (waitFloor !== null) {
+        const waited = await waitForBaiBaiImages(waitFloor, {
+          onWait: ({ pending }) => ctx.report({ stage: "waiting", message: `等柏宝绘先出完正文插图（还剩 ${pending} 张）` })
+        });
+        if (waited.timedOut) {
+          recordNotice({
+            mode: task.mode,
+            floor: waitFloor,
+            text: `等了 ${Math.round(waited.waitedMs / 1e3)} 秒，柏宝绘还有 ${waited.pending} 张正文插图没出完。这次仍然继续生成，但它的那几张可能会用上本次切换的方案（画风可能不对）。`
+          });
+        }
+      }
       switch (task.mode) {
         case "illustration":
           return await runIllustration(task, ctx, deps);
@@ -9348,11 +9755,13 @@ async function onActivate() {
     });
     setRunStatusLogOpener(() => openStudio("log"));
     registerEvents();
+    ensureManwaRegex();
     setupSelectionListener();
     cleanupFunctions.push(injectWandMenu());
     mountFloatingBall();
     initQueue();
     remountAllSafe();
+    cleanupFunctions.push(onChatMutation(reconcileRendered));
     void waitForApi(10).then((result) => {
       if (result.status === "available") {
         console.log("[ST-Story-Illustrator] 柏宝绘 API 已就绪:", result.api.apiVersion);
@@ -9418,6 +9827,15 @@ function initQueue() {
     }
   });
 }
+function ensureManwaRegex() {
+  if (ensureManwaRegexRegistered()) return;
+  let tries = 0;
+  const timer2 = window.setInterval(() => {
+    tries += 1;
+    if (ensureManwaRegexRegistered() || tries > 20) window.clearInterval(timer2);
+  }, 500);
+  cleanupFunctions.push(() => window.clearInterval(timer2));
+}
 function remountAllSafe() {
   try {
     remountAll();
@@ -9428,6 +9846,20 @@ function remountAllSafe() {
     remountAllTheater();
   } catch (e) {
     console.warn("[ST-Story-Illustrator] 挂载小剧场失败:", e);
+  }
+}
+function reconcileRendered() {
+  for (const node of Array.from(document.querySelectorAll(".mes[mesid]"))) {
+    const floor = parseInt(node.getAttribute("mesid") ?? "", 10);
+    if (!Number.isFinite(floor)) continue;
+    try {
+      ensureFloorMounted(floor);
+    } catch {
+    }
+    try {
+      ensureTheaterMounted(floor);
+    } catch {
+    }
   }
 }
 function applySettings() {
@@ -9657,6 +10089,7 @@ function onDisable() {
   destroyWandMenu();
   unmountFloatingBall();
   destroyRunStatus();
+  destroyChatObserver();
   for (const cleanup of cleanupFunctions) {
     try {
       cleanup();

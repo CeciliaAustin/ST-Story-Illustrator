@@ -37,6 +37,7 @@ let onOpenLog: (() => void) | null = null;
 const STAGE_TEXT: Record<string, string> = {
   queued: '排队中',
   reading: '读剧情中',
+  waiting: '等柏宝绘出图',
   review: '整理提示词',
   generating: '出图中',
   completed: '完成',

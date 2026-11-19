@@ -48,7 +48,9 @@ export function overrideKey(id: PromptDocId, variant: PromptVariant): string {
 // ============================================================
 
 const CAST_SCHEMA =
-  '"cast":[{"name":"角色名（照抄库里的名字）","outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）"}]';
+  '"cast":[{"name":"角色名（照抄库里的名字；用户扮演的「你」写人设名）",'
+  + '"outfit":"English danbooru phrases: 这一整批共用的当前着装，版型+主色+关键配件（例如 white dress shirt, black slacks, loosened tie）",'
+  + '"look":"English danbooru phrases: 这个人的外貌（发色/瞳色/体型/特征）。**固定外貌库里有这个人的条目时留空**，库是权威、不要改写；库里没有的（例如用户扮演的「你」）必须按正文/角色参考补全"}]';
 
 const OUTFIT_RULE =
   '`cast` 是本批的**服装定妆**：每个出场角色一条，`outfit` 用英文写清版型、主色、关键配件（white dress shirt, black pleated skirt, brown loafers）。'

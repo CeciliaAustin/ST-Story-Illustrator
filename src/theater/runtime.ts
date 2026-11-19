@@ -135,6 +135,41 @@ export interface RunOneResult {
  * 上一版只取了 tags、把 act 整段丢掉——最具体的画面信息（谁在做什么）就这么没了，
  * 出图自然只能靠几个泛词瞎猜。这里把 act 合进 tags（去重、保留原顺序）。
  */
+/** `2people` / `1girl, 1boy` / `2girls` 这类人数写法。 */
+const PEOPLE_COUNT_RE = /(?:^|,)\s*\d+\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi;
+
+/** 这条提示词声称画几个人（取所有人数词之和；没有人数词返回 0）。 */
+export function declaredPeople(tags: string): number {
+  let total = 0;
+  for (const match of String(tags ?? '').matchAll(/\b(\d+)\s*(?:people|girls|boys|others|girl|boy|other|person)\b/gi)) {
+    total += Number(match[1]) || 0;
+  }
+  return total;
+}
+
+/**
+ * 让人数词与**实际有几个角色块**对上。
+ *
+ * NAI 拿到「Base 说 2 people + 只有一块 character prompt」时会硬凑第二个人，
+ * 那张脸没有任何约束——用户看到的正是「只说 Elias，另一个不知道是谁」。
+ * 反过来，只有一个人有块而 Base 说 2 人时，把人数词删掉、让角色块自己的
+ * `1boy/1girl` 说话，画面里就只有一个确定的人，不会凭空长出一张脸。
+ *
+ * 只在「块数 > 0 且与人数词不符」时动手：一个人都没识别出来时 Base 说了算。
+ */
+export function alignPeopleCount(tags: string, blocks: number): string {
+  const text = String(tags ?? '');
+  if (blocks <= 0) return text;
+  const declared = declaredPeople(text);
+  if (!declared || declared === blocks) return text;
+  const stripped = text
+    .replace(PEOPLE_COUNT_RE, '')
+    .replace(/\s*,\s*,/g, ',')
+    .replace(/^\s*,\s*|\s*,\s*$/g, '')
+    .trim();
+  return stripped || text;
+}
+
 export function combinedPanelTags(panel: StatusFrame): string {
   const pieces: string[] = [];
   for (const role of panel.roles ?? []) {
@@ -284,6 +319,19 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
       const key = normalizeName(item.name);
       if (key && item.outfit && !outfitByName.has(key)) outfitByName.set(key, item.outfit);
     }
+    // 模型给「角色库里没有的人」补的外貌（cast[].look）。库条目永远优先，
+    // 这里只填库查不到的那些人——否则 Base 说 2 people、角色块只有一个人。
+    const lookByName = new Map<string, string>();
+    for (const item of reading.looks ?? []) {
+      const key = normalizeName(item.name);
+      if (key && item.look && !lookByName.has(key)) lookByName.set(key, item.look);
+    }
+    const lookOf = (name: string): string => {
+      const key = normalizeName(name);
+      const base = normalizeName(String(name ?? '').split(/[（(【\[]/)[0]);
+      return lookByName.get(key) ?? (base ? lookByName.get(base) : undefined) ?? '';
+    };
+
     const outfitOf = (name: string, look?: CharacterLook): string => {
       const key = normalizeName(name);
       const base = normalizeName(String(name ?? '').split(/[（(【\[]/)[0]);
@@ -312,7 +360,12 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
         : [...names].filter(n => `${panel.nl ?? ''} ${panel.title ?? ''}`.includes(n));
       const resolvedNames = panelNames.length ? panelNames : names.size === 1 ? [...names] : [];
       const looks = input.readLooks(resolvedNames);
-      for (const look of looks) if (!look.tag) missingLooks.add(look.name);
+      for (const look of looks) {
+        if (look.tag) continue;
+        const supplied = lookOf(look.name);
+        if (supplied) look.tag = supplied; // 模型补的外貌：这个人从此有自己的角色块
+        else missingLooks.add(look.name);
+      }
       // act 属于「这个人」，所以绑进他自己的角色块（柏宝绘也是这么要求的：
       // Base 只写人数/场景/光线，角色的动作写在该角色自己的 tag 里）。
       // 以前 act 被合进 Base，多角色时模型经常把 A 的动作安到 B 身上。
@@ -351,7 +404,7 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
             .map(look => [look.tag, outfitOf(look.name, look)].filter(Boolean).join(', '))
             .filter(Boolean);
       const baseTags = nativeCharacters
-        ? [panel.tags, ...missingActs].filter(Boolean).join(', ')
+        ? alignPeopleCount([panel.tags, ...missingActs].filter(Boolean).join(', '), characters.length)
         : combinedPanelTags(panel);
       // tags + characters[].act 一起拼：act 才是「这个人在做什么」，上一版丢掉了它
       const prompt = buildTheaterImagePrompt(

@@ -327,12 +327,26 @@ export interface StatusReading extends StatusFrame {
    * 出图时由代码逐字拼进每一格的角色块，保证同一批四格穿的是同一套衣服。
    */
   outfits?: StatusOutfit[];
+  /**
+   * 角色库里**没有**的人的英文外貌（模型补）。
+   *
+   * 「2 people」却只给一个人建角色块，图上另一个人就全靠模型瞎画；用户那句
+   * 「明明是两个人却只生成了 Elias」就是这么来的。有这条兜底，第二个人才有
+   * 自己的 character prompt。
+   */
+  looks?: StatusLook[];
 }
 
 /** 一个角色的本批着装（英文 danbooru 短语）。 */
 export interface StatusOutfit {
   name: string;
   outfit: string;
+}
+
+/** 角色库里没有的人：模型按正文/柏宝书补的一次性外貌（英文 danbooru tag）。 */
+export interface StatusLook {
+  name: string;
+  look: string;
 }
 
 export interface BbiStatusInfo {
@@ -470,7 +484,11 @@ export interface ComicDialogue {
 export interface ComicPanelPlan {
   index: number;
   title: string;
-  characters: Array<{ name: string; act: string }>;
+  /**
+   * 这一格出场的人。`look` 只给**角色库里没有**的人用（模型按正文/柏宝书补的
+   * 英文外貌），有库条目的留空——库是权威，不许改写。
+   */
+  characters: Array<{ name: string; act: string; look?: string }>;
   mood: string;
   tags: string;
   nl?: string;

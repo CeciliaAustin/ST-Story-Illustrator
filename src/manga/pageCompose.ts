@@ -137,10 +137,15 @@ export function composePagePrompt(
   const names: string[] = [];
   // 各格写了「这个人在做什么」：它属于这个人自己的角色块，不能丢，也不能进 Base
   const acts = new Map<string, string[]>();
+  // 模型给「角色库里没有的人」补的外貌（例如用户扮演的「你」）。
+  // 没有它，这个人就只有名字、没有提示词块，Base 上写着 "2 people" 却只画一个人。
+  const looks = new Map<string, string>();
   for (const panel of page.panels ?? []) {
     for (const c of panel.characters ?? []) {
       if (!c?.name) continue;
       if (!names.includes(c.name)) names.push(c.name);
+      const look = String(c.look ?? '').trim();
+      if (look && !looks.has(c.name)) looks.set(c.name, look);
       const act = String(c.act ?? '').trim();
       if (act) {
         const list = acts.get(c.name) ?? [];
@@ -157,10 +162,10 @@ export function composePagePrompt(
   // 只有「代码自己补」时才按协议上限（2 人）收着补，免得把库里的路人甲乙也塞进画面。
   const cast = names.length
     ? names.slice(0, 6)
-    : ensurePageCast(page, characters, options.selectedText ?? '');
+    : ensurePageCast(page, characters, options.selectedText ?? '', looks);
   const native = options.nativeCharacters !== false;
   const characterPrompts = native
-    ? characterPromptsFromLibrary(cast, characters, acts)
+    ? characterPromptsFromLibrary(cast, characters, acts, looks)
     : [];
   // 拆得出来就拆；拆不出来（角色库空 / 名字对不上）退回老口径，至少别丢外貌词
   const prompt = characterPrompts.length ? base : mergeCharacterTags(base, cast, characters);

@@ -1,52 +1,42 @@
 /**
  * 魔杖菜单（#extensionsMenu）入口
  *
- * 注入两个入口，都指向同一个面板的两个标签页：
- *   🎨 生成配图 —— 不需要先划线，打开后可自己选楼层/范围/勾选
- *   🎨 配图设置 —— 出图方案、接入点、小剧场开关
+ * **只留一个入口**：以前注入了「生成配图」和「配图设置」两条，点开的是同一个面板的
+ * 不同标签页——菜单里两条并排，用户看到的是「同一个东西写了两个名字」。
+ * 现在只有「配图」一条，面板内部的标签页（生成配图 / 配图设置 / 提示词 / 出图日志）
+ * 照样可以互相切换。
  */
 
 import { openStudio } from './studio';
 
-const ITEMS: Array<{ id: string; label: string; title: string; icon: string; tab: 'generate' | 'settings' }> = [
-  {
-    id: 'sti-menu-generate',
-    label: '生成配图',
-    title: 'ST 故事插画 · 生成配图（也可先划线）',
-    icon: 'fa-wand-magic-sparkles',
-    tab: 'generate',
-  },
-  {
-    id: 'sti-menu-config',
-    label: '配图设置',
-    title: 'ST 故事插画 · 出图方案 / 小剧场设置',
-    icon: 'fa-images',
-    tab: 'settings',
-  },
-];
+const ITEM = {
+  id: 'sti-menu-studio',
+  label: '配图',
+  title: 'ST 故事插画 · 生成配图 / 配图设置 / 提示词 / 出图日志',
+} as const;
 
-function buildItem(spec: (typeof ITEMS)[number]): HTMLElement {
+function buildItem(): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'extension_container interactable';
   wrap.tabIndex = 0;
 
   const link = document.createElement('a');
-  link.id = spec.id;
+  link.id = ITEM.id;
   link.className = 'list-group-item';
   link.href = '#';
-  link.title = spec.title;
+  link.title = ITEM.title;
 
   const icon = document.createElement('i');
-  icon.className = `fa-solid ${spec.icon}`;
+  icon.className = 'fa-solid fa-wand-magic-sparkles';
   link.appendChild(icon);
   const text = document.createElement('span');
-  text.textContent = ' ' + spec.label;
+  text.textContent = ' ' + ITEM.label;
   link.appendChild(text);
 
   link.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openStudio(spec.tab);
+    openStudio('generate');
     const menu = document.getElementById('extensionsMenu');
     if (menu) {
       menu.style.display = 'none';
@@ -65,14 +55,9 @@ export function injectWandMenu(): () => void {
   const tryInject = () => {
     const menu = document.getElementById('extensionsMenu');
     if (!menu) return;
-    for (const spec of ITEMS) {
-      if (document.getElementById(spec.id)) continue;
-      menu.appendChild(buildItem(spec));
-    }
-    // 两个入口都在了就不用再轮询
-    if (ITEMS.every(spec => !!document.getElementById(spec.id))) {
-      window.clearInterval(timer);
-    }
+    if (!document.getElementById(ITEM.id)) menu.appendChild(buildItem());
+    // 已经在菜单里就不用再轮询
+    if (document.getElementById(ITEM.id)) window.clearInterval(timer);
   };
 
   tryInject();
@@ -81,8 +66,6 @@ export function injectWandMenu(): () => void {
 }
 
 export function destroyWandMenu(): void {
-  for (const spec of ITEMS) {
-    document.getElementById(spec.id)?.closest('.extension_container')?.remove();
-    document.getElementById(spec.id)?.remove();
-  }
+  document.getElementById(ITEM.id)?.closest('.extension_container')?.remove();
+  document.getElementById(ITEM.id)?.remove();
 }

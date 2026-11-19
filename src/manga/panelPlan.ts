@@ -529,15 +529,19 @@ export interface ParseComicPagePlanResult {
   warnings: string[];
 }
 
-function normalizeCharacters(raw: unknown): Array<{ name: string; act: string }> {
+function normalizeCharacters(raw: unknown): Array<{ name: string; act: string; look?: string }> {
   if (!Array.isArray(raw)) return [];
-  const out: Array<{ name: string; act: string }> = [];
+  const out: Array<{ name: string; act: string; look?: string }> = [];
   for (const c of raw.slice(0, 12)) {
     if (!c || typeof c !== 'object' || Array.isArray(c)) continue;
     const o = c as Record<string, unknown>;
     const name = typeof o.name === 'string' ? o.name.trim().slice(0, 32) : '';
     const act = typeof o.act === 'string' ? o.act.trim().slice(0, 80) : '';
-    if (name) out.push({ name, act });
+    const look = typeof o.look === 'string' ? o.look.replace(/\s+/g, ' ').trim().slice(0, 160) : '';
+    if (!name) continue;
+    // 外貌只收英文：中文描述进 NAI 等于没写
+    out.push(act ? { name, act, ...(look && /[A-Za-z]/.test(look) && !/[\u3400-\u9fff]/.test(look) ? { look } : {}) }
+                 : { name, act: '', ...(look && /[A-Za-z]/.test(look) && !/[\u3400-\u9fff]/.test(look) ? { look } : {}) });
   }
   return out;
 }

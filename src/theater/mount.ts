@@ -76,6 +76,28 @@ export function remountAllTheater(): void {
   }
 }
 
+/**
+ * 对账：这一楼有小剧场数据却没挂出来，才重挂。
+ *
+ * 「刷新后小剧场全部消失」的根因就在这里：`printMessages` 重建整批楼层**不发渲染事件**，
+ * 而扩展初始化时 `remountAllTheater()` 跑在消息渲染之前（数到 0 个楼层就收工），
+ * 之后再没有任何触发点。现在由 `#chat` 的 observer 反复调这个函数，
+ * 一旦楼层出现在 DOM 里且没有卡片，就补齐。
+ */
+export function ensureTheaterMounted(floor: number): void {
+  const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  if (mes.querySelector(`[${MOUNTED_ATTR}="${floor}"]`)) {
+    // 已挂过：只有当层里有数据、实际卡片数也对得上时才算齐（数据被重出过会变多）
+    const expected = KIND_ORDER.reduce((sum, kind) => sum + getSets(floor, kind).length, 0);
+    const actual = mes.querySelectorAll(`[${MOUNTED_ATTR}="${floor}"] .sti-cs-card`).length;
+    if (expected === actual) return;
+  }
+  const has = KIND_ORDER.some(kind => getSets(floor, kind).length > 0);
+  if (!has) return;
+  mountTheater(floor);
+}
+
 // ============================================================
 // 卡片
 // ============================================================

@@ -11,6 +11,8 @@
 
 import type { VisualArtifact, CreationMode } from '../types';
 import { getArtifacts } from '../storage/repository';
+import { getMessage } from '../host/sillytavern';
+import { manwaAnchors, parseManwaTags } from '../baibai/manwaTag';
 import { extractPlainText, findAnchorRange } from '../selection/anchor';
 import { openLightbox } from './lightbox';
 import { rerollComicPage } from '../manga/rerollPage';
@@ -44,8 +46,52 @@ export function mountFloor(floor: number): void {
   const inline = visible.filter(a => a.mountMode === 'inline');
   const trailing = visible.filter(a => a.mountMode !== 'inline');
 
-  for (const artifact of inline) mountInline(mes, floor, artifact);
+  // 漫画页一律走 `<bbi_manwa>` 锚点：位置由正文里的 tag 决定，刷新后正则重建锚点、
+  // 卡片跟着回来。只有**上线前生成的老卡**（正文里一条漫画 tag 都没有）才退回旧的行内插入。
+  const manwa = mountManwa(mes, floor, visible);
+
+  // 正文里有漫画 tag = 这一条 swipe 的漫画已经各自归位。
+  // 此时**不能再把剩下的 artifact 行内挂一遍**：那些多半属于另一条 swipe
+  // （tag 只存在于它自己那条 `mes` 里），挂出来就是「切了 swipe 图还在」。
+  for (const artifact of inline) {
+    if (manwa.consumed.has(artifact.id)) continue;
+    // 有 tag 时默认不再行内挂（剩下的多半属于别的 swipe）；
+    // 只有「当时就没写进正文」的那几页才单独放行。
+    if (manwa.tagged && artifact.metadata?.inlineFallback !== true) continue;
+    mountInline(mes, floor, artifact);
+  }
   if (trailing.length > 0) mountTrailing(mes, floor, trailing);
+}
+
+/**
+ * 把漫画卡片挂进正文里的 `<bbi_manwa>` 锚点（按 tag 出现顺序一一对应）。
+ *
+ * 返回已挂载的 artifact id 与「这一楼到底有没有漫画 tag」：调用方据此决定
+ * 要不要把剩余的 artifact 用旧方式挂一遍（有 tag 就一律不挂，见调用处）。
+ */
+function mountManwa(
+  mes: HTMLElement,
+  floor: number,
+  artifacts: VisualArtifact[],
+): { consumed: Set<string>; tagged: boolean } {
+  const consumed = new Set<string>();
+  const refs = parseManwaTags(getMessage(floor)?.mes ?? '');
+  if (!refs.length) return { consumed, tagged: false };
+
+  const anchors = manwaAnchors(floor);
+  if (!anchors.length) return { consumed, tagged: true };
+
+  const byId = new Map(artifacts.map(a => [a.id, a]));
+  const count = Math.min(anchors.length, refs.length);
+
+  for (let i = 0; i < count; i += 1) {
+    const artifact = byId.get(refs[i].id);
+    if (!artifact) continue; // 锚点在、数据不在：留空，不猜
+    if (anchors[i].querySelector(`[${MOUNTED_ATTR}]`)) { consumed.add(artifact.id); continue; }
+    anchors[i].appendChild(buildCard(artifact, floor, true));
+    consumed.add(artifact.id);
+  }
+  return { consumed, tagged: true };
 }
 
 /** 清理某楼层的所有本插件卡片。 */
@@ -63,6 +109,28 @@ export function remountAll(): void {
     const floor = parseInt(node.getAttribute('mesid') ?? '', 10);
     if (Number.isFinite(floor)) mountFloor(floor);
   }
+}
+
+/**
+ * 对账：这一楼该有的卡片在不在，缺了才重挂。
+ *
+ * 与 `mountFloor` 的区别是**幂等且便宜**——它被 `#chat` 的 MutationObserver
+ * 每帧调用，不能每次都拆掉重建（重建会让正在看的图闪烁，也会自己喂自己 mutation）。
+ * 判定按 artifact id 逐个核对，所以「两张卡被 ST 重渲冲掉一张」这种半残状态也能修好。
+ */
+export function ensureFloorMounted(floor: number): void {
+  const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  const visible = getArtifacts(floor).filter(a => a.metadata?.embeddedInBody !== true);
+  if (visible.length === 0) return;
+
+  const present = new Set<string>();
+  for (const node of Array.from(mes.querySelectorAll<HTMLElement>('[data-sti-artifact-id]'))) {
+    const id = node.getAttribute('data-sti-artifact-id');
+    if (id) present.add(id);
+  }
+  if (visible.every(a => present.has(a.id))) return;
+  mountFloor(floor);
 }
 
 // ============================================================
@@ -189,7 +257,12 @@ function mountTrailing(mes: HTMLElement, floor: number, artifacts: VisualArtifac
 
 function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HTMLElement {
   const card = document.createElement('div');
-  card.className = inline ? INLINE_CLASS : 'sti-floor-card';
+  // 漫画卡单独一个类：它要长得像柏宝绘的楼层卡（图即卡片，无边框无底色）
+  const comic = inline && artifact.mode === 'comic';
+  card.className = [
+    inline ? INLINE_CLASS : 'sti-floor-card',
+    ...(comic ? ['is-comic'] : []),
+  ].join(' ');
   card.setAttribute(MOUNTED_ATTR, String(floor));
   card.setAttribute('data-sti-artifact-id', artifact.id);
 

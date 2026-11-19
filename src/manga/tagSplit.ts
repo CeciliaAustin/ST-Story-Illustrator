@@ -61,6 +61,13 @@ export function characterPromptsFromLibrary(
   library: readonly BaiBaiCharacter[],
   /** 名字 → 这个人在本图里的动作（English danbooru 短语），拼在外貌后面 */
   acts?: ReadonlyMap<string, readonly string[]>,
+  /**
+   * 名字 → 模型补的外貌（**只给角色库里没有的人**）。
+   *
+   * 以前库里查不到就整条丢掉：Base 写着 "2 people"，角色块只有一个，
+   * 另一个人只能由模型随手补一张脸。现在这个人至少有自己的一块提示词。
+   */
+  looks?: ReadonlyMap<string, string>,
 ): BbiTagCharacter[] {
   const byName = new Map(library.map(entry => [entry.name, entry]));
   const seen = new Set<string>();
@@ -69,14 +76,21 @@ export function characterPromptsFromLibrary(
     const name = String(raw ?? '').trim();
     if (!name || seen.has(name)) continue;
     const entry = byName.get(name);
-    if (!entry) continue;
-    const appearance = characterTagOf(entry);
-    if (!appearance) continue;
+    const appearance = entry ? characterTagOf(entry) : '';
+    if (!appearance) {
+      const supplied = String(looks?.get(name) ?? '').trim();
+      if (!supplied) continue; // 既没库条目也没人给外貌：宁可不画，也不瞎编
+      const extraTags = (acts?.get(name) ?? []).map(a => String(a ?? '').trim()).filter(Boolean);
+      seen.add(name);
+      out.push({ name, tag: [supplied, ...extraTags].join(', ') });
+      if (out.length >= 32) break;
+      continue;
+    }
     // 动作也归这个人的角色块：Base 只留共享互动，个人动作不能写进 Base
     const extra = (acts?.get(name) ?? []).map(a => String(a ?? '').trim()).filter(Boolean);
     const tag = [appearance, ...extra].join(', ');
     seen.add(name);
-    const nl = String(entry.nl ?? '').trim();
+    const nl = String(entry?.nl ?? '').trim();
     out.push({ name, tag, ...(nl ? { nl } : {}) });
     if (out.length >= 32) break;
   }
@@ -101,16 +115,19 @@ export function ensurePageCast(
   page: ComicPagePlan,
   library: readonly BaiBaiCharacter[],
   selectedText = '',
+  /** 模型给「库里没有的人」补的外貌：这些人也算可用阵容 */
+  looks?: ReadonlyMap<string, string>,
 ): string[] {
   const usable = library.filter(c => String(c.name ?? '').trim() && characterTagOf(c));
-  if (!usable.length) return [];
+  const looked = new Set([...(looks?.keys() ?? [])].map(n => String(n).trim()).filter(Boolean));
+  if (!usable.length && !looked.size) return [];
 
   const usableByName = new Map(usable.map(c => [String(c.name).trim(), c]));
   const picked: string[] = [];
   const add = (name: string): void => {
     const clean = String(name ?? '').trim();
     if (!clean || picked.includes(clean) || picked.length >= 2) return;
-    if (!usableByName.has(clean)) return;
+    if (!usableByName.has(clean) && !looked.has(clean)) return;
     picked.push(clean);
   };
 
@@ -127,8 +144,7 @@ export function ensurePageCast(
     ...(page.panels ?? []).map(p => `${p.tags ?? ''} ${p.title ?? ''} ${p.nl ?? ''}`),
     selectedText,
   ].join(' ');
-  const mentioned = usable
-    .map(c => String(c.name).trim())
+  const mentioned = [...usable.map(c => String(c.name).trim()), ...looked]
     .filter(name => !picked.includes(name) && pageText.includes(name));
   mentioned.forEach(add);
   if (picked.length || usable.length > 2) return picked;

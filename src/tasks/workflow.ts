@@ -39,8 +39,15 @@ import { hasStoryContent } from '../manga/panelRelevance';
 import { composePagePrompt } from '../manga/pageCompose';
 import { bakeDialogueIntoImage } from '../manga/bubbleBake';
 import { panelSlots, layoutNoGoZones } from '../manga/panelSlots';
-import { createArtifactId, appendArtifact } from '../storage/repository';
+import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
+import {
+  buildManwaTag,
+  insertManwaTag,
+  ensureManwaRegexRegistered,
+  isManwaRegexRegistered,
+} from '../baibai/manwaTag';
 import { mountFloor } from '../ui/floorCards';
+import { waitForBaiBaiImages } from '../baibai/waitImages';
 import {
   buildBbiTag,
   insertImageTag,
@@ -284,6 +291,11 @@ async function runComic(
   // 这套漫画方案要不要写自然语言（读剧情与出图必须是同一个答案）
   const wantComicNl = nlForMode(deps.fullSettings, 'comic');
 
+  // 漫画 tag 靠 ST 的托管正则换成锚点。正则没注册就写 tag，用户会看到一串裸文本，
+  // 所以这里先确保注册成功，注册不上就不写（退回旧的行内挂载）。
+  ensureManwaRegexRegistered();
+  const manwaTagReady = isManwaRegexRegistered();
+
   ctx.report({ stage: 'reading' });
   const characters = await getCharacters(floor);
   // NAI 4.5/V5 才有原生 Character Prompts；没有它时外貌只能并进 Base
@@ -511,6 +523,35 @@ async function runComic(
       createdAt: Date.now(),
     };
     appendArtifact(floor, artifact);
+
+    // 正文里写一条自己的 tag（`<bbi_manwa>`），卡片按它水合。
+    // 这一步是「刷新后还在」「永远不跟 bbi_image 抢槽位」的关键：
+    // 位置由 tag 决定，不再靠猜「选段落在哪一段」；柏宝绘重写 .mes_text 也打不掉它
+    // （正则会在下一次渲染时把锚点重建出来）。
+    const tag = manwaTagReady ? buildManwaTag(artifact.id) : '';
+    const inserted = tag ? await insertManwaTag({
+      floor,
+      chatId: task.chatId,
+      swipeId: segment.messages[0]?.swipeId ?? 0,
+      ...(segment.messages[0]?.sendDate ? { sendDate: segment.messages[0].sendDate } : {}),
+      tag,
+      anchorText: segment.text.slice(0, 120),
+    }) : { ok: false as const, reason: 'no-context' as const };
+    if (inserted.ok) {
+      // 记下「这一页的 tag 原文」：重画只换图，不重插 tag
+      updateArtifact(floor, artifact.id, { metadata: { ...artifact.metadata, manwaTag: tag } });
+    } else {
+      // 写不进正文的页仍然要能用：打个标记，挂载时允许它走旧的行内插入。
+      updateArtifact(floor, artifact.id, {
+        metadata: { ...artifact.metadata, inlineFallback: true },
+      });
+      recordNotice({
+        mode: 'comic',
+        floor,
+        text: `第 ${page.pageIndex + 1} 页已出图，但没能写进正文（${inserted.reason}）。`
+          + '这一页会临时挂在楼层里；它不是靠正文 tag 定位的，刷新后位置可能变。',
+      });
+    }
     done += 1;
   }
 
@@ -621,6 +662,23 @@ export function createTaskRunner(deps: WorkflowDeps) {
     // 先退出的那个不能把还在出图的任务手里的方案抢走。
     acquirePlanGuard();
     try {
+      // 先让柏宝绘把它自己的正文插图画完，再动「当前方案」。
+      // 顺序反了就会把它还没发出去的请求染成我们的方案（QQ 人/黑白漫）——
+      // 用户看到的就是「正文插图忽然变成 Q 版」。等待有上限，等不到照常继续。
+      const waitFloor = getAnchorFloor(task.source);
+      if (waitFloor !== null) {
+        const waited = await waitForBaiBaiImages(waitFloor, {
+          onWait: ({ pending }) => ctx.report({ stage: 'waiting', message: `等柏宝绘先出完正文插图（还剩 ${pending} 张）` }),
+        });
+        if (waited.timedOut) {
+          recordNotice({
+            mode: task.mode,
+            floor: waitFloor,
+            text: `等了 ${Math.round(waited.waitedMs / 1000)} 秒，柏宝绘还有 ${waited.pending} 张正文插图没出完。`
+              + '这次仍然继续生成，但它的那几张可能会用上本次切换的方案（画风可能不对）。',
+          });
+        }
+      }
       switch (task.mode) {
         case 'illustration': return await runIllustration(task, ctx, deps);
         case 'comic': return await runComic(task, ctx, deps);
