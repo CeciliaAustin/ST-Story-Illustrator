@@ -116,6 +116,22 @@ export function getContext(): STContext {
 }
 
 /**
+ * 用户人设名（ST 的 `name1`）；未设人设时返回空串。
+ *
+ * 柏宝书的主角档里没有「名字」字段，柏宝绘读它时会把 name1 一起带上——
+ * 不带的话，模型看到「主角:性别:男;外貌:…」和角色库里的「小雪」是两个人，
+ * 同一场戏就被画成三个人。
+ */
+export function readPersonaName(): string {
+  try {
+    const ctx = getContext() as Record<string, unknown>;
+    return typeof ctx.name1 === 'string' ? ctx.name1.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * 获取当前聊天 ID。
  */
 export function getCurrentChatId(): string {

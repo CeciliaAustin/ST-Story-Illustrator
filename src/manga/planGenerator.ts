@@ -120,6 +120,8 @@ export interface GenerateIllustrationInput {
   caller?: LlmCaller;
   /** 用户在「提示词」标签页里改过的模板 */
   promptOverrides?: PromptOverrideMap;
+  /** 柏宝书角色参考（当前外貌/着装/状态） */
+  bookBlock?: string;
   /** 柏宝绘角色库全文（含发色/瞳色/固定着装） */
   libraryBlock?: string;
   /** 「谁是谁」：用户扮演谁、角色卡是谁 */
@@ -132,6 +134,7 @@ export async function generateIllustrationPlan(
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildIllustrationSystemPrompt(input.options, input.promptOverrides);
   const user = buildIllustrationUserPrompt(input.scene, input.characters ?? [], {
+    ...(input.bookBlock ? { bookBlock: input.bookBlock } : {}),
     ...(input.libraryBlock ? { libraryBlock: input.libraryBlock } : {}),
     ...(input.castBlock ? { castBlock: input.castBlock } : {}),
   });
@@ -165,6 +168,8 @@ export interface GenerateComicPlanInput {
   caller?: LlmCaller;
   /** 用户在「提示词」标签页里改过的模板 */
   promptOverrides?: PromptOverrideMap;
+  /** 柏宝书角色参考（当前外貌/着装/状态） */
+  bookBlock?: string;
 }
 
 export async function generateComicPlan(
@@ -172,7 +177,12 @@ export async function generateComicPlan(
 ): Promise<GeneratePlanResult<ComicPagePlan[]>> {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildComicSystemPrompt(input.options, input.promptOverrides);
-  const user = buildComicUserPrompt(input.scene, input.characters ?? [], input.options.extraInstruction);
+  const user = buildComicUserPrompt(
+    input.scene,
+    input.characters ?? [],
+    input.options.extraInstruction,
+    { ...(input.bookBlock ? { bookBlock: input.bookBlock } : {}) },
+  );
   try {
     const raw = await caller(system, user);
     const parsed = parseComicPagePlan(raw);

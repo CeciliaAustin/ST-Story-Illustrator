@@ -51,7 +51,7 @@ describe('buildLibraryBlock：按柏宝绘的字段形态渲染', () => {
   it('文本里写明这是唯一合法的名字来源，且外貌不许自己编', () => {
     const block = buildLibraryBlock(LIB);
     expect(block).toContain('唯一合法');
-    expect(block).toContain('不要自己编');
+    expect(block).toContain('不要换人');
     expect(block).toContain('Sissy');
   });
 

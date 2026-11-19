@@ -36,6 +36,14 @@ function getContext() {
     extensionSettings: {}
   };
 }
+function readPersonaName() {
+  try {
+    const ctx = getContext();
+    return typeof ctx.name1 === "string" ? ctx.name1.trim() : "";
+  } catch {
+    return "";
+  }
+}
 function getCurrentChatId() {
   const ctx = getContext();
   if (typeof ctx.getCurrentChatId === "function") {
@@ -2227,15 +2235,20 @@ function expandNlSections(text, nl) {
     (_match, kind, body) => kind === "#" === nl ? body : ""
   );
 }
-const CONTRACT_PRIORITY = "【本任务的输出契约优先】\n上面是柏宝绘的写词规范，它约束的是**画什么、怎么写词**：人物与服装怎么取证、什么算自创、连续场景怎么保持同一套衣服、Base 与角色块怎么分工。\n规范里出现的示例 JSON（position / tag / characters[].tag / nl / size 等）只是柏宝绘自己的字段，**不要照抄那些字段名**：本次输出的 JSON 只按下面【任务协议】里的字段来，不要输出 position、size，也不要把整段 JSON 塞进 tag。\n冲突时：**格式以任务协议为准，画面内容以规范为准。**";
-function buildSpecPreamble(set, options) {
+const CONTRACT_PRIORITY = "【本任务的输出信封】\n上面的规范管的是**画什么、怎么写词**：人物与服装怎么取证、什么算自创、连续场景怎么保持同一套衣服、Base 与每个角色块怎么分工。这些规则全部有效。\n信封（要不要 position / images / changes，有没有 negative、size 怎么给）以【任务协议】为准；**但「Base 只写全局内容、单个角色的外貌服装表情动作只写进该角色自己那一块」这条分工不受影响**。\n不要把整段 JSON 塞进 tag，也不要输出协议里没有的字段。";
+function buildSpecHead(set, options) {
   const parts = [];
   if (set.jailbreak) parts.push(expandNlSections(set.jailbreak, options.nl));
   if (set.spec) parts.push(expandNlSections(set.spec, options.nl));
-  if (set.thinking) parts.push(expandNlSections(set.thinking, options.nl));
-  const body = parts.map((p) => p.trim()).filter(Boolean).join("\n\n");
+  return parts.map((p) => p.trim()).filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+function buildThinking(set, options) {
+  return set.thinking ? expandNlSections(set.thinking, options.nl).replace(/\n{3,}/g, "\n\n").trim() : "";
+}
+function buildSpecPreamble(set, options) {
+  const body = buildSpecHead(set, options);
   if (!body) return "";
-  return `${body.replace(/\n{3,}/g, "\n\n").trim()}
+  return `${body}
 
 ${CONTRACT_PRIORITY}`;
 }
@@ -2244,16 +2257,20 @@ function readPromptSet() {
   const ctx = getContext();
   return parsePromptSet((_a = ctx.extensionSettings) == null ? void 0 : _a[SETTINGS_KEY]);
 }
-function specPreambleFor(nl) {
-  return buildSpecPreamble(readPromptSet(), { nl });
-}
 function withSpecPreamble(system, nl) {
-  const preamble = specPreambleFor(nl);
-  return preamble ? `${preamble}
+  const set = readPromptSet();
+  const head = buildSpecPreamble(set, { nl });
+  const thinking = buildThinking(set, { nl });
+  const middle = head ? `${head}
 
 ------
 
 ${system}` : system;
+  return thinking ? `${middle}
+
+------
+
+${thinking}` : middle;
 }
 const HOST_ID = "bbi-app-host";
 const NAV_LABEL = "渠道";
@@ -2819,7 +2836,7 @@ const COMMON_RULES = [
   OUTFIT_RULE,
   "characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other's sleeve, leaning against the door, holding a broken cup）。",
   "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
-  "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
+  "characters 最多 2 项（同框超过两人时，只保留主角与核心互动对象；宁可裁人，也不要让人残缺）。两人互动时主动方和被动方 act 必须分开写。",
   "characters[].name **必须照抄【角色固定外貌库】里的名字**。正文里用「你」「他」「那个金发男生」或另一个叫法时，先判断指的是库里哪一位，再写库里的名字——名字写错就等于这个人没有外貌，会被画成路人。",
   "{{#nl}}nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。{{/nl}}",
   "tags 里必须交代这三件事：① 人数与互动；② 地点或环境（classroom / dormitory / arched corridor / street / outdoors）；③ 光线或时间（sunlight / backlighting / golden hour / night / indoor lighting）。",
@@ -2836,11 +2853,13 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}]{{#nl}},"nl":"可选英文自然语言描述"{{/nl}},"negative":"可选英文负面词","size":"portrait|landscape"}。
 3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
 4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
+4a. **Base 与角色块是硬边界**：scene / global 段里绝对不要出现任何单个角色的外貌、服装、发色、瞳色、体型——这些只属于该角色的 character 段。两边都写，等于把两套头发两套衣服摊给同框所有人，模型只能随机分配。
+4b. scene 段至少 5 个 tag，必须包含：一个景别（close-up / upper body / medium shot / full body / wide shot）、地点、光线或时间、以及人与人之间的共享互动。
 5. 一次只策划一个明确的瞬间，不要描述整段剧情的时间跨度。
 6. 场景与动作必须以给定剧情和上下文为依据，不得凭空添加关键剧情事实。
 7. segment 按 order 从小到大排列；无需的字段直接省略，不要填空字符串或空数组。
 8. 若剧情里的名场面适合漫画分镜，仍按单幅插画输出（漫画由专门的模式处理）。
-9. 选段里出场的**每一个人**都要有自己的 character 段：name 照抄角色库里的名字，外貌照抄该条目的 tag（不改写、不合并）。漏掉一个人，图上就少一个人。
+9. **画进这张图的每一个人**都要有自己的 character 段：name 照抄角色库里的名字，外貌照抄该条目的 tag（不改写、不合并）。漏掉一个人，图上就少一个人；不打算画进来的人不要写。
 10. {{#nl}}nl 必须写：英文 1~2 句，把「谁、在哪里、正在做什么」串起来——柏宝绘的 nl 通道决定这些细节能不能真的落在画面上。{{/nl}}{{^nl}}不要生成 nl 字段：这套出图方案不需要自然语言通道，写了反而会稀释 tag 权重。{{/nl}}
 {{#hasFlags}}
 补充约束：
@@ -2853,7 +2872,7 @@ const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布
 结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"英文分区描述"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
 硬要求：
 1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
-2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
+2. page.tags 必须写出：在场的人**在做什么**（共享动作与互动）、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。**单个角色的外貌、发色、瞳色、服装一律不写进 page.tags**——它们由 panels[].characters[].name 对应的角色库条目提供，代码会拼成每个角色自己的提示词；两边都写会把两套衣服糊给同框所有人。
 3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
 4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），{{#nl}}各格远近只写在 nl 里{{/nl}}{{^nl}}各格远近只能用构图 tag 区分{{/nl}}。
 5. {{#nl}}page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}
@@ -4240,6 +4259,127 @@ function stripThinkingBlocks(raw) {
   if (!/<think/i.test(text)) return text;
   return text.replace(THINK_BLOCK, "").trim();
 }
+function composeEnglishPrompt(segments) {
+  const enabled = segments.filter((s) => s.enabled);
+  const sorted = [...enabled].sort((a, b) => a.order - b.order);
+  const allTags = [];
+  const seenBareTags = /* @__PURE__ */ new Set();
+  for (const segment of sorted) {
+    for (const tag of segment.english) {
+      const trimmed = tag.trim();
+      if (!trimmed) continue;
+      const bare = bareTagOf$1(trimmed);
+      if (bare && seenBareTags.has(bare) && !trimmed.includes("::")) {
+        continue;
+      }
+      if (bare) seenBareTags.add(bare);
+      allTags.push(trimmed);
+    }
+  }
+  return allTags.join(", ");
+}
+function bareTagOf$1(tag) {
+  let text = tag.trim();
+  text = text.replace(/^\s*[\d.]+\s*::/, "");
+  text = text.replace(/^\s*::/, "");
+  text = text.replace(/::\s*$/, "");
+  return text.trim().toLowerCase();
+}
+function looksEnglish(text) {
+  return /[A-Za-z]/.test(text) && !/[\u3040-\u30ff\u3400-\u9fff]/.test(text);
+}
+function characterTagOf(entry) {
+  const fields = entry.fields ?? {};
+  const order = ["sex", "hair", "eyes", "skin", "body", "extra", "outfit"];
+  const parts = order.map((key) => String(fields[key] ?? "").trim()).filter(Boolean);
+  if (parts.length) return parts.join(", ");
+  const raw = String(entry.tag ?? "").trim();
+  if (raw) return raw;
+  for (const candidate of [String(entry.desc ?? "").trim(), String(entry.nl ?? "").trim()]) {
+    if (candidate && looksEnglish(candidate)) return candidate;
+  }
+  return "";
+}
+function characterPromptsFromLibrary(names, library, acts) {
+  const byName = new Map(library.map((entry) => [entry.name, entry]));
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const raw of names) {
+    const name = String(raw ?? "").trim();
+    if (!name || seen.has(name)) continue;
+    const entry = byName.get(name);
+    if (!entry) continue;
+    const appearance = characterTagOf(entry);
+    if (!appearance) continue;
+    const extra = ((acts == null ? void 0 : acts.get(name)) ?? []).map((a) => String(a ?? "").trim()).filter(Boolean);
+    const tag = [appearance, ...extra].join(", ");
+    seen.add(name);
+    const nl = String(entry.nl ?? "").trim();
+    out.push({ name, tag, ...nl ? { nl } : {} });
+    if (out.length >= 32) break;
+  }
+  return out;
+}
+function ensurePageCast(page, library, selectedText = "") {
+  const usable = library.filter((c) => String(c.name ?? "").trim() && characterTagOf(c));
+  if (!usable.length) return [];
+  const usableByName = new Map(usable.map((c) => [String(c.name).trim(), c]));
+  const picked = [];
+  const add = (name) => {
+    const clean = String(name ?? "").trim();
+    if (!clean || picked.includes(clean) || picked.length >= 2) return;
+    if (!usableByName.has(clean)) return;
+    picked.push(clean);
+  };
+  for (const panel of page.panels ?? []) {
+    for (const c of panel.characters ?? []) add((c == null ? void 0 : c.name) ?? "");
+  }
+  if (picked.length >= 2) return picked;
+  const pageText = [
+    page.tags ?? "",
+    ...(page.panels ?? []).map((p) => `${p.tags ?? ""} ${p.title ?? ""} ${p.nl ?? ""}`),
+    selectedText
+  ].join(" ");
+  const mentioned = usable.map((c) => String(c.name).trim()).filter((name) => !picked.includes(name) && pageText.includes(name));
+  mentioned.forEach(add);
+  if (picked.length || usable.length > 2) return picked;
+  usable.forEach((c) => add(String(c.name)));
+  return picked;
+}
+function splitSegments(segments, native) {
+  const all = [...segments];
+  if (!native) {
+    return { base: composeEnglishPrompt(all), characters: [], fallback: false };
+  }
+  const characterSegs = all.filter((seg) => seg.source === "character" && !!String(seg.characterName ?? "").trim());
+  const baseSegs = all.filter((seg) => !characterSegs.includes(seg));
+  const base = composeEnglishPrompt(baseSegs);
+  const byName = /* @__PURE__ */ new Map();
+  for (const seg of characterSegs) {
+    const name = String(seg.characterName ?? "").trim();
+    const list = byName.get(name) ?? [];
+    list.push(...seg.english);
+    byName.set(name, list);
+  }
+  const characters = [];
+  for (const [name, tags] of byName) {
+    const seen = /* @__PURE__ */ new Set();
+    const kept = [];
+    for (const raw of tags) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const bare = piece.replace(/^\s*[\d.]+\s*::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+      if (bare && seen.has(bare)) continue;
+      if (bare) seen.add(bare);
+      kept.push(piece);
+    }
+    if (kept.length) characters.push({ name, tag: kept.join(", ") });
+  }
+  if (!base.trim() || characters.length === 0) {
+    return { base: composeEnglishPrompt(all), characters: [], fallback: true };
+  }
+  return { base, characters, fallback: false };
+}
 const PANEL_BUBBLE_AREAS = [
   "tl",
   "tc",
@@ -4678,7 +4818,7 @@ function safeParseJson(text) {
   }
 }
 function characterToSegment(character, order, includeChinese) {
-  const englishTags = String(character.tag ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+  const englishTags = characterTagOf(character).split(",").map((t) => t.trim()).filter(Boolean);
   if (englishTags.length === 0) return null;
   const cn = includeChinese && character.nl ? [character.nl.trim()] : includeChinese && character.desc ? [character.desc.trim()] : [];
   const name = String(character.name ?? "").trim() || "角色";
@@ -4704,12 +4844,19 @@ function buildIllustrationSystemPrompt(options, overrides) {
   }, overrides);
 }
 function ensureCharacterSegments(response, characters, selectedText, includeChinese) {
-  if (response.segments.some((seg) => seg.source === "character")) return response;
-  const usable = characters.filter((c) => String(c.name ?? "").trim() && String(c.tag ?? "").trim());
+  const usable = characters.filter((c) => String(c.name ?? "").trim() && characterTagOf(c));
   if (!usable.length) return response;
+  const existing = new Set(
+    response.segments.filter((seg) => seg.source === "character").map((seg) => String(seg.characterName ?? "").trim()).filter(Boolean)
+  );
+  const room = Math.max(0, 2 - existing.size);
+  if (room === 0) return response;
   const text = String(selectedText ?? "");
-  const mentioned = usable.filter((c) => text.includes(String(c.name).trim()));
-  const picked = mentioned.length ? mentioned : usable.length <= 2 ? usable : [];
+  const mentioned = usable.filter((c) => {
+    const name = String(c.name).trim();
+    return !existing.has(name) && text.includes(name);
+  });
+  const picked = mentioned.length ? mentioned.slice(0, room) : existing.size === 0 && usable.length <= 2 ? usable.slice(0, room) : [];
   if (!picked.length) return response;
   const segs = [];
   picked.forEach((character, i) => {
@@ -4721,6 +4868,7 @@ function ensureCharacterSegments(response, characters, selectedText, includeChin
 }
 function buildIllustrationUserPrompt(scene, characters, blocks = {}) {
   const parts = [];
+  if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push("【本次画面主体（选段，必须以此为准）】\n" + scene.selectedText);
   if (scene.floorText) parts.push("【所在楼层全文（情境参考）】\n" + scene.floorText);
   if (scene.previousText) parts.push("【前文（仅补充，勿当成本画面正在发生的动作）】\n" + scene.previousText);
@@ -4798,15 +4946,19 @@ function buildComicSystemPrompt(options, overrides) {
     noChinese: !options.includeChinese
   }, overrides);
 }
-function buildComicUserPrompt(scene, characters, extraInstruction) {
+function buildComicUserPrompt(scene, characters, extraInstruction, blocks = {}) {
   const parts = [];
+  if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push("【剧情（据此排分镜）】\n" + scene.selectedText);
   if (scene.floorText) parts.push("【所在楼层全文】\n" + scene.floorText);
   if (scene.previousText) parts.push("【前文（仅补充）】\n" + scene.previousText);
   if (scene.nextText) parts.push("【后文（仅补充）】\n" + scene.nextText);
-  if (characters.length > 0) {
-    const lines = characters.map((c) => `- ${c.name}: ${c.tag ?? ""}${c.nl ? ` (${c.nl})` : ""}`);
-    parts.push("【在场角色（保持外貌一致）】\n" + lines.join("\n"));
+  if (blocks.castBlock) parts.push(blocks.castBlock);
+  if (blocks.libraryBlock) {
+    parts.push(blocks.libraryBlock);
+  } else if (characters.length > 0) {
+    const lines = characters.filter((c) => !!String(c.name ?? "").trim()).map((c) => `- ${c.name}: ${c.tag || "（没有外貌数据，请按正文写具体）"}${c.nl ? ` (${c.nl})` : ""}`);
+    if (lines.length) parts.push("【在场角色（保持外貌一致）】\n" + lines.join("\n"));
   }
   if (extraInstruction) parts.push("【本次特别要求】\n" + extraInstruction);
   parts.push("请只输出一个 JSON 对象（pages 数组）；一页一张图，tag 写在 page.tags 上，nl 逐格分区写。");
@@ -4834,6 +4986,7 @@ async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildIllustrationSystemPrompt(input.options, input.promptOverrides);
   const user = buildIllustrationUserPrompt(input.scene, input.characters ?? [], {
+    ...input.bookBlock ? { bookBlock: input.bookBlock } : {},
     ...input.libraryBlock ? { libraryBlock: input.libraryBlock } : {},
     ...input.castBlock ? { castBlock: input.castBlock } : {}
   });
@@ -4857,7 +5010,12 @@ async function generateIllustrationPlan(input) {
 async function generateComicPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildComicSystemPrompt(input.options, input.promptOverrides);
-  const user = buildComicUserPrompt(input.scene, input.characters ?? [], input.options.extraInstruction);
+  const user = buildComicUserPrompt(
+    input.scene,
+    input.characters ?? [],
+    input.options.extraInstruction,
+    { ...input.bookBlock ? { bookBlock: input.bookBlock } : {} }
+  );
   try {
     const raw = await caller(system, user);
     const parsed = parseComicPagePlan(raw);
@@ -5256,7 +5414,7 @@ function buildTheaterPrompt(input) {
   const roster = (input.roster ?? []).map((n) => String(n ?? "").trim()).filter(Boolean).slice(0, 12);
   const rosterLine = roster.length ? `可用角色（柏宝绘角色库；characters[].name 必须照抄其中一项，不要自己造人）：${roster.join("、")}
 ` : "";
-  const reference = [input.castBlock, input.libraryBlock].filter(Boolean).join("\n\n");
+  const reference = [input.bookBlock, input.castBlock, input.libraryBlock].filter(Boolean).join("\n\n");
   if (reference) system = `${system}
 
 ${reference}`;
@@ -5356,7 +5514,8 @@ function formatLibraryEntry(entry, locked = entry.scope === "global") {
   }
   const nl = String(entry.nl ?? "").trim();
   if (nl) parts.push(`外观句=${nl}`);
-  return `- ${entry.name}${locked ? "［全局］" : ""}: ${parts.join(", ") || "(本条目没有数据，请到柏宝绘补全)"}`;
+  const body = parts.join(", ");
+  return `- ${entry.name}${locked ? "［全局］" : ""}: ${body || "（库中暂无外貌数据：请按正文/柏宝书为这一次补全，不要换成别人）"}`;
 }
 function buildLibraryBlock(entries2) {
   const usable = entries2.filter((entry) => String(entry.name ?? "").trim());
@@ -5366,7 +5525,8 @@ function buildLibraryBlock(entries2) {
     "【角色固定外貌库 · 来自柏宝绘，只读】",
     "以下名字是**唯一合法**的 characters[].name。正文里的称呼与这里不同（「你」「Cecilia」「那个金发男生」）时，",
     "先判断指的是库里哪一位，再照抄库里的名字；判不出来才用正文叫法。",
-    "外貌（发色/瞳色/体型/标志特征/固定着装）由本库提供，**不要自己编**，也不要把外貌写进 tags。",
+    "外貌（发色/瞳色/体型/标志特征/固定着装）：库里有的**照抄、不要改写**；库里没有的按正文/柏宝书补一次，**不要换人**；",
+    "它只写进**该角色自己那一块**（characters[] 或 character 段），不要写进 Base / scene / page.tags。",
     ...lines
   ].join("\n");
 }
@@ -5473,6 +5633,7 @@ async function readTheater(input, extraInstruction = "") {
     dialogue: input.dialogue === true,
     nl: input.nl !== false,
     ...((_a = input.roster) == null ? void 0 : _a.length) ? { roster: input.roster } : {},
+    ...input.bookBlock ? { bookBlock: input.bookBlock } : {},
     ...input.libraryBlock ? { libraryBlock: input.libraryBlock } : {},
     ...input.castBlock ? { castBlock: input.castBlock } : {},
     ...input.promptOverrides ? { promptOverrides: input.promptOverrides } : {}
@@ -5626,6 +5787,106 @@ async function runTheaterOne(input) {
       error: err instanceof Error ? err.message : String(err),
       hits: []
     };
+  }
+}
+function getBookApi() {
+  const api = globalThis.STBaiBaiBook;
+  return (api == null ? void 0 : api.apiVersion) === 1 ? api : null;
+}
+function oneLine(value) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+function fmtProtagonist(protagonist) {
+  const p = protagonist ?? {};
+  const parts = [];
+  const fields = [
+    ["性别", "gender"],
+    ["年龄", "age"],
+    ["身份", "identity"],
+    ["外貌", "appearance"],
+    ["着装", "outfit"],
+    ["状态", "condition"]
+  ];
+  for (const [label, key] of fields) {
+    const v = oneLine(p[key]);
+    if (v) parts.push(`${label}:${v}`);
+  }
+  return parts.join("；");
+}
+function fmtNpc(n) {
+  const name = oneLine(n.name);
+  const bracket = [oneLine(n.gender), oneLine(n.age), oneLine(n.title)].filter(Boolean).join("·");
+  let line = bracket ? `${name}(${bracket})` : name;
+  const rel = oneLine(n.relation);
+  if (rel) line += ` —— 与主角:${rel}`;
+  const tail = [];
+  const desc = oneLine(n.desc);
+  if (desc) tail.push(`外貌:${desc}`);
+  const outfit = oneLine(n.outfit);
+  if (outfit) tail.push(`着装:${outfit}`);
+  const condition = oneLine(n.condition);
+  if (condition) tail.push(`状态:${condition}`);
+  if (n.follow === true) tail.push("随行");
+  else {
+    const loc = oneLine(n.location);
+    if (loc) tail.push(`在:${loc}`);
+  }
+  return tail.length ? `${line} 〔${tail.join(";")}〕` : line;
+}
+function formatBookRoles(snapshot, bodyText, protagonistName = "") {
+  const lines = [];
+  const lead = oneLine(protagonistName);
+  const protagonist = fmtProtagonist(snapshot.protagonist);
+  if (protagonist) lines.push(lead ? `主角(${lead}):${protagonist}` : `主角:${protagonist}`);
+  const npcs = Array.isArray(snapshot.npcs) ? snapshot.npcs : [];
+  const npcLines = [];
+  for (const raw of npcs) {
+    const n = raw ?? {};
+    const name = oneLine(n.name);
+    if (!name) continue;
+    if (n.important === true || n.follow === true || String(bodyText ?? "").includes(name)) {
+      npcLines.push(`- ${fmtNpc(n)}`);
+    }
+  }
+  if (npcLines.length) lines.push(`重要角色:
+${npcLines.join("\n")}`);
+  return lines.join("\n");
+}
+function readBookRoles(floor, bodyText, protagonistName = "") {
+  var _a, _b;
+  const api = getBookApi();
+  if (!api) return null;
+  try {
+    let snapshot;
+    let timing = "before_latest";
+    if (typeof api.getContextAtFloor === "function") {
+      const data = api.getContextAtFloor({ floor });
+      const valid = !!((_b = (_a = data.floorData) == null ? void 0 : _a.memory) == null ? void 0 : _b.valid);
+      timing = valid ? "after_latest" : "before_latest";
+      snapshot = valid ? data.snapshotAfter : data.snapshotBefore;
+    } else {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const floorData = api.getFloor(floor);
+        timing = floorData.memory.valid ? "after_latest" : "before_latest";
+        const s = api.getSnapshot({ floor, at: timing === "after_latest" ? "after" : "before" });
+        if (floorData.revision === s.revision) {
+          snapshot = s;
+          break;
+        }
+      }
+      if (!snapshot) return null;
+    }
+    if (!snapshot) return null;
+    const roles = formatBookRoles(snapshot, bodyText, protagonistName);
+    if (!roles) return null;
+    return {
+      timing,
+      text: `【角色参考（柏宝书同步的最新状态，只读）】
+${roles}`
+    };
+  } catch (error) {
+    console.warn("[ST-Story-Illustrator] 读取柏宝书角色状态失败，本次只用角色库与正文。", error);
+    return null;
   }
 }
 const ALL_BUBBLE_STYLES = [
@@ -6758,6 +7019,7 @@ async function runTheaterTask(input) {
   const cast = readCastContext(input.characterName);
   const libraryBlock = buildLibraryBlock(characters.characters);
   const castBlock = buildCastBlock(cast);
+  const book = readBookRoles(floor, input.body, readPersonaName());
   if (!libraryBlock) {
     recordNotice({
       mode,
@@ -6780,6 +7042,7 @@ async function runTheaterTask(input) {
     roster: characters.characters.map((c) => c.name),
     // 要不要写 nl 看这套方案自己的开关（NAI4 一律 false；4.5/V5 跟方案面板走）
     nl: nlForMode(settings2, mode),
+    ...book ? { bookBlock: book.text } : {},
     ...libraryBlock ? { libraryBlock } : {},
     ...castBlock ? { castBlock } : {},
     ...settings2.promptOverrides ? { promptOverrides: settings2.promptOverrides } : {},
@@ -7679,32 +7942,6 @@ class TaskQueue {
     (_b = (_a = this.options).onStatusChange) == null ? void 0 : _b.call(_a, task, status);
   }
 }
-function composeEnglishPrompt(segments) {
-  const enabled = segments.filter((s) => s.enabled);
-  const sorted = [...enabled].sort((a, b) => a.order - b.order);
-  const allTags = [];
-  const seenBareTags = /* @__PURE__ */ new Set();
-  for (const segment of sorted) {
-    for (const tag of segment.english) {
-      const trimmed = tag.trim();
-      if (!trimmed) continue;
-      const bare = bareTagOf$1(trimmed);
-      if (bare && seenBareTags.has(bare) && !trimmed.includes("::")) {
-        continue;
-      }
-      if (bare) seenBareTags.add(bare);
-      allTags.push(trimmed);
-    }
-  }
-  return allTags.join(", ");
-}
-function bareTagOf$1(tag) {
-  let text = tag.trim();
-  text = text.replace(/^\s*[\d.]+\s*::/, "");
-  text = text.replace(/^\s*::/, "");
-  text = text.replace(/::\s*$/, "");
-  return text.trim().toLowerCase();
-}
 function bareTagOf(segment) {
   return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
 }
@@ -7995,21 +8232,33 @@ function collectPageDialogue(page) {
   }
   return out;
 }
-function composePagePrompt(page, characters = []) {
+function composePagePrompt(page, characters = [], options = {}) {
   const base = String(page.tags ?? "").trim() || mergePanelTags(page);
   const names = [];
+  const acts = /* @__PURE__ */ new Map();
   for (const panel of page.panels ?? []) {
     for (const c of panel.characters ?? []) {
-      if ((c == null ? void 0 : c.name) && !names.includes(c.name)) names.push(c.name);
+      if (!(c == null ? void 0 : c.name)) continue;
+      if (!names.includes(c.name)) names.push(c.name);
+      const act = String(c.act ?? "").trim();
+      if (act) {
+        const list = acts.get(c.name) ?? [];
+        if (!list.includes(act)) list.push(act);
+        acts.set(c.name, list);
+      }
     }
   }
-  const prompt = mergeCharacterTags(base, names, characters);
+  const cast = names.length ? names.slice(0, 6) : ensurePageCast(page, characters, options.selectedText ?? "");
+  const native = options.nativeCharacters !== false;
+  const characterPrompts = native ? characterPromptsFromLibrary(cast, characters, acts) : [];
+  const prompt = characterPrompts.length ? base : mergeCharacterTags(base, cast, characters);
   const nl = String(page.nl ?? "").trim() || buildPageNl(page);
   return {
     prompt,
     nl,
     dialogue: collectPageDialogue(page),
-    panelTitles: (page.panels ?? []).map((p) => p.title).filter(Boolean)
+    panelTitles: (page.panels ?? []).map((p) => p.title).filter(Boolean),
+    characters: characterPrompts
   };
 }
 const BBI_IMAGE_EXTRA_KEY = "bbiImage";
@@ -8020,6 +8269,16 @@ const CARD_HINT_SELECTOR = ".bbi-figure__hint";
 function sanitizeTagText(value) {
   return String(value ?? "").replace(/<[^>]*>/g, " ").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
 }
+function serializeCharacterPrompts(characters) {
+  const clean = (characters ?? []).map((c) => {
+    const name = sanitizeTagText(c.name);
+    const tag = sanitizeTagText(c.tag);
+    const nl = sanitizeTagText(c.nl);
+    return { name, tag, ...nl ? { nl } : {} };
+  }).filter((c) => c.name && c.tag).slice(0, 32);
+  if (!clean.length) return "";
+  return `<characters>${JSON.stringify(clean)}</characters>`;
+}
 function buildBbiTag(input) {
   const prompt = sanitizeTagText(input.prompt);
   const nl = sanitizeTagText(input.nl);
@@ -8027,7 +8286,16 @@ function buildBbiTag(input) {
   const size = input.size === "landscape" ? "landscape" : "portrait";
   const nlPart = nl ? `<nl>${nl}</nl>` : "";
   const negativePart = negative ? `<negative>${negative}</negative>` : "";
-  return `<bbi_image>${prompt}${nlPart}${negativePart}<size>${size}</size></bbi_image>`;
+  const charactersPart = serializeCharacterPrompts(input.characters);
+  return `<bbi_image>${prompt}${nlPart}${negativePart}${charactersPart}<size>${size}</size></bbi_image>`;
+}
+function lastImageTagEnd(mes) {
+  const text = String(mes ?? "");
+  const re = /<bbi_image>[\s\S]+?<\/bbi_image>/gi;
+  let end = 0;
+  let match;
+  while ((match = re.exec(text)) !== null) end = match.index + match[0].length;
+  return end;
 }
 function countImageTags(mes) {
   return (String(mes ?? "").match(/<bbi_image>[\s\S]+?<\/bbi_image>/gi) ?? []).length;
@@ -8072,11 +8340,13 @@ async function insertImageTag(input) {
 ${tag}
 `;
   const range = anchorText && anchorText.length >= 2 ? findAnchorRange(currentText, anchorText) : null;
+  const anchorAt = range ? lineEndAfter(currentText, range.end) : -1;
+  const lastTagEnd = lastImageTagEnd(currentText);
   let nextText;
   let position;
   let insertAt;
-  if (range) {
-    insertAt = lineEndAfter(currentText, range.end);
+  if (anchorAt >= 0 && anchorAt >= lastTagEnd) {
+    insertAt = anchorAt;
     const head = currentText.slice(0, insertAt).replace(/[ \t]+$/, "");
     nextText = head + snippet + currentText.slice(insertAt);
     position = "after-anchor";
@@ -8086,7 +8356,6 @@ ${tag}
     position = "appended";
   }
   const seq2 = countImageTags(currentText.slice(0, insertAt));
-  const tagsAfterInsert = countImageTags(currentText.slice(insertAt));
   msg.mes = nextText;
   const swipes = msg.swipes;
   if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) {
@@ -8100,9 +8369,6 @@ ${tag}
       swipes[swipeId] = currentText;
     }
     return { ok: false, reason: "save-failed" };
-  }
-  if (position === "after-anchor" && tagsAfterInsert > 0) {
-    await shiftSlotSeqAfterInsert(floor, swipeId, seq2);
   }
   await refreshFloor(ctx, floor, msg);
   return { ok: true, seq: seq2, position };
@@ -8211,38 +8477,6 @@ async function replaceEntryPath(floor, swipeId, hash, generationId, nextPath) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-async function shiftSlotSeqAfterInsert(floor, swipeId, fromSeq) {
-  var _a;
-  const ctx = getContext();
-  const msg = (_a = ctx.chat) == null ? void 0 : _a[floor];
-  const extra = msg == null ? void 0 : msg.extra;
-  const store = extra == null ? void 0 : extra[BBI_IMAGE_EXTRA_KEY];
-  const buckets = store == null ? void 0 : store[String(swipeId)];
-  if (!buckets) return 0;
-  const next = JSON.parse(JSON.stringify(store));
-  const nextBuckets = next[String(swipeId)] ?? {};
-  let moved2 = 0;
-  for (const list of Object.values(nextBuckets)) {
-    if (!Array.isArray(list)) continue;
-    for (let i = 0; i < list.length; i += 1) {
-      const entry = list[i];
-      const seq2 = typeof entry.slotSeq === "number" ? entry.slotSeq : 0;
-      if (seq2 < fromSeq) continue;
-      list[i] = { ...entry, slotSeq: seq2 + 1 };
-      moved2 += 1;
-    }
-  }
-  if (!moved2 || !extra) return 0;
-  extra[BBI_IMAGE_EXTRA_KEY] = next;
-  try {
-    if (typeof ctx.saveChat === "function") await ctx.saveChat();
-  } catch {
-    extra[BBI_IMAGE_EXTRA_KEY] = store;
-    return 0;
-  }
-  await refreshFloor(ctx, floor, msg);
-  return moved2;
-}
 function sceneFromSegment(segment) {
   const context = getSurroundingContext(segment, 1);
   return {
@@ -8261,6 +8495,7 @@ async function runIllustration(task, ctx, deps) {
   const cast = readCastContext(((_a = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _a.speaker) ?? "");
   const libraryBlock = buildLibraryBlock(characters.characters);
   const castBlock = buildCastBlock(cast);
+  const book = readBookRoles(floor, segment.text, readPersonaName());
   if (!libraryBlock) {
     recordNotice({
       mode: "illustration",
@@ -8277,6 +8512,7 @@ async function runIllustration(task, ctx, deps) {
       includeNl: wantNl,
       includeNegative: true
     },
+    ...book ? { bookBlock: book.text } : {},
     ...libraryBlock ? { libraryBlock } : {},
     ...castBlock ? { castBlock } : {},
     caller: makeModeLlmCaller(deps.fullSettings, "illustration"),
@@ -8291,7 +8527,9 @@ async function runIllustration(task, ctx, deps) {
     ...seg,
     chinese: seg.chinese ?? []
   }));
-  const prompt = composeEnglishPrompt(tagSegments);
+  const nativeCharacters = (await readBackendState()).supportsCharacters !== false;
+  const split = splitSegments(tagSegments, nativeCharacters);
+  const prompt = split.base;
   if (!prompt.trim()) throw new Error("组装后的英文 prompt 为空。");
   ctx.report({ stage: "generating" });
   const tag = buildBbiTag({
@@ -8300,6 +8538,7 @@ async function runIllustration(task, ctx, deps) {
     // 却会留在正文里被后续「改词」看到，误导以为这张图带自然语言。
     ...wantNl && plan.data.nl ? { nl: plan.data.nl } : {},
     ...plan.data.negative ? { negative: plan.data.negative } : {},
+    ...split.characters.length ? { characters: split.characters } : {},
     size: plan.data.size === "landscape" ? "landscape" : "portrait"
   });
   const hash = promptHash(tag);
@@ -8393,7 +8632,7 @@ function cardFailureMessage(result) {
   return "正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。";
 }
 async function runComic(task, ctx, deps) {
-  var _a, _b;
+  var _a, _b, _c;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
@@ -8408,6 +8647,15 @@ async function runComic(task, ctx, deps) {
   const wantComicNl = nlForMode(deps.fullSettings, "comic");
   ctx.report({ stage: "reading" });
   const characters = await getCharacters(floor);
+  const comicNativeCharacters = (await readBackendState()).supportsCharacters !== false;
+  const comicBook = readBookRoles(floor, segment.text, readPersonaName());
+  const comicLibrary = buildLibraryBlock(characters.characters);
+  const comicCast = buildCastBlock(readCastContext(((_c = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _c.speaker) ?? ""));
+  const comicBlocks = {
+    ...comicBook ? { bookBlock: comicBook.text } : {},
+    ...comicLibrary ? { libraryBlock: comicLibrary } : {},
+    ...comicCast ? { castBlock: comicCast } : {}
+  };
   const planOptions = {
     panelMode: true,
     panelLayout: layout,
@@ -8420,7 +8668,8 @@ async function runComic(task, ctx, deps) {
     // 但它同样是方案的属性：方案没有自然语言通道时，漫画只能靠 tags + panels 表达。
     nl: wantComicNl,
     backend: "nai",
-    charPrompts: false,
+    // 我们确实会给每个角色单独一块（<characters>），所以把「分格图不要写 pos」那条也带上
+    charPrompts: comicNativeCharacters,
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
     panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage)
@@ -8429,6 +8678,7 @@ async function runComic(task, ctx, deps) {
     scene: sceneFromSegment(segment),
     characters: characters.characters,
     options: planOptions,
+    ...comicBlocks,
     caller: makeModeLlmCaller(deps.fullSettings, "comic"),
     promptOverrides: deps.fullSettings.promptOverrides
   });
@@ -8441,9 +8691,10 @@ async function runComic(task, ctx, deps) {
     plan = await generateComicPlan({
       scene: sceneFromSegment(segment),
       characters: characters.characters,
+      ...comicBlocks,
       options: {
         ...planOptions,
-        extraInstruction: "上一次的 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。这次 page.tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。"
+        extraInstruction: "上一次的 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。这次 page.tags 必须写出：谁在做什么、在哪里、画面里的关键物件（外貌由角色库提供，不要写进 page.tags）。"
       },
       caller: makeModeLlmCaller(deps.fullSettings, "comic"),
       promptOverrides: deps.fullSettings.promptOverrides
@@ -8459,7 +8710,10 @@ async function runComic(task, ctx, deps) {
   for (const page of plan.data) {
     if (ctx.signal.aborted) return;
     ctx.report({ stage: "generating", page: page.pageIndex + 1, totalPages });
-    const composed = composePagePrompt(page, characters.characters);
+    const composed = composePagePrompt(page, characters.characters, {
+      nativeCharacters: comicNativeCharacters,
+      selectedText: segment.text
+    });
     const enforced = enforceForGeneration({
       prompt: composed.prompt,
       nl: composed.nl,
@@ -8470,6 +8724,7 @@ async function runComic(task, ctx, deps) {
     const tag = buildBbiTag({
       prompt: enforced.prompt,
       ...wantComicNl && enforced.nl ? { nl: enforced.nl } : {},
+      ...composed.characters.length ? { characters: composed.characters } : {},
       size: "portrait"
     });
     const hash = promptHash(tag);

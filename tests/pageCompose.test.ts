@@ -70,28 +70,103 @@ describe('collectPageDialogue', () => {
 });
 
 describe('composePagePrompt', () => {
-  it('页级 tags 优先，并补上角色库外貌', () => {
+  it('页级 tags 只做 Base，角色外貌走 characters（不再并进 Base）', () => {
     const p = page({ tags: '2boys, corridor, walking' });
-    const out = composePagePrompt(p, library);
-    expect(out.prompt).toContain('2boys');
-    expect(out.prompt).toContain('white hair');
+    const out = composePagePrompt(p, library, { nativeCharacters: true });
+    expect(out.prompt).toBe('2boys, corridor, walking');
+    // 外貌在各自那一块，Base 里一个外貌词都不该有
+    expect(out.prompt).not.toContain('white hair');
+    expect(out.characters).toHaveLength(1);
+    expect(out.characters[0].name).toBe('五条悟');
+    expect(out.characters[0].tag).toContain('white hair');
     expect(out.nl).toContain('A two-panel comic page');
   });
 
-  it('没有页级 tags 时合并各格，且不会把外貌写两遍', () => {
+  it('后端不支持原生角色通道时退回合并（否则外貌会整个丢）', () => {
+    const p = page({ tags: '2boys, corridor, walking' });
+    const out = composePagePrompt(p, library, { nativeCharacters: false });
+    expect(out.prompt).toContain('white hair');
+    expect(out.characters).toEqual([]);
+  });
+
+  it('没有页级 tags 时合并各格，角色外貌仍单独成块', () => {
     const p = page({
       panels: [
         { index: 0, title: '', characters: [{ name: '五条悟', act: '' }], mood: '', tags: '1boy, white hair' },
         { index: 1, title: '', characters: [{ name: '五条悟', act: '' }], mood: '', tags: '1boy, smile' },
       ],
     });
-    const out = composePagePrompt(p, library);
-    expect(out.prompt).toBe('1boy, white hair, smile, sunglasses');
+    const out = composePagePrompt(p, library, { nativeCharacters: true });
+    expect(out.prompt).toBe('1boy, white hair, smile');
+    expect(out.characters[0].tag).toContain('white hair');
+    expect(out.characters[0].tag).toContain('sunglasses');
   });
 
   it('页级 nl 存在时原样使用（不再拼兜底句）', () => {
     const p = page({ nl: 'A custom layout sentence. In the upper panel, something.' });
     expect(composePagePrompt(p, library).nl).toBe('A custom layout sentence. In the upper panel, something.');
+  });
+
+  it('模型漏写 panels[].characters 时也要补出角色块（否则外貌只能并回 Base）', () => {
+    // 这就是用户截图那一页：page.tags 里全是外貌词，characters 一个都没写
+    const p = page({
+      tags: '1girl, 1boy, sitting across from each other, white tablecloth, holding open menu',
+      panels: [
+        { index: 0, title: '', characters: [], mood: '', tags: '1girl, 1boy, sitting' },
+        { index: 1, title: '', characters: [], mood: '', tags: '1girl, smile' },
+      ],
+    });
+    const cast: BaiBaiCharacter[] = [
+      { name: '小雪', tag: '1girl, long brown hair, wine red eyes' } as BaiBaiCharacter,
+      { name: '柏宝', tag: '1boy, short blond hair, emerald green eyes' } as BaiBaiCharacter,
+    ];
+    const out = composePagePrompt(p, cast, { nativeCharacters: true, selectedText: '小雪与柏宝对坐' });
+    expect(out.characters).toHaveLength(2);
+    expect(out.characters.map(c => c.name)).toEqual(['小雪', '柏宝']);
+    // Base 一个字都不许动：外貌已经各自归位
+    expect(out.prompt).toBe(p.tags);
+  });
+
+  it('补人时优先补本页正文里点名的人，而不是库里排在前面的', () => {
+    const p = page({ tags: '2boys, corridor', panels: [{ index: 0, title: '', characters: [], mood: '', tags: '' }] });
+    const cast: BaiBaiCharacter[] = [
+      { name: '路人', tag: '1boy, black hair' } as BaiBaiCharacter,
+      { name: '柏宝', tag: '1boy, blond hair' } as BaiBaiCharacter,
+      { name: '第三个人', tag: '1boy, red hair' } as BaiBaiCharacter,
+    ];
+    const out = composePagePrompt(p, cast, { nativeCharacters: true, selectedText: '柏宝推门进来' });
+    expect(out.characters.map(c => c.name)).toEqual(['柏宝']);
+  });
+
+  it('库里只有一个人（单主角固定阵容）时，即使正文没点名也带上', () => {
+    const p = page({ tags: '1girl, classroom, sitting', panels: [{ index: 0, title: '', characters: [], mood: '', tags: '' }] });
+    const out = composePagePrompt(p, library, { nativeCharacters: true, selectedText: '' });
+    // library 里是五条悟（1boy），页级写的是 1girl——名字对不上就不该硬塞
+    expect(out.characters.map(c => c.name)).toEqual(['五条悟']);
+  });
+
+  it('模型写了三个人就三个都留着（宁可多一块，也不要有人没外貌）', () => {
+    const p = page({
+      tags: '3boys, room',
+      panels: [
+        {
+          index: 0,
+          title: '',
+          characters: [{ name: 'A', act: '' }, { name: 'B', act: '' }, { name: 'C', act: '' }],
+          mood: '',
+          tags: '',
+        },
+      ],
+    });
+    const cast: BaiBaiCharacter[] = ['A', 'B', 'C'].map(name => ({ name, tag: `1boy, ${name} hair` }) as BaiBaiCharacter);
+    expect(composePagePrompt(p, cast).characters.map(c => c.name)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('代码自己补人时最多补 2 位（不把库里的路人甲乙也塞进画面）', () => {
+    const p = page({ tags: '2girls, room', panels: [{ index: 0, title: '', characters: [], mood: '', tags: '' }] });
+    const cast: BaiBaiCharacter[] = ['甲', '乙', '丙'].map(name => ({ name, tag: `1girl, ${name} hair` }) as BaiBaiCharacter);
+    const out = composePagePrompt(p, cast, { nativeCharacters: true, selectedText: '甲、乙、丙三个人都在' });
+    expect(out.characters.map(c => c.name)).toEqual(['甲', '乙']);
   });
 });
 

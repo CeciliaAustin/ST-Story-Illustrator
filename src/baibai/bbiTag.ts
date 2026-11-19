@@ -38,11 +38,26 @@ const CARD_HINT_SELECTOR = '.bbi-figure__hint';
 // tag 组装
 // ============================================================
 
+export interface BbiTagCharacter {
+  name: string;
+  tag: string;
+  nl?: string;
+}
+
 export interface BbiTagInput {
   prompt: string;
   nl?: string;
   negative?: string;
   size?: 'portrait' | 'landscape';
+  /**
+   * 每个可见角色自己的外貌/服装/表情/动作（柏宝绘的 `<characters>` 子标签）。
+   *
+   * 这是 NAI 4.5/V5 的**原生 Character Prompts** 通道：柏宝绘把它 JSON 化后放进
+   * `<characters>…</characters>`，卡片再原样透传到 `v4_prompt.caption.char_captions`。
+   * 有了它，Base 就不用（也不该）再写任何单个角色的外貌——
+   * 这正是柏宝绘规范里「Base 只写全局，个人外貌写进各自的 character prompt」那条。
+   */
+  characters?: readonly BbiTagCharacter[];
 }
 
 /**
@@ -58,6 +73,28 @@ export function sanitizeTagText(value: unknown): string {
     .trim();
 }
 
+/**
+ * `<characters>` 子标签（柏宝绘 parseImageTagContent 用 JSON.parse 读它）。
+ *
+ * 序列化顺序与柏宝绘一致：name / tag / nl（nl 为空就整个键不写）。
+ * 上限 32 项也是它的解析上限——多了会被它自己截断，这里先截保持一致。
+ */
+export function serializeCharacterPrompts(
+  characters: readonly BbiTagCharacter[] | undefined,
+): string {
+  const clean = (characters ?? [])
+    .map(c => {
+      const name = sanitizeTagText(c.name);
+      const tag = sanitizeTagText(c.tag);
+      const nl = sanitizeTagText(c.nl);
+      return { name, tag, ...(nl ? { nl } : {}) };
+    })
+    .filter(c => c.name && c.tag)
+    .slice(0, 32);
+  if (!clean.length) return '';
+  return `<characters>${JSON.stringify(clean)}</characters>`;
+}
+
 /** 组装一条 `<bbi_image>` tag（插画形态，格式与柏宝绘 serializeImageTag 一致）。 */
 export function buildBbiTag(input: BbiTagInput): string {
   const prompt = sanitizeTagText(input.prompt);
@@ -66,7 +103,18 @@ export function buildBbiTag(input: BbiTagInput): string {
   const size = input.size === 'landscape' ? 'landscape' : 'portrait';
   const nlPart = nl ? `<nl>${nl}</nl>` : '';
   const negativePart = negative ? `<negative>${negative}</negative>` : '';
-  return `<bbi_image>${prompt}${nlPart}${negativePart}<size>${size}</size></bbi_image>`;
+  const charactersPart = serializeCharacterPrompts(input.characters);
+  return `<bbi_image>${prompt}${nlPart}${negativePart}${charactersPart}<size>${size}</size></bbi_image>`;
+}
+
+/** 最后一条生图 tag 的结束位置（没有 tag 时 0）。 */
+export function lastImageTagEnd(mes: string): number {
+  const text = String(mes ?? '');
+  const re = /<bbi_image>[\s\S]+?<\/bbi_image>/gi;
+  let end = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) end = match.index + match[0].length;
+  return end;
 }
 
 /** 某个位置之后是否已经有生图 tag（决定新 tag 能不能插在这里）。 */
@@ -152,12 +200,17 @@ export async function insertImageTag(input: InsertTagInput): Promise<InsertTagRe
 
   // tag 独占一行，前后留空行，避免与正文粘连（柏宝绘的剔除逻辑按「整行」还原）
   const snippet = `\n\n${tag}\n`;
-  // 位置：插在选段所在**行之后**，不再因为「后面已经有图」就整段挪到楼末。
+  // 位置规则（这条关系到「插图与漫画能不能共存」）：
   //
-  // 旧规矩（有 tag 就追加到末尾）是为了保住已有卡片的槽位序号：柏宝绘按
-  // (promptHash, slotSeq) 找自己的图，序号就是 tag 在正文里的顺序。插到前面却不挪序号，
-  // 旧图就会被判成「提示词已改」而显示未生成。现在改成**插完把后面的序号整体 +1**
-  // （shiftSlotSeqAfterInsert），位置与旧图都不吃亏。
+  // 柏宝绘的卡片按 (swipeId, promptHash(tag 原文), **seq**) 找自己的图，
+  // seq 就是 tag 在正文里的出现顺序。**把新 tag 插到旧 tag 前面，会让后面每一张的 seq
+  // 整体后移**，它们的 slotSeq 却还停在旧值 → 旧卡被判成「提示词已改」而显示未生成。
+  // 以前靠「插完把 slotSeq 整体 +1」补救，但那段补偿跑在 saveChat 之后、
+  // 还要再写一次存档：中间任何一步失败（或柏宝绘那一刻正在写 extra），
+  // 就留下一半挪了一半没挪的序号——用户看到的就是「前一张被后一张顶掉了」。
+  //
+  // 现在的规则简单到不需要补偿：**锚点必须落在最后一张图之后，否则追加到末尾**。
+  // 序号永远只增不改，插图与漫画可以各插各的、互不影响。
   //
   // 定位用宽松匹配而不是 indexOf：划线拿到的是渲染后的文本，mes 里带 Markdown
   // 强调符与多余空行，逐字比一定对不上，以前就一路落到「追加到本楼末尾」
@@ -165,23 +218,24 @@ export async function insertImageTag(input: InsertTagInput): Promise<InsertTagRe
   const range = anchorText && anchorText.length >= 2
     ? findAnchorRange(currentText, anchorText)
     : null;
+  const anchorAt = range ? lineEndAfter(currentText, range.end) : -1;
+  const lastTagEnd = lastImageTagEnd(currentText);
   let nextText: string;
   let position: 'after-anchor' | 'appended';
   let insertAt: number;
-  if (range) {
+  if (anchorAt >= 0 && anchorAt >= lastTagEnd) {
     // 插在选段所在**行之后**：插在字中间会把一句话劈成两段（还带 \n\n 断段）
-    insertAt = lineEndAfter(currentText, range.end);
+    insertAt = anchorAt;
     const head = currentText.slice(0, insertAt).replace(/[ \t]+$/, '');
     nextText = head + snippet + currentText.slice(insertAt);
     position = 'after-anchor';
   } else {
+    // 锚点在旧图之前（或找不到锚点）：只能追加。位置略靠后，但所有旧卡的序号不变。
     insertAt = currentText.length;
     nextText = `${currentText.trimEnd()}${snippet}`;
     position = 'appended';
   }
   const seq = countImageTags(currentText.slice(0, insertAt));
-  // 插点后面原来有几张图：这些卡的序号要整体后移，否则它们会「图还在、卡片说没生成」
-  const tagsAfterInsert = countImageTags(currentText.slice(insertAt));
 
   msg.mes = nextText;
   const swipes = msg.swipes;
@@ -197,10 +251,6 @@ export async function insertImageTag(input: InsertTagInput): Promise<InsertTagRe
       swipes[swipeId] = currentText;
     }
     return { ok: false, reason: 'save-failed' };
-  }
-
-  if (position === 'after-anchor' && tagsAfterInsert > 0) {
-    await shiftSlotSeqAfterInsert(floor, swipeId, seq);
   }
 
   await refreshFloor(ctx, floor, msg);
@@ -393,6 +443,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * @deprecated 插入逻辑已改成「锚点必须在最后一张图之后，否则追加」，
+ * **序号永远不会平移**，所以不再需要这段补偿。保留只为兼容旧调用方；
+ * 新代码不要再用它——它会把本来正确的序号改错。
+ *
  * 在正文中间插入新 tag 之后，把这一楼同 swipe 下序号 >= fromSeq 的旧结果整体后移一位。
  *
  * 为什么必须做：柏宝绘的卡片按 (promptHash, slotSeq) 找自己的图，slotSeq 就是 tag

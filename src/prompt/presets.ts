@@ -61,7 +61,7 @@ const COMMON_RULES = [
   OUTFIT_RULE,
   'characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other\'s sleeve, leaning against the door, holding a broken cup）。',
   '只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。',
-  'characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。',
+  'characters 最多 2 项（同框超过两人时，只保留主角与核心互动对象；宁可裁人，也不要让人残缺）。两人互动时主动方和被动方 act 必须分开写。',
   'characters[].name **必须照抄【角色固定外貌库】里的名字**。正文里用「你」「他」「那个金发男生」或另一个叫法时，先判断指的是库里哪一位，再写库里的名字——名字写错就等于这个人没有外貌，会被画成路人。',
   '{{#nl}}nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。{{/nl}}',
   'tags 里必须交代这三件事：① 人数与互动；② 地点或环境（classroom / dormitory / arched corridor / street / outdoors）；③ 光线或时间（sunlight / backlighting / golden hour / night / indoor lighting）。',
@@ -86,11 +86,13 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}]{{#nl}},"nl":"可选英文自然语言描述"{{/nl}},"negative":"可选英文负面词","size":"portrait|landscape"}。
 3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
 4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
+4a. **Base 与角色块是硬边界**：scene / global 段里绝对不要出现任何单个角色的外貌、服装、发色、瞳色、体型——这些只属于该角色的 character 段。两边都写，等于把两套头发两套衣服摊给同框所有人，模型只能随机分配。
+4b. scene 段至少 5 个 tag，必须包含：一个景别（close-up / upper body / medium shot / full body / wide shot）、地点、光线或时间、以及人与人之间的共享互动。
 5. 一次只策划一个明确的瞬间，不要描述整段剧情的时间跨度。
 6. 场景与动作必须以给定剧情和上下文为依据，不得凭空添加关键剧情事实。
 7. segment 按 order 从小到大排列；无需的字段直接省略，不要填空字符串或空数组。
 8. 若剧情里的名场面适合漫画分镜，仍按单幅插画输出（漫画由专门的模式处理）。
-9. 选段里出场的**每一个人**都要有自己的 character 段：name 照抄角色库里的名字，外貌照抄该条目的 tag（不改写、不合并）。漏掉一个人，图上就少一个人。
+9. **画进这张图的每一个人**都要有自己的 character 段：name 照抄角色库里的名字，外貌照抄该条目的 tag（不改写、不合并）。漏掉一个人，图上就少一个人；不打算画进来的人不要写。
 10. {{#nl}}nl 必须写：英文 1~2 句，把「谁、在哪里、正在做什么」串起来——柏宝绘的 nl 通道决定这些细节能不能真的落在画面上。{{/nl}}{{^nl}}不要生成 nl 字段：这套出图方案不需要自然语言通道，写了反而会稀释 tag 权重。{{/nl}}
 {{#hasFlags}}
 补充约束：
@@ -104,7 +106,7 @@ const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布
 结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"英文分区描述"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
 硬要求：
 1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
-2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
+2. page.tags 必须写出：在场的人**在做什么**（共享动作与互动）、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。**单个角色的外貌、发色、瞳色、服装一律不写进 page.tags**——它们由 panels[].characters[].name 对应的角色库条目提供，代码会拼成每个角色自己的提示词；两边都写会把两套衣服糊给同框所有人。
 3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
 4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），{{#nl}}各格远近只写在 nl 里{{/nl}}{{^nl}}各格远近只能用构图 tag 区分{{/nl}}。
 5. {{#nl}}page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}

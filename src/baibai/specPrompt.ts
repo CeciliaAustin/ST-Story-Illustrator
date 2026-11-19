@@ -69,31 +69,41 @@ export function expandNlSections(text: string, nl: boolean): string {
 }
 
 /**
- * 输出契约优先声明。
+ * 输出契约声明。
  *
- * 规范的示例 JSON 用的是柏宝绘自己的字段（position / tag / characters[].tag / size），
- * 而我们每个模式要的字段不一样。不声明清楚，模型会照着规范的示例输出，
- * 我们的解析器就什么都拿不到。分工写明白：**格式听任务协议，画面内容听规范。**
+ * 规范的示例 JSON 用的是柏宝绘自己的信封（position / images / changes），
+ * 而我们每个模式要的信封不一样（我们不需要 position，插图要 negative 等）。
+ * 这里只说清「信封听谁的」，绝不能说「规范里那些字段别照抄」——
+ * **Base 与角色块的分工本身就是规范的核心条款**，顶掉它等于把规范废掉。
  */
 const CONTRACT_PRIORITY =
-  '【本任务的输出契约优先】\n' +
-  '上面是柏宝绘的写词规范，它约束的是**画什么、怎么写词**：人物与服装怎么取证、' +
-  '什么算自创、连续场景怎么保持同一套衣服、Base 与角色块怎么分工。\n' +
-  '规范里出现的示例 JSON（position / tag / characters[].tag / nl / size 等）只是柏宝绘自己的字段，' +
-  '**不要照抄那些字段名**：本次输出的 JSON 只按下面【任务协议】里的字段来，' +
-  '不要输出 position、size，也不要把整段 JSON 塞进 tag。\n' +
-  '冲突时：**格式以任务协议为准，画面内容以规范为准。**';
+  '【本任务的输出信封】\n' +
+  '上面的规范管的是**画什么、怎么写词**：人物与服装怎么取证、什么算自创、' +
+  '连续场景怎么保持同一套衣服、Base 与每个角色块怎么分工。这些规则全部有效。\n' +
+  '信封（要不要 position / images / changes，有没有 negative、size 怎么给）以【任务协议】为准；' +
+  '**但「Base 只写全局内容、单个角色的外貌服装表情动作只写进该角色自己那一块」这条分工不受影响**。\n' +
+  '不要把整段 JSON 塞进 tag，也不要输出协议里没有的字段。';
 
-/** 把三份提示词拼成一段可前置到 system 的文本（纯函数）。 */
-export function buildSpecPreamble(set: BaiBaiPromptSet, options: { nl: boolean }): string {
+/** 破限词 + 规范（压在最前面，柏宝绘的 system 顺序就是这样）。 */
+export function buildSpecHead(set: BaiBaiPromptSet, options: { nl: boolean }): string {
   const parts: string[] = [];
   if (set.jailbreak) parts.push(expandNlSections(set.jailbreak, options.nl));
   if (set.spec) parts.push(expandNlSections(set.spec, options.nl));
-  if (set.thinking) parts.push(expandNlSections(set.thinking, options.nl));
-  const body = parts.map(p => p.trim()).filter(Boolean).join('\n\n');
+  return parts.map(p => p.trim()).filter(Boolean).join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** 思维链（压在最后，紧跟任务协议之后——柏宝绘就是这么排的）。 */
+export function buildThinking(set: BaiBaiPromptSet, options: { nl: boolean }): string {
+  return set.thinking
+    ? expandNlSections(set.thinking, options.nl).replace(/\n{3,}/g, '\n\n').trim()
+    : '';
+}
+
+/** 把三份提示词拼成一段可前置到 system 的文本（纯函数）。 */
+export function buildSpecPreamble(set: BaiBaiPromptSet, options: { nl: boolean }): string {
+  const body = buildSpecHead(set, options);
   if (!body) return '';
-  // 宏展开后可能留下连续空行，折叠掉（和柏宝绘同一手）
-  return `${body.replace(/\n{3,}/g, '\n\n').trim()}\n\n${CONTRACT_PRIORITY}`;
+  return `${body}\n\n${CONTRACT_PRIORITY}`;
 }
 
 /** 读当前柏宝绘设置里的提示词（每次现读，用户改了立刻生效）。 */
@@ -108,12 +118,18 @@ export function specPreambleFor(nl: boolean): string {
 }
 
 /**
- * 把规范压在 system 前面（所有「写 tag / 写 nl」的调用都走这里）。
+ * 按柏宝绘的 system 顺序把规范压上去：
  *
- * 顺序不能反：规范在前、任务协议在后，模型才是「先读规范再照格式交作业」；
- * 反过来它会先被格式束缚，把规范里的取证规则当耳边风。
+ *   破限 → 规范 → **任务协议** → 思维链
+ *
+ * 思维链必须压在最后：它是「输出前检查清单」，离输出越近越生效；以前把它放在
+ * 任务协议前面（其实和规范挤在同一段里），模型读完规范就被我们自己的协议打断，
+ * 检查清单等于没读——用户看到的正是「没走我的思维链」。
  */
 export function withSpecPreamble(system: string, nl: boolean): string {
-  const preamble = specPreambleFor(nl);
-  return preamble ? `${preamble}\n\n------\n\n${system}` : system;
+  const set = readPromptSet();
+  const head = buildSpecPreamble(set, { nl });
+  const thinking = buildThinking(set, { nl });
+  const middle = head ? `${head}\n\n------\n\n${system}` : system;
+  return thinking ? `${middle}\n\n------\n\n${thinking}` : middle;
 }

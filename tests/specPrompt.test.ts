@@ -72,20 +72,21 @@ describe('buildSpecPreamble', () => {
     expect(buildSpecPreamble({ jailbreak: '', spec: '', thinking: '' }, { nl: true })).toBe('');
   });
 
-  it('带规范时，末尾必须有「输出契约优先」，防止照抄规范里的示例字段', () => {
+  it('带规范时，末尾声明信封归属，但不得否掉 Base/角色块分工', () => {
     const out = buildSpecPreamble({ jailbreak: '', spec: '规范正文', thinking: '' }, { nl: true });
     expect(out).toContain('规范正文');
-    expect(out).toContain('本任务的输出契约优先');
-    expect(out).toContain('不要输出 position');
+    expect(out).toContain('本任务的输出信封');
+    // 这条是规范的核心条款，绝不能告诉模型「别照抄」
+    expect(out).toContain('Base 只写全局内容');
+    expect(out).not.toContain('不要照抄那些字段名');
   });
 
-  it('顺序与柏宝绘一致：破限 → 规范 → 思维链', () => {
+  it('破限在规范之前', () => {
     const out = buildSpecPreamble(
-      { jailbreak: '破限', spec: '规范', thinking: '思维链' },
+      { jailbreak: '破限', spec: '规范', thinking: '' },
       { nl: true },
     );
     expect(out.indexOf('破限')).toBeLessThan(out.indexOf('规范'));
-    expect(out.indexOf('规范')).toBeLessThan(out.indexOf('思维链'));
   });
 });
 
@@ -108,12 +109,18 @@ describe('readPromptSet：真的从柏宝绘设置里读', () => {
   it('拼出来的前言能直接压在 system 前面', () => {
     const text = specPreambleFor(true);
     expect(text.startsWith('# NOVELAI V5')).toBe(true);
-    expect(text).toContain('本任务的输出契约优先');
+    expect(text).toContain('本任务的输出信封');
   });
 
-  it('规范在前、任务协议在后（顺序反了模型会只顾格式）', () => {
+  it('顺序与柏宝绘一致：破限 → 规范 → 任务协议 → 思维链', () => {
     const system = withSpecPreamble('【任务协议】只输出 JSON', true);
-    expect(system.indexOf('NOVELAI V5')).toBeLessThan(system.indexOf('【任务协议】'));
+    const spec = system.indexOf('NOVELAI V5');
+    const contract = system.indexOf('【任务协议】');
+    const thinking = system.indexOf('【输出前思考清单】');
+    expect(spec).toBeGreaterThanOrEqual(0);
+    expect(spec).toBeLessThan(contract);
+    // 思维链必须在协议之后：它是「输出前检查清单」，离输出越近越生效
+    expect(thinking).toBeGreaterThan(contract);
   });
 });
 

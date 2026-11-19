@@ -83,6 +83,8 @@ export interface RunOneInput {
    * 否则模型会写「Elias（他）」这类变体，出图时匹配不上角色库 → 没有外貌 tag。
    */
   roster?: string[];
+  /** 柏宝书角色参考（当前外貌、着装、状态） */
+  bookBlock?: string;
   /** 角色固定外貌库全文（发色/瞳色/体型…），柏宝绘自己出图时也是把它发进 prompt 的。 */
   libraryBlock?: string;
   /** 「谁是谁」：用户扮演谁 / 角色卡是谁。正文里的「你」靠它落到具体条目上。 */
@@ -212,6 +214,7 @@ export async function readTheater(
     dialogue: input.dialogue === true,
     nl: input.nl !== false,
     ...(input.roster?.length ? { roster: input.roster } : {}),
+    ...(input.bookBlock ? { bookBlock: input.bookBlock } : {}),
     ...(input.libraryBlock ? { libraryBlock: input.libraryBlock } : {}),
     ...(input.castBlock ? { castBlock: input.castBlock } : {}),
     ...(input.promptOverrides ? { promptOverrides: input.promptOverrides } : {}),

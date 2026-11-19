@@ -8,6 +8,8 @@
 
 import type { BaiBaiCharacter, ComicDialogue, ComicPagePlan, PanelLayout } from '../types';
 import { mergeCharacterTags } from './panelRelevance';
+import { characterPromptsFromLibrary, ensurePageCast } from './tagSplit';
+import type { BbiTagCharacter } from '../baibai/bbiTag';
 
 /** 四档版面的总述句（与 enforcePanelPrompt 的档位同义，供 nl 兜底用）。 */
 export const LAYOUT_NL_HEAD: Record<PanelLayout, string> = {
@@ -109,28 +111,59 @@ export interface ComposedPage {
   dialogue: ComicDialogue[];
   /** 各格短标题，印在卡片上（不是出图词） */
   panelTitles: string[];
+  /** 每个可见角色自己的提示词（NAI 原生 Character Prompts 通道） */
+  characters: BbiTagCharacter[];
 }
 
 /**
  * 一页 → 一次出图请求。
  *
- * - prompt：页级 tags（没有就合并各格）+ 角色库外貌兜底
+ * - prompt：页级 tags（没有就合并各格），**不再往里塞角色外貌**
+ * - characters：画面里出现过的角色，各自一条（外貌/固定着装来自角色库）
  * - nl：页级 nl（没有就按档位 + 各格 nl 拼）
  * - dialogue：页级台词（没有就取各格的）
+ *
+ * 为什么外貌要拆出去：柏宝绘的规范里 Base 只写人数、场景、构图、光线、共享互动，
+ * 「某个人的头发/衣服」必须写进他自己那一块。以前 mergeCharacterTags 把两个人
+ * 的发色、两套衣服全并进 Base —— 漫画页上人物越多越糊，正是用户看到的
+ * 「角色（柏宝绘角色库）这次没有带上任何角色外貌」+ Base 里却全是外貌词。
  */
 export function composePagePrompt(
   page: ComicPagePlan,
   characters: BaiBaiCharacter[] = [],
+  options: { nativeCharacters?: boolean; selectedText?: string } = {},
 ): ComposedPage {
   const base = String(page.tags ?? '').trim() || mergePanelTags(page);
   const names: string[] = [];
+  // 各格写了「这个人在做什么」：它属于这个人自己的角色块，不能丢，也不能进 Base
+  const acts = new Map<string, string[]>();
   for (const panel of page.panels ?? []) {
     for (const c of panel.characters ?? []) {
-      if (c?.name && !names.includes(c.name)) names.push(c.name);
+      if (!c?.name) continue;
+      if (!names.includes(c.name)) names.push(c.name);
+      const act = String(c.act ?? '').trim();
+      if (act) {
+        const list = acts.get(c.name) ?? [];
+        if (!list.includes(act)) list.push(act);
+        acts.set(c.name, list);
+      }
     }
   }
 
-  const prompt = mergeCharacterTags(base, names, characters);
+  // 模型漏写 panels[].characters 时补人：否则角色块空着，外貌只能并回 Base
+  //（= 「两套衣服糊在一个提示词里」的老毛病）
+  //
+  // 模型写了的名字**不裁**：裁掉的那个人会连外貌一起消失，比多一块提示词糟得多。
+  // 只有「代码自己补」时才按协议上限（2 人）收着补，免得把库里的路人甲乙也塞进画面。
+  const cast = names.length
+    ? names.slice(0, 6)
+    : ensurePageCast(page, characters, options.selectedText ?? '');
+  const native = options.nativeCharacters !== false;
+  const characterPrompts = native
+    ? characterPromptsFromLibrary(cast, characters, acts)
+    : [];
+  // 拆得出来就拆；拆不出来（角色库空 / 名字对不上）退回老口径，至少别丢外貌词
+  const prompt = characterPrompts.length ? base : mergeCharacterTags(base, cast, characters);
   const nl = String(page.nl ?? '').trim() || buildPageNl(page);
 
   return {
@@ -138,5 +171,6 @@ export function composePagePrompt(
     nl,
     dialogue: collectPageDialogue(page),
     panelTitles: (page.panels ?? []).map(p => p.title).filter(Boolean),
+    characters: characterPrompts,
   };
 }

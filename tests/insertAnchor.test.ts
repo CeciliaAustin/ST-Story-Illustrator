@@ -126,7 +126,9 @@ describe('insertImageTag：插在划线那一段下面', () => {
     expect(host.chat[0].mes.trimEnd().endsWith('</bbi_image>')).toBe(true);
   });
 
-  it('锚点后面已有图片 tag 时插在选段处，并把旧结果的槽位序号后移', async () => {
+  it('锚点落在旧图之前时改为追加，旧图的槽位序号一位不动', async () => {
+    // 这是「插图与漫画能不能共存」的核心：柏宝绘按 (hash, slotSeq) 认图，
+    // 把新 tag 插到旧 tag 前面会让旧的 seq 平移、slotSeq 却停在旧值 → 旧图被判未生成。
     const oldTag = TAG;
     const extra = { bbiImage: { '0': { h1: [{ generationId: 'g1', slotSeq: 0 }] } } };
     host.chat[0] = {
@@ -145,11 +147,36 @@ describe('insertImageTag：插在划线那一段下面', () => {
       anchorText: '他抬头。',
     });
 
-    // 位置在选段之后、旧图之前
-    expect(result).toMatchObject({ ok: true, position: 'after-anchor', seq: 0 });
+    // 旧图在前，锚点在它之前 → 只能追加；新 tag 拿到 seq=1
+    expect(result).toMatchObject({ ok: true, position: 'appended', seq: 1 });
     const mes = host.chat[0].mes;
-    expect(mes.indexOf(nextTag)).toBeLessThan(mes.indexOf(oldTag));
-    // 旧结果的序号后移一位，否则它会被判成「提示词已改」
-    expect(extra.bbiImage['0'].h1[0].slotSeq).toBe(1);
+    expect(mes.indexOf(oldTag)).toBeLessThan(mes.indexOf(nextTag));
+    // 旧结果序号不动，卡片仍是 ready
+    expect(extra.bbiImage['0'].h1[0].slotSeq).toBe(0);
+  });
+
+  it('锚点落在所有旧图之后时仍然插在选段处，且不改任何序号', async () => {
+    const oldTag = TAG;
+    const extra = { bbiImage: { '0': { h1: [{ generationId: 'g1', slotSeq: 0 }] } } };
+    host.chat[0] = {
+      mes: `他抬头。\n\n${oldTag}\n\n她低头。`,
+      swipes: [`他抬头。\n\n${oldTag}\n\n她低头。`],
+      swipe_id: 0,
+      extra,
+    } as (typeof host.chat)[number];
+
+    const nextTag = '<bbi_image>2girls<size>portrait</size></bbi_image>';
+    const result = await insertImageTag({
+      floor: 0,
+      chatId: 'c1',
+      swipeId: 0,
+      tag: nextTag,
+      anchorText: '她低头。',
+    });
+    expect(result).toMatchObject({ ok: true, position: 'after-anchor', seq: 1 });
+    const mes = host.chat[0].mes;
+    expect(mes.indexOf(oldTag)).toBeLessThan(mes.indexOf(nextTag));
+    expect(mes.indexOf(nextTag)).toBeLessThan(mes.indexOf('她低头。') + 20);
+    expect(extra.bbiImage['0'].h1[0].slotSeq).toBe(0);
   });
 });

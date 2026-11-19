@@ -23,6 +23,7 @@ import type {
 } from '../types';
 import { stripThinkingBlocks } from '../prompt/think';
 import { renderPromptDoc, type PromptOverrideMap } from '../prompt/presets';
+import { characterTagOf } from './tagSplit';
 import {
   buildPanelRule,
   normalizePanelLayout,
@@ -100,7 +101,8 @@ export function characterToSegment(
   order: number,
   includeChinese: boolean,
 ): PromptSegment | null {
-  const englishTags = String(character.tag ?? '').split(',').map(t => t.trim()).filter(Boolean);
+  // 用 characterTagOf：库里只有 desc/nl 的条目也算有外貌，不然这张图会少一个人
+  const englishTags = characterTagOf(character).split(',').map(t => t.trim()).filter(Boolean);
   if (englishTags.length === 0) return null;
   const cn = includeChinese && character.nl
     ? [character.nl.trim()]
@@ -161,6 +163,8 @@ export interface SceneInput {
 }
 
 export interface IllustrationContextBlocks {
+  /** 柏宝书角色参考：主角/NPC 的**当前**外貌、着装、状态（服装一致性的另一半） */
+  bookBlock?: string;
   /** 柏宝绘角色库全文（按字段渲染，含发色/瞳色/体型/固定着装） */
   libraryBlock?: string;
   /** 「谁是谁」：用户扮演谁、角色卡是谁 */
@@ -168,14 +172,17 @@ export interface IllustrationContextBlocks {
 }
 
 /**
- * 模型一个 character 段都没写时，由代码补上在场角色的固定外貌。
+ * 补全「漏写的角色段」。
  *
- * 「人物都没填」有一半不是模型懒得写，而是它把外貌散落进 scene 段、
- * 或者干脆只写 1boy/1girl。外貌是**可确定**的东西（柏宝绘角色库里就有），
- * 不该靠模型记性——柏宝绘自己在多角色时走的也是独立的 character 通道。
+ * 「人物都没填」有一半不是模型懒得写，而是它把外貌散落进 scene 段、或者只写 1boy/1girl。
+ * 外貌是**可确定**的东西（柏宝绘角色库里就有），不该靠模型记性——柏宝绘自己在多角色时
+ * 走的也是独立的 character 通道。
  *
- * 只在「一个 character 段都没有」时补，且只补选段里真的提到的人；
- * 一个都没提到时，库里只有 1~2 个人才全补（避免把无关的人画进来）。
+ * 规则（与模板里「characters 最多 2 项」一致）：
+ * 1. 模型已经写了的名字不再重复补；
+ * 2. 先补**选段里真的点名**、但没写段的人；
+ * 3. 一个都没点名时，库里只有 1~2 个人才全补（避免把无关的人硬塞进画面）；
+ * 4. 最多补到 2 个角色段。
  */
 export function ensureCharacterSegments(
   response: GeneratePromptResponse,
@@ -183,13 +190,30 @@ export function ensureCharacterSegments(
   selectedText: string,
   includeChinese: boolean,
 ): GeneratePromptResponse {
-  if (response.segments.some(seg => seg.source === 'character')) return response;
-  const usable = characters.filter(c => String(c.name ?? '').trim() && String(c.tag ?? '').trim());
+  const usable = characters.filter(c => String(c.name ?? '').trim() && characterTagOf(c));
   if (!usable.length) return response;
+
+  const existing = new Set(
+    response.segments
+      .filter(seg => seg.source === 'character')
+      .map(seg => String(seg.characterName ?? '').trim())
+      .filter(Boolean),
+  );
+  const room = Math.max(0, 2 - existing.size);
+  if (room === 0) return response;
+
   const text = String(selectedText ?? '');
-  const mentioned = usable.filter(c => text.includes(String(c.name).trim()));
-  const picked = mentioned.length ? mentioned : usable.length <= 2 ? usable : [];
+  const mentioned = usable.filter(c => {
+    const name = String(c.name).trim();
+    return !existing.has(name) && text.includes(name);
+  });
+  const picked = mentioned.length
+    ? mentioned.slice(0, room)
+    : existing.size === 0 && usable.length <= 2
+      ? usable.slice(0, room)
+      : [];
   if (!picked.length) return response;
+
   const segs: PromptSegment[] = [];
   picked.forEach((character, i) => {
     const seg = characterToSegment(character, i - picked.length, includeChinese);
@@ -205,6 +229,9 @@ export function buildIllustrationUserPrompt(
   blocks: IllustrationContextBlocks = {},
 ): string {
   const parts: string[] = [];
+  // 柏宝绘把柏宝书参考放在 user 消息最前面：它是「此刻穿什么、什么状态」的唯一来源。
+  // 放在正文之前，模型读到正文时已经知道每个人现在长什么样、穿着什么。
+  if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push('【本次画面主体（选段，必须以此为准）】\n' + scene.selectedText);
   if (scene.floorText) parts.push('【所在楼层全文（情境参考）】\n' + scene.floorText);
   if (scene.previousText) parts.push('【前文（仅补充，勿当成本画面正在发生的动作）】\n' + scene.previousText);
@@ -332,15 +359,24 @@ export function buildComicUserPrompt(
   scene: SceneInput,
   characters: BaiBaiCharacter[],
   extraInstruction?: string,
+  blocks: IllustrationContextBlocks = {},
 ): string {
   const parts: string[] = [];
+  if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push('【剧情（据此排分镜）】\n' + scene.selectedText);
   if (scene.floorText) parts.push('【所在楼层全文】\n' + scene.floorText);
   if (scene.previousText) parts.push('【前文（仅补充）】\n' + scene.previousText);
   if (scene.nextText) parts.push('【后文（仅补充）】\n' + scene.nextText);
-  if (characters.length > 0) {
-    const lines = characters.map(c => `- ${c.name}: ${c.tag ?? ''}${c.nl ? ` (${c.nl})` : ''}`);
-    parts.push('【在场角色（保持外貌一致）】\n' + lines.join('\n'));
+  if (blocks.castBlock) parts.push(blocks.castBlock);
+  // 角色库按字段渲染（发色/瞳色/体型/固定着装），比「名字: 一整串 tag」更抗空条目；
+  // 没有库时才退回短名单，并明说「没有数据」——模型才知道要按正文补，而不是编。
+  if (blocks.libraryBlock) {
+    parts.push(blocks.libraryBlock);
+  } else if (characters.length > 0) {
+    const lines = characters
+      .filter(c => !!String(c.name ?? '').trim())
+      .map(c => `- ${c.name}: ${c.tag || '（没有外貌数据，请按正文写具体）'}${c.nl ? ` (${c.nl})` : ''}`);
+    if (lines.length) parts.push('【在场角色（保持外貌一致）】\n' + lines.join('\n'));
   }
   if (extraInstruction) parts.push('【本次特别要求】\n' + extraInstruction);
   parts.push('请只输出一个 JSON 对象（pages 数组）；一页一张图，tag 写在 page.tags 上，nl 逐格分区写。');

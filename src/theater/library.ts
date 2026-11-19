@@ -45,7 +45,10 @@ export function formatLibraryEntry(entry: BaiBaiCharacter, locked = entry.scope 
   }
   const nl = String(entry.nl ?? '').trim();
   if (nl) parts.push(`外观句=${nl}`);
-  return `- ${entry.name}${locked ? '［全局］' : ''}: ${parts.join(', ') || '(本条目没有数据，请到柏宝绘补全)'}`;
+  const body = parts.join(', ');
+  // 空条目不是「这个人不存在」：条目是柏宝书/手动建的、还没填外貌而已。
+  // 明说「按正文补一次」，否则模型要么照抄空串，要么干脆不画这个人。
+  return `- ${entry.name}${locked ? '［全局］' : ''}: ${body || '（库中暂无外貌数据：请按正文/柏宝书为这一次补全，不要换成别人）'}`;
 }
 
 /**
@@ -62,7 +65,8 @@ export function buildLibraryBlock(entries: BaiBaiCharacter[]): string {
     '【角色固定外貌库 · 来自柏宝绘，只读】',
     '以下名字是**唯一合法**的 characters[].name。正文里的称呼与这里不同（「你」「Cecilia」「那个金发男生」）时，',
     '先判断指的是库里哪一位，再照抄库里的名字；判不出来才用正文叫法。',
-    '外貌（发色/瞳色/体型/标志特征/固定着装）由本库提供，**不要自己编**，也不要把外貌写进 tags。',
+    '外貌（发色/瞳色/体型/标志特征/固定着装）：库里有的**照抄、不要改写**；库里没有的按正文/柏宝书补一次，**不要换人**；',
+    '它只写进**该角色自己那一块**（characters[] 或 character 段），不要写进 Base / scene / page.tags。',
     ...lines,
   ].join('\n');
 }

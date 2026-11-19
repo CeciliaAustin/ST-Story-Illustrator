@@ -38,6 +38,8 @@ export interface TheaterPromptInput {
    * 名字对不上角色库，出图时就取不到那个人的外貌 tag（这是「人物不像」的常见来源）。
    */
   roster?: string[];
+  /** 柏宝书角色参考：主角/NPC 的当前外貌、着装、状态（服装一致性的另一半） */
+  bookBlock?: string;
   /** 角色固定外貌库全文（见 theater/library.ts）；有它时模型能看见发色瞳色，不再靠猜。 */
   libraryBlock?: string;
   /** 「谁是谁」：用户扮演谁、角色卡是谁（正文里的「你」才不会丢）。 */
@@ -88,7 +90,7 @@ export function buildTheaterPrompt(input: TheaterPromptInput): { system: string;
   // 角色库与「谁是谁」放进 system：它们是规则与参照，不是剧情正文。
   // 以前只给名字名单，模型看不到发色瞳色 → 名字对不上时它干脆自己编一个人，
   // 用户看到的就是「这人是谁」。柏宝绘自己的做法就是把整份库发进去照抄。
-  const reference = [input.castBlock, input.libraryBlock].filter(Boolean).join('\n\n');
+  const reference = [input.bookBlock, input.castBlock, input.libraryBlock].filter(Boolean).join('\n\n');
   if (reference) system = `${system}\n\n${reference}`;
 
   return {

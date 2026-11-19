@@ -27,10 +27,12 @@ import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment
 import { buildAnchor } from '../selection/anchor';
 import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
-import { saveChatSafe } from '../host/sillytavern';
+import { readBackendState } from '../baibai/imageAdapter';
+import { readBookRoles } from '../baibai/bookMemory';
+import { saveChatSafe, readPersonaName } from '../host/sillytavern';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { buildLibraryBlock, buildCastBlock, readCastContext } from '../theater/library';
-import { composeEnglishPrompt } from '../prompt/compose';
+import { splitSegments, characterPromptsFromLibrary } from '../manga/tagSplit';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { resolvePanelsPerPage } from '../manga/panelPlan';
 import { hasStoryContent } from '../manga/panelRelevance';
@@ -70,6 +72,9 @@ function sceneFromSegment(segment: StorySegment) {
   };
 }
 
+
+
+
 // ============================================================
 // 插画模式
 // ============================================================
@@ -91,6 +96,9 @@ async function runIllustration(
   const cast = readCastContext(segment.messages.find(m => !m.isUser)?.speaker ?? '');
   const libraryBlock = buildLibraryBlock(characters.characters);
   const castBlock = buildCastBlock(cast);
+  // 柏宝书给的是「此刻穿什么、什么状态」，与角色库的「固定外貌」互补；
+  // 正文里换过衣服、淋过雨、衣服破了，只有它知道。读不到就不发（不猜）。
+  const book = readBookRoles(floor, segment.text, readPersonaName());
   if (!libraryBlock) {
     recordNotice({
       mode: 'illustration',
@@ -110,6 +118,7 @@ async function runIllustration(
       includeNl: wantNl,
       includeNegative: true,
     },
+    ...(book ? { bookBlock: book.text } : {}),
     ...(libraryBlock ? { libraryBlock } : {}),
     ...(castBlock ? { castBlock } : {}),
     caller: makeModeLlmCaller(deps.fullSettings, 'illustration'),
@@ -126,7 +135,11 @@ async function runIllustration(
     ...seg,
     chinese: seg.chinese ?? [],
   }));
-  const prompt = composeEnglishPrompt(tagSegments);
+  // NAI 4.5/V5 有原生 Character Prompts：Base 只留全局，个人外貌走 <characters>。
+  // 旧版把所有段拼成一串塞进 Base，两个人的头发衣服全糊在一起——那正是「人物不像」的来源。
+  const nativeCharacters = (await readBackendState()).supportsCharacters !== false;
+  const split = splitSegments(tagSegments, nativeCharacters);
+  const prompt = split.base;
   if (!prompt.trim()) throw new Error('组装后的英文 prompt 为空。');
 
   ctx.report({ stage: 'generating' });
@@ -146,6 +159,7 @@ async function runIllustration(
     // 却会留在正文里被后续「改词」看到，误导以为这张图带自然语言。
     ...(wantNl && plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
+    ...(split.characters.length ? { characters: split.characters } : {}),
     size: plan.data.size === 'landscape' ? 'landscape' : 'portrait',
   });
   const hash = promptHash(tag);
@@ -271,6 +285,18 @@ async function runComic(
 
   ctx.report({ stage: 'reading' });
   const characters = await getCharacters(floor);
+  // NAI 4.5/V5 才有原生 Character Prompts；没有它时外貌只能并进 Base
+  const comicNativeCharacters = (await readBackendState()).supportsCharacters !== false;
+  // 与插图、与柏宝绘自己同一套取证：柏宝书当前状态 + 整份角色库 + 谁是谁。
+  // 漫画页人物最多，只发「名字: tag」时模型最容易自己编人。
+  const comicBook = readBookRoles(floor, segment.text, readPersonaName());
+  const comicLibrary = buildLibraryBlock(characters.characters);
+  const comicCast = buildCastBlock(readCastContext(segment.messages.find(m => !m.isUser)?.speaker ?? ''));
+  const comicBlocks = {
+    ...(comicBook ? { bookBlock: comicBook.text } : {}),
+    ...(comicLibrary ? { libraryBlock: comicLibrary } : {}),
+    ...(comicCast ? { castBlock: comicCast } : {}),
+  };
 
   const planOptions = {
     panelMode: true,
@@ -284,7 +310,8 @@ async function runComic(
     // 但它同样是方案的属性：方案没有自然语言通道时，漫画只能靠 tags + panels 表达。
     nl: wantComicNl,
     backend: 'nai' as const,
-    charPrompts: false,
+    // 我们确实会给每个角色单独一块（<characters>），所以把「分格图不要写 pos」那条也带上
+    charPrompts: comicNativeCharacters,
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
     panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
@@ -294,6 +321,7 @@ async function runComic(
     scene: sceneFromSegment(segment),
     characters: characters.characters,
     options: planOptions,
+    ...comicBlocks,
     caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
     promptOverrides: deps.fullSettings.promptOverrides,
   });
@@ -308,11 +336,12 @@ async function runComic(
     plan = await generateComicPlan({
       scene: sceneFromSegment(segment),
       characters: characters.characters,
+      ...comicBlocks,
       options: {
         ...planOptions,
         extraInstruction:
           '上一次的 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。' +
-          '这次 page.tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。',
+          '这次 page.tags 必须写出：谁在做什么、在哪里、画面里的关键物件（外貌由角色库提供，不要写进 page.tags）。',
       },
       caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
       promptOverrides: deps.fullSettings.promptOverrides,
@@ -335,7 +364,10 @@ async function runComic(
     if (ctx.signal.aborted) return;
     ctx.report({ stage: 'generating', page: page.pageIndex + 1, totalPages });
 
-    const composed = composePagePrompt(page, characters.characters);
+    const composed = composePagePrompt(page, characters.characters, {
+      nativeCharacters: comicNativeCharacters,
+      selectedText: segment.text,
+    });
     const enforced = enforceForGeneration({
       prompt: composed.prompt,
       nl: composed.nl,
@@ -349,6 +381,7 @@ async function runComic(
     const tag = buildBbiTag({
       prompt: enforced.prompt,
       ...(wantComicNl && enforced.nl ? { nl: enforced.nl } : {}),
+      ...(composed.characters.length ? { characters: composed.characters } : {}),
       size: 'portrait',
     });
     const hash = promptHash(tag);

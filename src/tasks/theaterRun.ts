@@ -20,6 +20,8 @@ import { baiBaiAdapter, readBackendState } from '../baibai/imageAdapter';
 import { makeModeLlmCaller } from '../manga/planGenerator';
 import { runTheaterOne, type LookReader } from '../theater/runtime';
 import { buildCastBlock, buildLibraryBlock, readCastContext } from '../theater/library';
+import { readBookRoles } from '../baibai/bookMemory';
+import { readPersonaName } from '../host/sillytavern';
 import { recordImageLog, recordLlmError, recordNotice } from '../log/imageLog';
 import { bakeDialogueIntoImage } from '../manga/bubbleBake';
 import type { StatusLine } from '../types';
@@ -198,6 +200,9 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
   const cast = readCastContext(input.characterName);
   const libraryBlock = buildLibraryBlock(characters.characters);
   const castBlock = buildCastBlock(cast);
+  // 柏宝书：这一楼每个人当前穿什么、什么状态。角色库只有「固定着装」，
+  // 正文里换装/淋雨/破损只有柏宝书记得住——服装一致性缺了它就对不上。
+  const book = readBookRoles(floor, input.body, readPersonaName());
 
   // 空库不是「小事」：读剧情时模型没有任何外貌可抄，出图只能自己编一个人，
   // 用户看到的就是「这人是谁」。必须明说，别让它看起来像随机的 bug。
@@ -226,6 +231,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     roster: characters.characters.map(c => c.name),
     // 要不要写 nl 看这套方案自己的开关（NAI4 一律 false；4.5/V5 跟方案面板走）
     nl: nlForMode(settings, mode),
+    ...(book ? { bookBlock: book.text } : {}),
     ...(libraryBlock ? { libraryBlock } : {}),
     ...(castBlock ? { castBlock } : {}),
     ...(settings.promptOverrides ? { promptOverrides: settings.promptOverrides } : {}),
