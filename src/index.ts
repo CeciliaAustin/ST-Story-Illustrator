@@ -84,7 +84,7 @@ function initQueue(): void {
     fullSettings: settings,
   });
   queue = new TaskQueue(runner, {
-    taskTimeoutMs: 5 * 60 * 1000,
+    taskTimeoutMs: 12 * 60 * 1000,
     onStatusChange: (task, status) => {
       console.log(`[ST-Story-Illustrator] 任务 ${task.id} → ${status}`);
     },

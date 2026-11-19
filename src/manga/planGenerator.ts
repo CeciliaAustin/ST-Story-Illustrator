@@ -139,7 +139,7 @@ export async function generateComicPlan(
 ): Promise<GeneratePlanResult<ComicPagePlan[]>> {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildComicSystemPrompt(input.options);
-  const user = buildComicUserPrompt(input.scene, input.characters ?? []);
+  const user = buildComicUserPrompt(input.scene, input.characters ?? [], input.options.extraInstruction);
   try {
     const raw = await caller(system, user);
     const parsed = parseComicPagePlan(raw);

@@ -15,24 +15,33 @@ import type {
   VisualArtifact,
   VisualProfile,
   BaiBaiCharacter,
+  ComicPagePlan,
   StoryIllustratorSettings,
 } from '../types';
 import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment';
 import { buildAnchor } from '../selection/anchor';
 import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
-import { generateQuietPrompt } from '../host/sillytavern';
+import { generateQuietPrompt, saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { readOutConfig } from '../baibai/planConfig';
 import { switchBaiBaiPlan } from '../baibai/planSwitch';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
+import { hasStoryContent, mergeCharacterTags } from '../manga/panelRelevance';
+import { bakeDialogueIntoImage } from '../manga/bubbleBake';
 import { createArtifactId, appendArtifact } from '../storage/repository';
 import { mountFloor } from '../ui/floorCards';
-import { insertImageIntoBody } from '../ui/bodyInserter';
+import {
+  buildBbiTag,
+  insertImageTag,
+  triggerCardGenerate,
+  waitForEntry,
+  replaceEntryPath,
+  promptHash,
+} from '../baibai/bbiTag';
 import { mountTheater } from '../theater/mount';
-import { defaultMountMode } from '../types';
 import { runTheaterOne } from '../theater/runtime';
 import { saveStory } from '../theater/store';
 import type { QueueRunContext } from './taskQueue';
@@ -56,15 +65,6 @@ function sceneFromSegment(segment: StorySegment) {
     selectedText: segment.text,
     ...(context.previousText ? { previousText: context.previousText } : {}),
     ...(context.nextText ? { nextText: context.nextText } : {}),
-  };
-}
-
-function toNormalizedInput(prompt: string, nl: string | undefined, negative: string | undefined, profile?: VisualProfile) {
-  return {
-    prompt,
-    ...(nl ? { nl } : {}),
-    ...(negative ? { negative } : {}),
-    save: true,
   };
 }
 
@@ -132,29 +132,37 @@ async function runIllustration(
   const prompt = composeEnglishPrompt(tagSegments);
   if (!prompt.trim()) throw new Error('组装后的英文 prompt 为空。');
 
-  const profile = pickProfile(deps.settings, 'illustration');
   ctx.report({ stage: 'generating' });
   await ensureModeOutPlan('illustration', deps);
-  const result = await baiBaiAdapter.generate(
-    toNormalizedInput(prompt, plan.data.nl, plan.data.negative, profile),
-    profile ?? fallbackProfile('illustration'),
-  );
-  const imagePath = result.path ?? result.dataUrl;
-  if (!imagePath) throw new Error('出图未返回图片地址。');
 
-  // 先把图片写进正文（选段之后），使其成为正文内容：编辑不丢、刷新仍在、导出带着。
-  // 锚点用划线/选段文本；写入采用 CAS，排队期间消息变了就安全放弃。
-  const anchorText = segment.text.slice(0, 120);
-  const inserted = await insertImageIntoBody({
+  // 图片不再由本插件直接出、也不写 markdown：
+  // 写一条柏宝绘的 <bbi_image> tag 进正文，点卡片上的「生成图片」，其余全交给柏宝绘
+  // ——显示与它自己出的图一模一样（重绘/改词/下载/删除/灯箱），刷新后仍在，
+  // 请求也会进它的「请求历史」页。
+  const tag = buildBbiTag({
+    prompt,
+    ...(plan.data.nl ? { nl: plan.data.nl } : {}),
+    ...(plan.data.negative ? { negative: plan.data.negative } : {}),
+    size: plan.data.size === 'landscape' ? 'landscape' : 'portrait',
+  });
+  const hash = promptHash(tag);
+  const inserted = await insertImageTag({
     floor,
     chatId: task.chatId,
     swipeId: segment.messages[0]?.swipeId ?? 0,
-    sendDate: segment.messages[0]?.sendDate,
-    imagePath,
-    anchorText,
-    alt: plan.data.nl ? plan.data.nl.slice(0, 60) : '配图',
+    ...(segment.messages[0]?.sendDate ? { sendDate: segment.messages[0].sendDate } : {}),
+    tag,
+    anchorText: segment.text.slice(0, 120),
   });
-  console.log('[ST-Story-Illustrator] 正文插图写入:', inserted);
+  if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
+
+  const triggered = await triggerCardGenerate(floor, inserted.seq);
+  if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
+
+  // 等结果落库：拿到路径才好记进 artifact（也顺手把失败暴露出来）
+  const waited = await waitForEntry(floor, segment.messages[0]?.swipeId ?? 0, hash, inserted.seq);
+  if (!waited.ok) console.warn('[ST-Story-Illustrator] 插画结果未取到：', waited.reason, waited.message);
+  const imagePath = waited.ok ? waited.entry.path : '';
 
   const mesTextEl = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
   const anchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : undefined;
@@ -165,21 +173,48 @@ async function runIllustration(
     chatId: task.chatId,
     sourceFloors: segment.floorIds,
     anchorFloor: floor,
-    // 正文已嵌入图片时不再注入 DOM 卡片（避免重复显示）；写入失败才降级为 DOM 卡片
-    mountMode: inserted.ok ? 'trailing' : defaultMountMode('illustration'),
+    // 图片已经是正文内容（柏宝绘卡片），不再注入本插件卡片，避免重复与多余的说明文字
+    mountMode: 'trailing',
     ...(anchor ? { textAnchor: anchor } : {}),
     imagePath,
     prompt,
     ...(plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
-    ...(result.seed !== undefined ? { seed: result.seed } : {}),
-    metadata: { embeddedInBody: inserted.ok },
+    metadata: {
+      embeddedInBody: true,
+      bbiTag: tag,
+      bbiHash: hash,
+      bbiSlotSeq: inserted.seq,
+      ...(waited.ok ? { bbiGenerationId: waited.entry.generationId } : {}),
+      ...(waited.ok && typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
+    },
     createdAt: Date.now(),
   };
   appendArtifact(floor, artifact);
+  await saveChatSafe();
 
   mountFloor(floor);
   ctx.report({ stage: 'completed' });
+}
+
+/** 插入失败时的可读原因。 */
+function insertFailureMessage(reason: string): string {
+  switch (reason) {
+    case 'chat-changed': return '排队期间切换了聊天，已放弃写入（不覆盖别人的编辑）。';
+    case 'floor-changed': return '排队期间楼层内容变了，已放弃写入。';
+    case 'swipe-changed': return '排队期间楼层滑动到了别的版本，已放弃写入。';
+    case 'save-failed': return '正文写入后保存聊天失败，已回滚。';
+    default: return '无法写入正文（SillyTavern 上下文不可用）。';
+  }
+}
+
+/** 卡片触发失败时的可读原因。 */
+function cardFailureMessage(result: { reason: string; message?: string }): string {
+  if (result.reason === 'blocked') return result.message || '柏宝绘未配置出图后端。';
+  if (result.reason === 'no-card') {
+    return '正文已写入 tag，但楼层卡片没有出现。请确认柏宝绘已启用（它负责把 tag 显示成卡片）。';
+  }
+  return '正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。';
 }
 
 function fallbackProfile(mode: CreationMode): VisualProfile {
@@ -203,40 +238,76 @@ async function runComic(
   if (floor === null) throw new Error('无法确定挂载楼层。');
 
   const modeSettings = deps.fullSettings.modes['comic'];
+  const swipeId = segment.messages[0]?.swipeId ?? 0;
+  const sendDate = segment.messages[0]?.sendDate;
+  const layout = modeSettings.comicLayout ?? 'regular';
+  const dialoguePolicy = modeSettings.comicDialoguePolicy ?? deps.fullSettings.dialoguePolicy ?? 'auto';
+  const bubbleStyle = modeSettings.comicBubbleStyle ?? deps.fullSettings.bubbleStyle;
+  const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
+  const showComposite = modeSettings.comicShowComposite !== false;
+
   ctx.report({ stage: 'reading' });
   const characters = await getCharacters(floor);
-  const backendInfo = await baiBaiAdapter.id ? 'nai' : 'nai'; // 后端由 bridge 内部处理
-  const plan = await generateComicPlan({
+
+  const planOptions = {
+    panelMode: true,
+    panelLayout: layout,
+    pageType: modeSettings.comicPageType ?? 'auto',
+    // 漫画页必须有对白：这是它区别于「一张插画」的一半信息量，不给模型就永远没有
+    dialogue: true,
+    dialoguePolicy,
+    dialogueMode: 'json' as const,
+    // nl 是唯一能分区描述「上格/下格」的通道，关掉就只能靠 tag 碰运气
+    nl: true,
+    backend: 'nai' as const,
+    charPrompts: false,
+    includeChinese: deps.fullSettings.includeChinese,
+    maxPages: modeSettings.comicMaxPages ?? 1,
+  };
+
+  let plan = await generateComicPlan({
     scene: sceneFromSegment(segment),
     characters: characters.characters,
-    options: {
-      panelMode: true,
-      panelLayout: modeSettings.comicLayout ?? 'regular',
-      pageType: modeSettings.comicPageType ?? 'auto',
-      dialogue: deps.fullSettings.dialogueEnabled,
-      dialoguePolicy: deps.fullSettings.dialoguePolicy,
-      dialogueMode: 'tag',
-      nl: deps.fullSettings.includeNl,
-      backend: backendInfo,
-      charPrompts: false,
-      includeChinese: deps.fullSettings.includeChinese,
-      maxPages: modeSettings.comicMaxPages ?? 1,
-    },
+    options: planOptions,
     caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
 
-  const profile = pickProfile(deps.settings, 'comic');
+  // 相关度兜底：整页 tag 里只有构图词、没有任何画面内容时，出图必然与选段无关。
+  // 这种情况再问一次（把「必须写人和动作」显式塞进 user prompt），仍旧不行才报错。
+  if (!hasStoryContent(plan.data)) {
+    console.warn('[ST-Story-Illustrator] 分镜 tag 缺少画面内容，重试一次。');
+    plan = await generateComicPlan({
+      scene: sceneFromSegment(segment),
+      characters: characters.characters,
+      options: {
+        ...planOptions,
+        extraInstruction:
+          '上一次的分镜 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。' +
+          '这次每格的 tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。',
+      },
+      caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
+    });
+    if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
+    if (!hasStoryContent(plan.data)) {
+      throw new Error('分镜计划里每格都只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。');
+    }
+  }
+
   const totalPanels = plan.data.reduce((sum, page) => sum + page.panels.length, 0);
   let done = 0;
 
   // 整本漫画用同一套出图方案，只在开始前切一次
   await ensureModeOutPlan('comic', deps);
 
+  // 上一格插进去的 tag：下一格以它为锚点，保证多格按顺序排在一起
+  let previousTag: string | null = null;
+
   for (const page of plan.data) {
     for (const panel of page.panels) {
       if (ctx.signal.aborted) return;
       ctx.report({ stage: 'generating', page: page.pageIndex + 1, panel: panel.index + 1, totalPages: plan.data.length, totalPanels });
+
       const enforced = enforceForGeneration({
         prompt: panel.tags,
         nl: panel.nl ?? '',
@@ -245,12 +316,56 @@ async function runComic(
         chibiOn: false,
         storyImage: false,
       });
-      const result = await baiBaiAdapter.generate(
-        toNormalizedInput(enforced.prompt, enforced.nl || undefined, undefined, profile),
-        profile ?? fallbackProfile('comic'),
+      // 角色外观由角色库兜底注入：模型漏写时至少人还是那个人
+      const prompt = mergeCharacterTags(
+        enforced.prompt,
+        panel.characters.map(c => c.name),
+        characters.characters,
       );
-      const imagePath = result.path ?? result.dataUrl;
-      if (!imagePath) continue;
+
+      const tag = buildBbiTag({
+        prompt,
+        ...(enforced.nl ? { nl: enforced.nl } : {}),
+        size: 'portrait',
+      });
+      const hash = promptHash(tag);
+      const inserted = await insertImageTag({
+        floor,
+        chatId: task.chatId,
+        swipeId,
+        ...(sendDate ? { sendDate } : {}),
+        tag,
+        anchorText: previousTag ?? segment.text.slice(0, 120),
+      });
+      if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
+      previousTag = tag;
+
+      const triggered = await triggerCardGenerate(floor, inserted.seq);
+      if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
+
+      const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
+      if (!waited.ok) {
+        console.warn('[ST-Story-Illustrator] 分格结果未取到：', waited.reason, waited.message);
+        done += 1;
+        continue;
+      }
+
+      // 对白气泡：柏宝绘卡片只认一条图片路径，没有显示时加工的钩子，
+      // 所以合成一次、把卡片指向带字版，原图仍留在图库。
+      let imagePath = waited.entry.path;
+      let bakedPath = '';
+      if (showComposite && panel.dialogue?.length) {
+        const baked = await bakeDialogueIntoImage({
+          imagePath,
+          dialogue: panel.dialogue,
+          style: bubbleStyle,
+          font: bubbleFont,
+        });
+        if (baked && (await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked))) {
+          bakedPath = baked;
+          imagePath = baked;
+        }
+      }
 
       const artifact: VisualArtifact = {
         id: createArtifactId(),
@@ -259,21 +374,33 @@ async function runComic(
         chatId: task.chatId,
         sourceFloors: segment.floorIds,
         anchorFloor: floor,
-        mountMode: defaultMountMode('comic'),
+        mountMode: 'trailing',
         pageIndex: page.pageIndex,
         panelIndex: panel.index,
         imagePath,
-        prompt: enforced.prompt,
+        prompt,
         ...(panel.nl ? { nl: panel.nl } : {}),
         ...(panel.dialogue ? { dialogue: panel.dialogue } : {}),
-        ...(result.seed !== undefined ? { seed: result.seed } : {}),
-        metadata: { pageTitle: page.title, panelTitle: panel.title, layout: page.layout },
+        metadata: {
+          // 图的显示交给柏宝绘卡片，本插件不再挂卡片
+          embeddedInBody: true,
+          pageTitle: page.title,
+          panelTitle: panel.title,
+          layout: page.layout,
+          bbiTag: tag,
+          bbiHash: hash,
+          bbiSlotSeq: inserted.seq,
+          bbiGenerationId: waited.entry.generationId,
+          ...(bakedPath ? { bubbleBakedPath: bakedPath } : {}),
+          ...(typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
+        },
         createdAt: Date.now(),
       };
       appendArtifact(floor, artifact);
       done += 1;
     }
   }
+  await saveChatSafe();
   if (done === 0) throw new Error('所有分格出图均失败。');
   mountFloor(floor);
   ctx.report({ stage: 'completed' });

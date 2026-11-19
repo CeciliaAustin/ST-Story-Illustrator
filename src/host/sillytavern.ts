@@ -146,10 +146,25 @@ export function getMessage(floor: number): STChatMessage | undefined {
   return chat[floor];
 }
 
+/**
+ * 立即保存聊天（把 message.extra / mes 的改动落盘）。
+ * 失败不抛：保存失败不该让生成任务整体失败，下次保存会带上去。
+ */
+export async function saveChatSafe(): Promise<boolean> {
+  const ctx = getContext() as Record<string, unknown>;
+  const save = ctx.saveChat;
+  if (typeof save !== 'function') return false;
+  try {
+    await (save as () => Promise<void>).call(ctx);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================
 // 事件系统
 // ============================================================
-
 /**
  * 获取事件类型常量。
  * 合并 ST 原生事件和已知默认值。

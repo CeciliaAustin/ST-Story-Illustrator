@@ -54,6 +54,17 @@ function getMessage(floor) {
   if (floor < 0 || floor >= chat.length) return void 0;
   return chat[floor];
 }
+async function saveChatSafe() {
+  const ctx = getContext();
+  const save = ctx.saveChat;
+  if (typeof save !== "function") return false;
+  try {
+    await save.call(ctx);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function getEventTypes() {
   if (eventTypesCache) return eventTypesCache;
   const ctx = getContext();
@@ -224,7 +235,7 @@ async function waitForApi(maxAttempts = MAX_WAIT_ATTEMPTS) {
     if (result.status === "version_mismatch" || result.status === "error") {
       return result;
     }
-    await sleep(WAIT_INTERVAL_MS);
+    await sleep$1(WAIT_INTERVAL_MS);
   }
   return { status: "not_installed" };
 }
@@ -274,7 +285,7 @@ class BaiBaiApiError extends Error {
     this.availability = availability;
   }
 }
-function sleep(ms) {
+function sleep$1(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 const MES_SELECTOR = ".mes";
@@ -466,19 +477,6 @@ function destroyToolbar() {
     toolbarElement = null;
   }
   onGenerateCallback = null;
-}
-function defaultMountMode(mode) {
-  switch (mode) {
-    case "illustration":
-    case "comic":
-      return "inline";
-    case "chibi-status":
-    case "chibi-bonus":
-    case "bw-manga":
-      return "trailing";
-    default:
-      return "trailing";
-  }
 }
 function defaultModeSettings(mode) {
   const base = {
@@ -2191,7 +2189,7 @@ function destroyConfigPanel() {
 const ARTIFACTS_KEY = "sti_artifacts";
 const CHAT_META_KEY = "STStoryIllustrator";
 const SCHEMA_VERSION = 1;
-function readStore$1(raw) {
+function readStore$2(raw) {
   if (!raw || typeof raw !== "object") return { version: SCHEMA_VERSION, artifacts: [] };
   const store = raw;
   const version = typeof store.version === "number" ? store.version : 0;
@@ -2213,14 +2211,14 @@ function getArtifacts(floor) {
   const msg = getMessage(floor);
   if (!msg) return [];
   const extra = msg.extra ?? {};
-  return readStore$1(extra[ARTIFACTS_KEY]).artifacts;
+  return readStore$2(extra[ARTIFACTS_KEY]).artifacts;
 }
 function appendArtifact(floor, artifact) {
   const msg = getMessage(floor);
   if (!msg) return false;
   if (!msg.extra) msg.extra = {};
   const extra = msg.extra;
-  const store = readStore$1(extra[ARTIFACTS_KEY]);
+  const store = readStore$2(extra[ARTIFACTS_KEY]);
   store.artifacts.push(artifact);
   store.version = SCHEMA_VERSION;
   extra[ARTIFACTS_KEY] = store;
@@ -2343,7 +2341,7 @@ const THEATER_KEY = "sti_theater";
 function emptyStore() {
   return { version: 1, buckets: { status: [], bonus: [], manga: [] } };
 }
-function readStore(raw) {
+function readStore$1(raw) {
   const store = emptyStore();
   if (!raw || typeof raw !== "object") return store;
   const o = raw;
@@ -2368,14 +2366,14 @@ function getStories(floor, bucket) {
   const msg = getMessage(floor);
   if (!msg) return [];
   const extra = msg.extra;
-  return readStore(extra == null ? void 0 : extra[THEATER_KEY]).buckets[bucket];
+  return readStore$1(extra == null ? void 0 : extra[THEATER_KEY]).buckets[bucket];
 }
 function saveStory(floor, bucket, story) {
   const msg = getMessage(floor);
   if (!msg) return false;
   if (!msg.extra) msg.extra = {};
   const extra = msg.extra;
-  const store = readStore(extra[THEATER_KEY]);
+  const store = readStore$1(extra[THEATER_KEY]);
   const clean = {
     ...story,
     ...story.lines && story.lines.length ? { lines: story.lines } : { lines: void 0 }
@@ -2387,7 +2385,7 @@ function removeStory(floor, bucket, storyId) {
   const msg = getMessage(floor);
   if (!(msg == null ? void 0 : msg.extra)) return false;
   const extra = msg.extra;
-  const store = readStore(extra[THEATER_KEY]);
+  const store = readStore$1(extra[THEATER_KEY]);
   const before = store.buckets[bucket].length;
   store.buckets[bucket] = store.buckets[bucket].filter((s) => s.storyId !== storyId);
   if (store.buckets[bucket].length === before) return false;
@@ -2628,7 +2626,7 @@ const PANEL_BUBBLE_AREAS = [
   "bc",
   "br"
 ];
-const PANEL_DIALOGUE_MAX = 4;
+const PANEL_DIALOGUE_MAX$1 = 4;
 const PANEL_DIALOGUE_TEXT_MAX = 60;
 const PANEL_DIALOGUE_SPEAKER_MAX = 16;
 const PANEL_TAGS_BY_LAYOUT = {
@@ -2669,7 +2667,7 @@ function normalizeDialogueItems(value) {
   if (!Array.isArray(value)) return [];
   const items = [];
   for (const raw of value) {
-    if (items.length >= PANEL_DIALOGUE_MAX) break;
+    if (items.length >= PANEL_DIALOGUE_MAX$1) break;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const item = raw;
     const text = typeof item.text === "string" ? item.text.trim().replace(/[\r\n]+/g, " ").slice(0, PANEL_DIALOGUE_TEXT_MAX) : "";
@@ -3084,7 +3082,12 @@ const COMIC_SYSTEM_HEAD = `你是一位专业的漫画分镜编辑。根据给�
 结构：{"pages":[{"pageIndex":0,"title":"页标题","layout":"regular|irregular|inset|unframed","panels":[{"index":0,"title":"格标题","characters":[{"name":"角色","act":"动作"}],"mood":"氛围","tags":"英文构图与画面tag(逗号分隔)","nl":"英文分区描述","dialogue":[{"text":"简短中文台词","area":"tl|tc|tr|ml|mr|bl|bc|br","dir":"v(可选,竖排)","mood":"whisper(可选)"}]}]}]}。
 要求：
 - tags 必须是英文生图 tag（逗号分隔），可带权重；不要写任何中文进 tags/nl。
-- nl 是英文自然语言描述，按格写；台词是对白气泡用中文口语。
+- **tags 必须画出这一格正在发生的事**，至少要包含：① 出场角色的外观 tag（照抄角色快照里那串，一个角色 3~6 个即可，不要整串抄）；② 这个人正在做什么（动作/表情/姿势）；③ 在哪（室内外 + 一个具体地点）；④ 画面里的关键物件。**只写构图词的 tags 一律不合格**——那样的图与剧情毫无关系，是本次最严重的错误。
+- 反例（错误）："multiple views, split screen, white background, cinematic lighting" —— 没有人物、没有动作，出图必然与剧情无关。
+- 正例（正确）："1boy, short black hair, white shirt, leaning over a desk, holding a letter, nervous expression, classroom, afternoon, multiple views, split screen"。
+- tags 里不要出现 speech bubble / text / dialogue / caption / english text —— 台词由插件在出图后合成，画面里出现字必然是乱码。
+- nl 是英文自然语言描述，按格写（先总述版面，再逐格写）；台词是对白气泡用中文口语。
+- **台词字段必须写**：从本格剧情里挑最值得说的一两句话（可以是呼喊、拟声词「咚！」「……」），不得整页省略。
 - 一次只讲清楚每个格的一个瞬间；同一批角色在各格保持一致的着装与外貌。
 - 分格数量与版面严格遵循下面的【分镜规则】。`;
 function buildComicSystemPrompt(options) {
@@ -3106,7 +3109,7 @@ function buildComicSystemPrompt(options) {
   if (!options.includeChinese) parts.push("除台词外的辅助中文一律不要输出。");
   return parts.join("\n\n");
 }
-function buildComicUserPrompt(scene, characters) {
+function buildComicUserPrompt(scene, characters, extraInstruction) {
   const parts = [];
   parts.push("【剧情（据此排分镜）】\n" + scene.selectedText);
   if (scene.floorText) parts.push("【所在楼层全文】\n" + scene.floorText);
@@ -3116,6 +3119,7 @@ function buildComicUserPrompt(scene, characters) {
     const lines = characters.map((c) => `- ${c.name}: ${c.tag ?? ""}${c.nl ? ` (${c.nl})` : ""}`);
     parts.push("【在场角色（保持外貌一致）】\n" + lines.join("\n"));
   }
+  if (extraInstruction) parts.push("【本次特别要求】\n" + extraInstruction);
   parts.push("请只输出一个 JSON 对象（pages 数组）。");
   return parts.join("\n\n");
 }
@@ -3159,7 +3163,7 @@ async function generateIllustrationPlan(input) {
 async function generateComicPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
   const system = buildComicSystemPrompt(input.options);
-  const user = buildComicUserPrompt(input.scene, input.characters ?? []);
+  const user = buildComicUserPrompt(input.scene, input.characters ?? [], input.options.extraInstruction);
   try {
     const raw = await caller(system, user);
     const parsed = parseComicPagePlan(raw);
@@ -3210,7 +3214,7 @@ function isPlainSegment(segment) {
   if (!text.includes("::")) return true;
   return /^[\d.]+\s*::.*::\s*$/.test(text);
 }
-const PANEL_FAMILY = [
+const PANEL_FAMILY$1 = [
   "multiple views",
   "2koma",
   "3koma",
@@ -3301,7 +3305,7 @@ function enforcePanelPrompt(prompt, layout) {
     if (!text) continue;
     const bare = bareTagOf(text);
     present.add(bare);
-    if (!PANEL_FAMILY.includes(bare)) {
+    if (!PANEL_FAMILY$1.includes(bare)) {
       if (sceneLimit && isPlainSegment(text)) {
         if (SCENE_ANCHOR_TAGS.includes(bare)) {
           kept.push(text);
@@ -3372,17 +3376,619 @@ function enforceForGeneration(input) {
     added: enforced.added
   };
 }
-function buildImageSnippet(imagePath, alt = "配图") {
-  const safeAlt = alt.replace(/[\]\n\r]/g, " ").trim() || "配图";
-  return `
-
-![](${imagePath})`.replace("[]", `[${safeAlt}]`) + "\n";
+const PANEL_FAMILY = /* @__PURE__ */ new Set([
+  "multiple views",
+  "2koma",
+  "3koma",
+  "4koma",
+  "split screen",
+  "white background",
+  "3格漫画",
+  "三场景漫画构图",
+  "非对称漫画页面布局",
+  "开放分镜漫画构图",
+  "无边框中央插画",
+  "第二场景周围没有长方形画框",
+  "主场景周围没有长方形包围",
+  "人物自然融入白色空间"
+]);
+function bareTag(segment) {
+  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
 }
-async function insertImageIntoBody(input) {
-  const { floor, chatId, swipeId, sendDate, imagePath, anchorText } = input;
-  if (!imagePath) return { ok: false, reason: "no-image" };
+function contentTagCount(tags) {
+  return String(tags ?? "").split(",").map(bareTag).filter((tag) => tag && !PANEL_FAMILY.has(tag)).length;
+}
+function hasStoryContent(pages) {
+  for (const page of pages) {
+    for (const panel of page.panels) {
+      if (contentTagCount(panel.tags) >= 2) return true;
+    }
+  }
+  return false;
+}
+function mergeCharacterTags(prompt, names, library) {
+  const present = new Set(prompt.split(",").map(bareTag).filter(Boolean));
+  const wanted = names.map((name) => library.find((c) => c.name === name)).filter((c) => !!c);
+  const sources = wanted.length ? wanted : library.length === 1 ? library : [];
+  const extra = [];
+  for (const character of sources.slice(0, 2)) {
+    for (const raw of String(character.tag ?? "").split(",")) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const key = bareTag(piece);
+      if (!key || present.has(key)) continue;
+      present.add(key);
+      extra.push(piece);
+    }
+  }
+  return extra.length ? `${prompt}, ${extra.join(", ")}` : prompt;
+}
+const ALL_BUBBLE_STYLES = [
+  "classic",
+  "bubble-vertical",
+  "bubble-glow",
+  "bubble-ink",
+  "bubble-subtitle",
+  "blend",
+  "blend-vertical",
+  "blend-glow",
+  "blend-ink",
+  "blend-subtitle"
+];
+function normalizeBubbleStyle(v) {
+  return ALL_BUBBLE_STYLES.includes(v) ? v : "classic";
+}
+function bubbleShellOf(s) {
+  return String(s).startsWith("blend") ? "blend" : "bubble";
+}
+function isBlendStyle(s) {
+  return bubbleShellOf(s) === "blend";
+}
+function bubbleVariantOf(s) {
+  const n = normalizeBubbleStyle(s);
+  if (n === "classic" || n === "blend") return "normal";
+  return n.slice(n.indexOf("-") + 1);
+}
+function normalizeBubbleFont(v) {
+  return v === "serif" || v === "kai" || v === "round" ? v : "sans";
+}
+const BUBBLE_FONT_STACKS = {
+  sans: "sans-serif",
+  serif: '"Noto Serif SC", "SimSun", "Songti SC", "MS Song", serif',
+  kai: '"KaiTi", "STKaiti", "Kaiti SC", "DFKai-SB", serif',
+  round: '"Yuanti SC", "HYQiHei", "Microsoft YaHei", "PingFang SC", sans-serif'
+};
+const PANEL_DIALOGUE_MAX = 4;
+const BUBBLE_ANCHORS = {
+  tl: { x: 0.24, y: 0.15 },
+  tc: { x: 0.5, y: 0.13 },
+  tr: { x: 0.76, y: 0.15 },
+  ml: { x: 0.17, y: 0.44 },
+  mr: { x: 0.83, y: 0.44 },
+  bl: { x: 0.24, y: 0.79 },
+  bc: { x: 0.5, y: 0.84 },
+  br: { x: 0.76, y: 0.79 }
+};
+const FALLBACK_ORDER = ["tl", "tr", "bl", "br", "tc", "bc", "ml", "mr"];
+function wrapText(text, maxWidth, measure) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  if (measure(clean) <= maxWidth) return [clean];
+  const lines = [];
+  let current = "";
+  for (const char of clean) {
+    const candidate = current + char;
+    if (current && measure(candidate) > maxWidth) {
+      lines.push(current);
+      current = char === " " ? "" : char;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.trim()) lines.push(current.trim());
+  return lines;
+}
+function blendFontSize(page) {
+  return Math.max(13, Math.min(36, Math.round(Math.min(page.width, page.height) * 0.028)));
+}
+function blendSpacing(fontSize) {
+  return fontSize * 0.26;
+}
+function layoutBlendH(text, maxWidth, fontSize, measure) {
+  const spacing = blendSpacing(fontSize);
+  const widthOf = (s) => [...s].reduce((sum, ch) => sum + measure(ch), 0) + spacing * Math.max(0, [...s].length - 1);
+  const lines = wrapText(text, maxWidth, widthOf);
+  return {
+    lines,
+    width: Math.ceil(Math.max(0, ...lines.map(widthOf))),
+    height: Math.ceil(lines.length * fontSize * 1.35)
+  };
+}
+function layoutBlendV(text, maxHeight, fontSize) {
+  var _a;
+  const spacing = blendSpacing(fontSize);
+  const step = fontSize * 1.15;
+  const perCol = Math.max(4, Math.floor(maxHeight / step));
+  const chars = [...text];
+  const cols = [];
+  for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
+  return {
+    cols,
+    width: Math.ceil(cols.length * fontSize + (cols.length - 1) * spacing),
+    height: Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step)
+  };
+}
+function deriveTextColor(avg) {
+  const lin = (v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  const lum = (c) => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+  const L = lum(avg);
+  const text = L > 0.42 ? { r: Math.round(avg.r * 0.3), g: Math.round(avg.g * 0.28), b: Math.round(avg.b * 0.28) } : { r: Math.round(avg.r + (255 - avg.r) * 0.82), g: Math.round(avg.g + (255 - avg.g) * 0.82), b: Math.round(avg.b + (255 - avg.b) * 0.82) };
+  const contrast = (Math.max(lum(text), L) + 0.05) / (Math.min(lum(text), L) + 0.05);
+  const halo = L > 0.35 && L < 0.55 || contrast < 2.2 ? L > 0.42 ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.5)" : null;
+  return { color: `rgb(${text.r},${text.g},${text.b})`, halo };
+}
+function blendInkFor(style, avg) {
+  if (style === "blend-glow") return { color: "#fffaf2", halo: "rgba(0,0,0,0.38)", glow: "rgba(255,246,228,0.85)", band: null };
+  if (style === "blend-ink") return { color: "#2a2320", halo: "rgba(255,255,255,0.92)", glow: null, band: null };
+  if (style === "blend-subtitle") return { color: "#f7f4ef", halo: "rgba(0,0,0,0.45)", glow: null, band: "rgba(18,16,15,0.55)" };
+  const { color, halo } = deriveTextColor(avg);
+  return { color, halo, glow: null, band: null };
+}
+function boxInkFor(style) {
+  const variant = bubbleVariantOf(style);
+  if (variant === "glow") return { color: "#fffaf2", glow: "rgba(255,244,214,0.9)" };
+  if (variant === "ink") return { color: "#2a2320", glow: null };
+  return { color: "#111111", glow: null };
+}
+function placeRect(rect, item, index2, page, margin, fontSize, placed, usedAreas, withTail) {
+  let area = item.area;
+  if (!area) area = FALLBACK_ORDER.find((c) => !usedAreas.has(c)) ?? FALLBACK_ORDER[index2 % FALLBACK_ORDER.length];
+  if (area) usedAreas.add(area);
+  const anchor = BUBBLE_ANCHORS[area ?? "tl"];
+  if (typeof item.x === "number" && typeof item.y === "number") {
+    rect.x = Math.min(Math.max(margin, item.x * page.width - rect.width / 2), page.width - rect.width - margin);
+    rect.y = Math.min(Math.max(margin, item.y * page.height - rect.height / 2), page.height - rect.height - margin);
+    if (withTail) rect.tail = item.y < 0.5 ? "down" : "up";
+    placed.push(rect);
+    return;
+  }
+  rect.x = Math.min(Math.max(margin, anchor.x * page.width - rect.width / 2), page.width - rect.width - margin);
+  rect.y = Math.min(Math.max(margin, anchor.y * page.height - rect.height / 2), page.height - rect.height - margin);
+  for (let guard = 0; guard < 8; guard += 1) {
+    const hit = placed.find((o) => rect.x < o.x + o.width && rect.x + rect.width > o.x && rect.y < o.y + o.height && rect.y + rect.height > o.y);
+    if (!hit) break;
+    const down = hit.y + hit.height + fontSize * 0.3;
+    if (down + rect.height <= page.height - margin) rect.y = down;
+    else rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.3);
+  }
+  if (withTail) rect.tail = rect.y + rect.height / 2 < page.height / 2 ? "down" : "up";
+  placed.push(rect);
+}
+function planBubbles(items, page, measure, opts = {}) {
+  if (!page.width || !page.height) return [];
+  const style = normalizeBubbleStyle(opts.style);
+  if (isBlendStyle(style)) return planBlend(items, page, measure, style);
+  return planBubbleBox(items, page, measure, style);
+}
+function planBubbleBox(items, page, measure, style) {
+  const variant = bubbleVariantOf(style);
+  const fontSize = Math.max(15, Math.min(44, Math.round(Math.min(page.width, page.height) * 0.034)));
+  const lineHeight = fontSize * 1.4;
+  const padX = fontSize * 0.7;
+  const padY = fontSize * 0.55;
+  const maxBubbleWidth = page.width * 0.42;
+  const margin = Math.round(page.width * 0.02);
+  const placed = [];
+  const usedAreas = /* @__PURE__ */ new Set();
+  items.slice(0, PANEL_DIALOGUE_MAX).forEach((item, index2) => {
+    var _a;
+    if (!item.text.trim()) return;
+    if (variant === "vertical") {
+      const step = fontSize * 1.15;
+      const perCol = Math.max(3, Math.floor(page.height * 0.5 / step));
+      const cols = [];
+      const chars = [...item.text];
+      for (let i = 0; i < chars.length; i += perCol) cols.push(chars.slice(i, i + perCol).join(""));
+      const width2 = Math.ceil(cols.length * fontSize + (cols.length - 1) * fontSize * 0.26 + padX * 2);
+      const height2 = Math.ceil(Math.min(perCol, ((_a = cols[0]) == null ? void 0 : _a.length) ?? 0) * step + padY * 2);
+      placeRect({ x: 0, y: 0, width: width2, height: height2, lines: cols, vertical: true }, item, index2, page, margin, fontSize, placed, usedAreas, true);
+      return;
+    }
+    const lines = wrapText(item.text, maxBubbleWidth - padX * 2, measure);
+    if (!lines.length) return;
+    const width = Math.ceil(Math.max(...lines.map(measure)) + padX * 2);
+    const height = Math.ceil(lines.length * lineHeight + padY * 2);
+    if (variant === "subtitle") {
+      const area = ["bc", "bl", "br"][index2 % 3];
+      const anchor = BUBBLE_ANCHORS[area];
+      const rect = { x: 0, y: 0, width, height, lines };
+      rect.x = Math.min(Math.max(margin, anchor.x * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
+      placed.push(rect);
+      return;
+    }
+    placeRect({ x: 0, y: 0, width, height, lines }, item, index2, page, margin, fontSize, placed, usedAreas, true);
+  });
+  return placed;
+}
+function planBlend(items, page, measure, style) {
+  const fontSize = blendFontSize(page);
+  const margin = Math.round(page.width * 0.02);
+  const maxW = page.width * (style === "blend-subtitle" ? 0.86 : 0.52);
+  const maxH = page.height * 0.42;
+  const forceVertical = style === "blend-vertical";
+  const subtitle = style === "blend-subtitle";
+  const subtitleAreas = ["bc", "bl", "br"];
+  const placed = [];
+  const usedAreas = /* @__PURE__ */ new Set();
+  items.slice(0, PANEL_DIALOGUE_MAX).forEach((item, index2) => {
+    if (!item.text.trim()) return;
+    const vertical = forceVertical || !subtitle && item.dir === "v";
+    let rect;
+    if (vertical) {
+      const { cols, width, height } = layoutBlendV(item.text, maxH, fontSize);
+      rect = { x: 0, y: 0, width, height, lines: cols, vertical: true };
+    } else {
+      const { lines, width, height } = layoutBlendH(item.text, maxW, fontSize, measure);
+      if (!lines.length) return;
+      rect = { x: 0, y: 0, width, height, lines };
+    }
+    if (subtitle) {
+      const area = subtitleAreas[index2 % subtitleAreas.length];
+      const anchor = BUBBLE_ANCHORS[area];
+      rect.x = Math.min(Math.max(margin, anchor.x * page.width - rect.width / 2), page.width - rect.width - margin);
+      rect.y = page.height - rect.height - Math.max(margin, Math.round(page.height * 0.04));
+      for (let guard = 0; guard < 8; guard += 1) {
+        const hit = placed.find((o) => rect.x < o.x + o.width && rect.x + rect.width > o.x && rect.y < o.y + o.height && rect.y + rect.height > o.y);
+        if (!hit) break;
+        rect.y = Math.max(margin, hit.y - rect.height - fontSize * 0.25);
+      }
+      placed.push(rect);
+      return;
+    }
+    placeRect(rect, item, index2, page, margin, fontSize, placed, usedAreas, false);
+  });
+  return placed;
+}
+function perColOf(cols) {
+  return Math.max(0, ...cols.map((c) => [...c].length));
+}
+function roundRectPath(ctx, rect, radius) {
+  const { x, y, width, height } = rect;
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
+function drawHeart(ctx, x, y, size, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(size / 24, size / 24);
+  ctx.beginPath();
+  ctx.moveTo(0, 9);
+  ctx.bezierCurveTo(-11, -3, -5, -12, 0, -5);
+  ctx.bezierCurveTo(5, -12, 11, -3, 0, 9);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.restore();
+}
+function drawBubbles(image, items, opts = {}) {
+  var _a;
+  const width = image.naturalWidth;
+  const height = image.naturalHeight;
+  if (!width || !height) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(image, 0, 0, width, height);
+  const style = normalizeBubbleStyle(opts.style);
+  const fontStack = BUBBLE_FONT_STACKS[normalizeBubbleFont(opts.font)];
+  if (isBlendStyle(style)) {
+    drawBlend(ctx, items, fontStack, width, height, style);
+    return canvas;
+  }
+  const fontSize = Math.max(15, Math.min(44, Math.round(Math.min(width, height) * 0.034)));
+  const font = (w) => `${w} ${fontSize}px ${fontStack}`;
+  ctx.font = font("400");
+  const bubbles = planBubbles(items, { width, height }, (s) => ctx.measureText(s).width, opts);
+  const lineWidth = Math.max(2, Math.round(fontSize * 0.09));
+  const tailSize = fontSize * 0.5;
+  const ink = boxInkFor(style);
+  for (const bubble of bubbles) {
+    if (bubble.tail) {
+      const baseY = bubble.tail === "down" ? bubble.y + bubble.height : bubble.y;
+      const tipY = bubble.tail === "down" ? baseY + tailSize : baseY - tailSize;
+      const baseX = bubble.x + bubble.width * 0.28;
+      const inner = lineWidth / 2;
+      ctx.beginPath();
+      ctx.moveTo(baseX - tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
+      ctx.lineTo(baseX, tipY);
+      ctx.lineTo(baseX + tailSize * 0.5, baseY - Math.sign(baseY - tipY) * inner);
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#1a1a1a";
+      ctx.lineWidth = lineWidth;
+      ctx.lineJoin = "round";
+      ctx.stroke();
+      ctx.fill();
+      roundRectPath(ctx, bubble, fontSize * 0.45);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.strokeStyle = "#1a1a1a";
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(baseX - tailSize * 0.5, bubble.tail === "down" ? bubble.y + bubble.height - lineWidth : bubble.y, tailSize, lineWidth + 1);
+    } else {
+      roundRectPath(ctx, bubble, fontSize * 0.35);
+      ctx.fillStyle = "rgba(18,16,15,0.82)";
+      ctx.fill();
+      ctx.strokeStyle = "#e8e4dc";
+      ctx.lineWidth = Math.max(1.5, fontSize * 0.06);
+      ctx.stroke();
+    }
+    ctx.fillStyle = ink.color;
+    if (ink.glow) {
+      ctx.shadowColor = ink.glow;
+      ctx.shadowBlur = fontSize * 0.7;
+    }
+    ctx.textBaseline = "top";
+    if (bubble.vertical) {
+      const step = fontSize * 1.15;
+      const colSpacing = fontSize * 0.26;
+      const colX = (ci) => bubble.x + bubble.width - fontSize * 0.7 - (ci + 1) * fontSize - ci * colSpacing;
+      const totalH = Math.min(perColOf(bubble.lines), ((_a = bubble.lines[0]) == null ? void 0 : _a.length) ?? 0) * step;
+      bubble.lines.forEach((col, ci) => [...col].forEach((ch, ri) => ctx.fillText(ch, colX(ci), bubble.y + (bubble.height - totalH) / 2 + ri * step)));
+    } else {
+      const textHeight = bubble.lines.length * fontSize * 1.4;
+      let cursorY = bubble.y + (bubble.height - textHeight) / 2 + fontSize * 0.08;
+      for (const line of bubble.lines) {
+        ctx.font = font("400");
+        ctx.fillText(line, bubble.x + fontSize * 0.7, cursorY);
+        cursorY += fontSize * 1.4;
+      }
+    }
+    ctx.shadowBlur = 0;
+  }
+  return canvas;
+}
+function drawBlend(ctx, items, fontStack, width, height, style) {
+  const fontSize = blendFontSize({ width, height });
+  const spacing = style === "blend-subtitle" ? fontSize * 0.1 : blendSpacing(fontSize);
+  ctx.textBaseline = "top";
+  ctx.font = `400 ${fontSize}px ${fontStack}`;
+  ctx.lineJoin = "round";
+  const measure = (s) => ctx.measureText(s).width;
+  const rects = planBubbles(items, { width, height }, measure, { style });
+  const capped = items.slice(0, PANEL_DIALOGUE_MAX).filter((i) => i.text.trim());
+  const needsSampling = style === "blend" || style === "blend-vertical";
+  rects.forEach((rect, index2) => {
+    const item = capped[index2];
+    if (!item) return;
+    let avg = { r: 246, g: 238, b: 236 };
+    if (needsSampling) {
+      try {
+        const sx = Math.max(0, Math.floor(rect.x - 8));
+        const sy = Math.max(0, Math.floor(rect.y - 8));
+        const sw = Math.min(width - sx, Math.ceil(rect.width + 16));
+        const sh = Math.min(height - sy, Math.ceil(rect.height + 16));
+        if (sw > 0 && sh > 0) {
+          const data = ctx.getImageData(sx, sy, sw, sh).data;
+          let r = 0, g = 0, b = 0, n = 0;
+          for (let i = 0; i < data.length; i += 16) {
+            if (data[i + 3] < 8) continue;
+            r += data[i];
+            g += data[i + 1];
+            b += data[i + 2];
+            n += 1;
+          }
+          if (n > 0) avg = { r: r / n, g: g / n, b: b / n };
+        }
+      } catch {
+      }
+    }
+    const ink = blendInkFor(style, avg);
+    if (ink.band) {
+      const padX = fontSize * 0.5;
+      const padY = fontSize * 0.3;
+      roundRectPath(ctx, { x: rect.x - padX, y: rect.y - padY, width: rect.width + padX * 2, height: rect.height + padY * 2 }, fontSize * 0.28);
+      ctx.fillStyle = ink.band;
+      ctx.fill();
+    }
+    ctx.fillStyle = ink.color;
+    if (ink.halo) {
+      ctx.strokeStyle = ink.halo;
+      ctx.lineWidth = Math.max(1.5, fontSize * 0.08);
+    }
+    if (ink.glow) {
+      ctx.shadowColor = ink.glow;
+      ctx.shadowBlur = fontSize * 0.6;
+    }
+    const drawChar = (ch, x, y) => {
+      if (ink.halo) ctx.strokeText(ch, x, y);
+      ctx.fillText(ch, x, y);
+    };
+    if (rect.vertical) {
+      const step = fontSize * 1.15;
+      rect.lines.forEach((col, ci) => {
+        const colX = rect.x + rect.width - (ci + 1) * fontSize - ci * spacing;
+        [...col].forEach((ch, ri) => drawChar(ch, colX, rect.y + ri * step));
+      });
+      ctx.shadowBlur = 0;
+      if (item.mood === "whisper" && style !== "blend-subtitle") {
+        const hx = Math.max(4, Math.min(width - fontSize * 3, rect.x + rect.width / 2));
+        const hy = Math.min(height - fontSize * 2, rect.y + rect.height + fontSize * 0.4);
+        drawHeart(ctx, hx, hy, fontSize * 0.9, "#D47F8E");
+        drawHeart(ctx, hx + fontSize * 1.3, hy + fontSize * 0.4, fontSize * 0.6, "#D47F8E");
+      }
+    } else {
+      let cursorY = rect.y + fontSize * 0.15;
+      for (const line of rect.lines) {
+        let x = rect.x;
+        for (const ch of [...line]) {
+          drawChar(ch, x, cursorY);
+          x += measure(ch) + spacing;
+        }
+        cursorY += fontSize * 1.35;
+      }
+      ctx.shadowBlur = 0;
+      if (item.mood === "whisper" && style !== "blend-subtitle") {
+        const hx = Math.min(width - fontSize * 3, rect.x + rect.width + spacing * 0.6);
+        const hy = Math.max(4, Math.min(height - fontSize * 2, rect.y + rect.height - fontSize * 0.2));
+        drawHeart(ctx, hx, hy, fontSize * 0.9, "#D47F8E");
+        drawHeart(ctx, hx + fontSize * 1.3, hy + fontSize * 0.4, fontSize * 0.6, "#D47F8E");
+      }
+    }
+  });
+}
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("图片加载失败"));
+    img.src = src;
+  });
+}
+async function loadDrawableImage(src) {
+  if (/^(blob|data):/i.test(src)) {
+    return { image: await loadImage(src), cleanup: () => {
+    } };
+  }
+  const response = await fetch(src, { mode: "cors" });
+  if (!response.ok) throw new Error(`fetch 失败: ${response.status}`);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    return { image: await loadImage(url), cleanup: () => URL.revokeObjectURL(url) };
+  } catch (e) {
+    URL.revokeObjectURL(url);
+    throw e;
+  }
+}
+async function compositeDialogue(imageUrl, items, opts = {}) {
+  try {
+    if (!items.length) return null;
+    const { image, cleanup } = await loadDrawableImage(imageUrl);
+    try {
+      const canvas = drawBubbles(image, items, opts);
+      if (!canvas) return null;
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) return null;
+      const url = URL.createObjectURL(blob);
+      return { url, filename: "dialogue.png", revoke: () => URL.revokeObjectURL(url) };
+    } finally {
+      cleanup();
+    }
+  } catch {
+    return null;
+  }
+}
+const COMPOSITE_FOLDER = "ST创作_带字";
+async function blobUrlToBase64(url) {
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result ?? "");
+        const comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.slice(comma + 1) : null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+async function uploadComposite(base64, filename) {
   const ctx = getContext();
-  if (!ctx || !Array.isArray(ctx.chat) || typeof ctx.saveChat !== "function") {
+  const headers = typeof ctx.getRequestHeaders === "function" ? ctx.getRequestHeaders() : {};
+  try {
+    const response = await fetch("/api/images/upload", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        image: base64,
+        format: "png",
+        ch_name: COMPOSITE_FOLDER,
+        filename
+      })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof data.path === "string" && data.path ? data.path : null;
+  } catch {
+    return null;
+  }
+}
+async function bakeDialogueIntoImage(input) {
+  const items = input.dialogue.filter((item) => {
+    var _a;
+    return (_a = item.text) == null ? void 0 : _a.trim();
+  });
+  if (!items.length || !input.imagePath) return null;
+  const composite = await compositeDialogue(input.imagePath, items, {
+    ...input.style ? { style: input.style } : {},
+    ...input.font ? { font: input.font } : {}
+  });
+  if (!composite) return null;
+  try {
+    const base64 = await blobUrlToBase64(composite.url);
+    if (!base64) return null;
+    const stamp = Date.now().toString(36);
+    const filename = `sti_bubble_${stamp}_${Math.random().toString(36).slice(2, 6)}.png`;
+    return await uploadComposite(base64, filename);
+  } finally {
+    composite.revoke();
+  }
+}
+const BBI_IMAGE_EXTRA_KEY = "bbiImage";
+const BBI_SLOT_SELECTOR = "div[data-bbi-slot]";
+const CARD_GENERATE_SELECTOR = ".bbi-figure__generate";
+const CARD_IMAGE_SELECTOR = ".bbi-figure__img";
+const CARD_HINT_SELECTOR = ".bbi-figure__hint";
+function sanitizeTagText(value) {
+  return String(value ?? "").replace(/<[^>]*>/g, " ").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+function buildBbiTag(input) {
+  const prompt = sanitizeTagText(input.prompt);
+  const nl = sanitizeTagText(input.nl);
+  const negative = sanitizeTagText(input.negative);
+  const size = input.size === "landscape" ? "landscape" : "portrait";
+  const nlPart = nl ? `<nl>${nl}</nl>` : "";
+  const negativePart = negative ? `<negative>${negative}</negative>` : "";
+  return `<bbi_image>${prompt}${nlPart}${negativePart}<size>${size}</size></bbi_image>`;
+}
+function countImageTags(mes) {
+  return (String(mes ?? "").match(/<bbi_image>[\s\S]+?<\/bbi_image>/gi) ?? []).length;
+}
+function promptHash(text) {
+  let h1 = 3735928559;
+  let h2 = 1103547991;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507) ^ Math.imul(h2 ^ h2 >>> 13, 3266489909);
+  h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507) ^ Math.imul(h1 ^ h1 >>> 13, 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+}
+async function insertImageTag(input) {
+  const { floor, chatId, swipeId, sendDate, tag, anchorText } = input;
+  if (!tag) return { ok: false, reason: "no-context" };
+  const ctx = getContext();
+  if (!Array.isArray(ctx.chat) || typeof ctx.saveChat !== "function") {
     return { ok: false, reason: "no-context" };
   }
   if (getCurrentChatId() !== chatId) return { ok: false, reason: "chat-changed" };
@@ -3394,58 +4000,150 @@ async function insertImageIntoBody(input) {
   }
   const curSwipe = typeof msg.swipe_id === "number" ? msg.swipe_id : 0;
   if (curSwipe !== swipeId) return { ok: false, reason: "swipe-changed" };
-  const snippet = buildImageSnippet(imagePath, input.alt);
   const currentText = msg.mes;
+  const existing = currentText.indexOf(tag);
+  if (existing >= 0) {
+    const seq22 = countImageTags(currentText.slice(0, existing));
+    await refreshFloor(ctx, floor, msg);
+    return { ok: true, seq: seq22, position: "after-anchor" };
+  }
+  const snippet = `
+
+${tag}
+`;
   let nextText;
   let position;
+  let insertAt;
   if (anchorText && anchorText.length >= 2 && currentText.includes(anchorText)) {
-    const at = currentText.indexOf(anchorText) + anchorText.length;
-    nextText = currentText.slice(0, at) + snippet + currentText.slice(at);
+    insertAt = currentText.indexOf(anchorText) + anchorText.length;
+    nextText = currentText.slice(0, insertAt) + snippet + currentText.slice(insertAt);
     position = "after-anchor";
   } else {
+    insertAt = currentText.length;
     nextText = `${currentText.trimEnd()}${snippet}`;
     position = "appended";
   }
-  if (currentText.includes(imagePath)) {
-    return { ok: true, position };
-  }
+  const seq2 = countImageTags(currentText.slice(0, insertAt));
   msg.mes = nextText;
-  if (Array.isArray(msg.swipes) && swipeId >= 0 && swipeId < msg.swipes.length) {
-    msg.swipes[swipeId] = nextText;
+  const swipes = msg.swipes;
+  if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) {
+    swipes[swipeId] = nextText;
   }
   try {
     await ctx.saveChat();
   } catch {
     msg.mes = currentText;
-    if (Array.isArray(msg.swipes) && swipeId >= 0 && swipeId < msg.swipes.length) {
-      msg.swipes[swipeId] = currentText;
+    if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) {
+      swipes[swipeId] = currentText;
     }
     return { ok: false, reason: "save-failed" };
   }
-  await refreshMessage(ctx, floor, msg);
-  return { ok: true, position };
+  await refreshFloor(ctx, floor, msg);
+  return { ok: true, seq: seq2, position };
 }
-async function refreshMessage(ctx, floor, msg, _unused) {
+async function refreshFloor(ctx, floor, msg) {
   var _a;
   try {
-    const api = ctx;
-    if (typeof api.updateMessageBlock === "function") {
-      await api.updateMessageBlock(floor, msg);
-      return;
+    if (typeof ctx.updateMessageBlock === "function") {
+      await ctx.updateMessageBlock(floor, msg);
     }
   } catch {
   }
   try {
     const types = getEventTypes();
-    const evt = types.MESSAGE_EDITED ?? "message_edited";
-    (_a = ctx.eventSource) == null ? void 0 : _a.emit(evt, floor);
+    (_a = ctx.eventSource) == null ? void 0 : _a.emit(types.MESSAGE_UPDATED ?? "message_updated", floor);
   } catch {
-    try {
-      const api = ctx;
-      if (typeof api.reloadCurrentChat === "function") await api.reloadCurrentChat();
-    } catch {
-    }
   }
+}
+function findSlotAnchor(floor, seq2) {
+  const mesText = document.querySelector(`.mes[mesid="${floor}"] .mes_text`);
+  if (!mesText) return null;
+  const anchors = [...mesText.querySelectorAll(BBI_SLOT_SELECTOR)];
+  return anchors[seq2] ?? null;
+}
+async function triggerCardGenerate(floor, seq2, timeoutMs = 1e4) {
+  var _a;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const anchor = findSlotAnchor(floor, seq2);
+    const shadow = (anchor == null ? void 0 : anchor.shadowRoot) ?? null;
+    if (shadow) {
+      if (shadow.querySelector(CARD_IMAGE_SELECTOR)) return { ok: true, action: "already" };
+      const button = shadow.querySelector(CARD_GENERATE_SELECTOR);
+      if (button) {
+        const label = (button.textContent ?? "").trim();
+        if (label.includes("重新生成") || label.includes("本楼")) {
+          return { ok: false, reason: "blocked", message: label };
+        }
+        button.click();
+        return { ok: true, action: "clicked" };
+      }
+      const hint = shadow.querySelector(CARD_HINT_SELECTOR);
+      const hintText = ((_a = hint == null ? void 0 : hint.textContent) == null ? void 0 : _a.trim()) ?? "";
+      if (hintText) return { ok: false, reason: "blocked", message: hintText };
+    }
+    await sleep(150);
+  }
+  return { ok: false, reason: findSlotAnchor(floor, seq2) ? "timeout" : "no-card" };
+}
+function readStore(floor) {
+  var _a;
+  const ctx = getContext();
+  const msg = (_a = ctx.chat) == null ? void 0 : _a[floor];
+  const extra = msg == null ? void 0 : msg.extra;
+  const store = extra == null ? void 0 : extra[BBI_IMAGE_EXTRA_KEY];
+  return store && typeof store === "object" ? store : null;
+}
+function latestEntry(floor, swipeId, hash, seq2) {
+  var _a, _b;
+  const list = (_b = (_a = readStore(floor)) == null ? void 0 : _a[String(swipeId)]) == null ? void 0 : _b[hash];
+  if (!Array.isArray(list) || list.length === 0) return null;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if ((list[i].slotSeq ?? 0) === seq2) return list[i];
+  }
+  return null;
+}
+async function waitForEntry(floor, swipeId, hash, seq2, timeoutMs = 9e4) {
+  var _a, _b, _c;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entry = latestEntry(floor, swipeId, hash, seq2);
+    if (entry) {
+      if (entry.status === "ready" && entry.path) return { ok: true, entry };
+      if (entry.status === "error") {
+        return { ok: false, reason: "error", message: "柏宝绘出图失败（详情见柏宝绘「请求历史」）" };
+      }
+    }
+    const phase = (_c = (_b = (_a = findSlotAnchor(floor, seq2)) == null ? void 0 : _a.shadowRoot) == null ? void 0 : _b.querySelector("[data-phase]")) == null ? void 0 : _c.getAttribute("data-phase");
+    if (phase === "error") {
+      return { ok: false, reason: "error", message: "柏宝绘出图失败（详情见柏宝绘「请求历史」）" };
+    }
+    await sleep(800);
+  }
+  return { ok: false, reason: "timeout" };
+}
+async function replaceEntryPath(floor, swipeId, hash, generationId, nextPath) {
+  var _a, _b;
+  const ctx = getContext();
+  const msg = (_a = ctx.chat) == null ? void 0 : _a[floor];
+  const extra = msg == null ? void 0 : msg.extra;
+  const store = extra == null ? void 0 : extra[BBI_IMAGE_EXTRA_KEY];
+  const list = (_b = store == null ? void 0 : store[String(swipeId)]) == null ? void 0 : _b[hash];
+  if (!Array.isArray(list)) return false;
+  const index2 = list.findIndex((e) => e.generationId === generationId);
+  if (index2 < 0) return false;
+  if (list[index2].path === nextPath) return true;
+  list[index2] = { ...list[index2], path: nextPath };
+  try {
+    if (typeof ctx.saveChat === "function") await ctx.saveChat();
+  } catch {
+    return false;
+  }
+  await refreshFloor(ctx, floor, msg);
+  return true;
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 const STATUS_MAX_CHARACTERS = 2;
 const STATUS_MAX_PANELS = 4;
@@ -3930,14 +4628,6 @@ function sceneFromSegment(segment) {
     ...context.nextText ? { nextText: context.nextText } : {}
   };
 }
-function toNormalizedInput(prompt, nl, negative, profile) {
-  return {
-    prompt,
-    ...nl ? { nl } : {},
-    ...negative ? { negative } : {},
-    save: true
-  };
-}
 async function ensureModeOutPlan(mode, deps) {
   var _a;
   const planId = (_a = deps.fullSettings.modeOutPlans) == null ? void 0 : _a[mode];
@@ -3958,7 +4648,7 @@ async function ensureModeOutPlan(mode, deps) {
   }
 }
 async function runIllustration(task, ctx, deps) {
-  var _a, _b;
+  var _a, _b, _c;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
@@ -3982,26 +4672,29 @@ async function runIllustration(task, ctx, deps) {
   }));
   const prompt = composeEnglishPrompt(tagSegments);
   if (!prompt.trim()) throw new Error("组装后的英文 prompt 为空。");
-  const profile = pickProfile(deps.settings, "illustration");
   ctx.report({ stage: "generating" });
   await ensureModeOutPlan("illustration", deps);
-  const result = await baiBaiAdapter.generate(
-    toNormalizedInput(prompt, plan.data.nl, plan.data.negative),
-    profile ?? fallbackProfile("illustration")
-  );
-  const imagePath = result.path ?? result.dataUrl;
-  if (!imagePath) throw new Error("出图未返回图片地址。");
-  const anchorText = segment.text.slice(0, 120);
-  const inserted = await insertImageIntoBody({
+  const tag = buildBbiTag({
+    prompt,
+    ...plan.data.nl ? { nl: plan.data.nl } : {},
+    ...plan.data.negative ? { negative: plan.data.negative } : {},
+    size: plan.data.size === "landscape" ? "landscape" : "portrait"
+  });
+  const hash = promptHash(tag);
+  const inserted = await insertImageTag({
     floor,
     chatId: task.chatId,
     swipeId: ((_a = segment.messages[0]) == null ? void 0 : _a.swipeId) ?? 0,
-    sendDate: (_b = segment.messages[0]) == null ? void 0 : _b.sendDate,
-    imagePath,
-    anchorText,
-    alt: plan.data.nl ? plan.data.nl.slice(0, 60) : "配图"
+    ...((_b = segment.messages[0]) == null ? void 0 : _b.sendDate) ? { sendDate: segment.messages[0].sendDate } : {},
+    tag,
+    anchorText: segment.text.slice(0, 120)
   });
-  console.log("[ST-Story-Illustrator] 正文插图写入:", inserted);
+  if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
+  const triggered = await triggerCardGenerate(floor, inserted.seq);
+  if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
+  const waited = await waitForEntry(floor, ((_c = segment.messages[0]) == null ? void 0 : _c.swipeId) ?? 0, hash, inserted.seq);
+  if (!waited.ok) console.warn("[ST-Story-Illustrator] 插画结果未取到：", waited.reason, waited.message);
+  const imagePath = waited.ok ? waited.entry.path : "";
   const mesTextEl = document.querySelector(`.mes[mesid="${floor}"] .mes_text`);
   const anchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : void 0;
   const artifact = {
@@ -4011,20 +4704,48 @@ async function runIllustration(task, ctx, deps) {
     chatId: task.chatId,
     sourceFloors: segment.floorIds,
     anchorFloor: floor,
-    // 正文已嵌入图片时不再注入 DOM 卡片（避免重复显示）；写入失败才降级为 DOM 卡片
-    mountMode: inserted.ok ? "trailing" : defaultMountMode("illustration"),
+    // 图片已经是正文内容（柏宝绘卡片），不再注入本插件卡片，避免重复与多余的说明文字
+    mountMode: "trailing",
     ...anchor ? { textAnchor: anchor } : {},
     imagePath,
     prompt,
     ...plan.data.nl ? { nl: plan.data.nl } : {},
     ...plan.data.negative ? { negative: plan.data.negative } : {},
-    ...result.seed !== void 0 ? { seed: result.seed } : {},
-    metadata: { embeddedInBody: inserted.ok },
+    metadata: {
+      embeddedInBody: true,
+      bbiTag: tag,
+      bbiHash: hash,
+      bbiSlotSeq: inserted.seq,
+      ...waited.ok ? { bbiGenerationId: waited.entry.generationId } : {},
+      ...waited.ok && typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {}
+    },
     createdAt: Date.now()
   };
   appendArtifact(floor, artifact);
+  await saveChatSafe();
   mountFloor(floor);
   ctx.report({ stage: "completed" });
+}
+function insertFailureMessage(reason) {
+  switch (reason) {
+    case "chat-changed":
+      return "排队期间切换了聊天，已放弃写入（不覆盖别人的编辑）。";
+    case "floor-changed":
+      return "排队期间楼层内容变了，已放弃写入。";
+    case "swipe-changed":
+      return "排队期间楼层滑动到了别的版本，已放弃写入。";
+    case "save-failed":
+      return "正文写入后保存聊天失败，已回滚。";
+    default:
+      return "无法写入正文（SillyTavern 上下文不可用）。";
+  }
+}
+function cardFailureMessage(result) {
+  if (result.reason === "blocked") return result.message || "柏宝绘未配置出图后端。";
+  if (result.reason === "no-card") {
+    return "正文已写入 tag，但楼层卡片没有出现。请确认柏宝绘已启用（它负责把 tag 显示成卡片）。";
+  }
+  return "正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。";
 }
 function fallbackProfile(mode) {
   return {
@@ -4037,36 +4758,62 @@ function fallbackProfile(mode) {
   };
 }
 async function runComic(task, ctx, deps) {
+  var _a, _b, _c;
   const segment = task.source;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
   const modeSettings = deps.fullSettings.modes["comic"];
+  const swipeId = ((_a = segment.messages[0]) == null ? void 0 : _a.swipeId) ?? 0;
+  const sendDate = (_b = segment.messages[0]) == null ? void 0 : _b.sendDate;
+  const layout = modeSettings.comicLayout ?? "regular";
+  const dialoguePolicy = modeSettings.comicDialoguePolicy ?? deps.fullSettings.dialoguePolicy ?? "auto";
+  const bubbleStyle = modeSettings.comicBubbleStyle ?? deps.fullSettings.bubbleStyle;
+  const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
+  const showComposite = modeSettings.comicShowComposite !== false;
   ctx.report({ stage: "reading" });
   const characters = await getCharacters(floor);
-  const backendInfo = await baiBaiAdapter.id ? "nai" : "nai";
-  const plan = await generateComicPlan({
+  const planOptions = {
+    panelMode: true,
+    panelLayout: layout,
+    pageType: modeSettings.comicPageType ?? "auto",
+    // 漫画页必须有对白：这是它区别于「一张插画」的一半信息量，不给模型就永远没有
+    dialogue: true,
+    dialoguePolicy,
+    dialogueMode: "json",
+    // nl 是唯一能分区描述「上格/下格」的通道，关掉就只能靠 tag 碰运气
+    nl: true,
+    backend: "nai",
+    charPrompts: false,
+    includeChinese: deps.fullSettings.includeChinese,
+    maxPages: modeSettings.comicMaxPages ?? 1
+  };
+  let plan = await generateComicPlan({
     scene: sceneFromSegment(segment),
     characters: characters.characters,
-    options: {
-      panelMode: true,
-      panelLayout: modeSettings.comicLayout ?? "regular",
-      pageType: modeSettings.comicPageType ?? "auto",
-      dialogue: deps.fullSettings.dialogueEnabled,
-      dialoguePolicy: deps.fullSettings.dialoguePolicy,
-      dialogueMode: "tag",
-      nl: deps.fullSettings.includeNl,
-      backend: backendInfo,
-      charPrompts: false,
-      includeChinese: deps.fullSettings.includeChinese,
-      maxPages: modeSettings.comicMaxPages ?? 1
-    },
+    options: planOptions,
     caller: makeModeLlmCaller(deps.fullSettings, "comic")
   });
   if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
-  const profile = pickProfile(deps.settings, "comic");
+  if (!hasStoryContent(plan.data)) {
+    console.warn("[ST-Story-Illustrator] 分镜 tag 缺少画面内容，重试一次。");
+    plan = await generateComicPlan({
+      scene: sceneFromSegment(segment),
+      characters: characters.characters,
+      options: {
+        ...planOptions,
+        extraInstruction: "上一次的分镜 tags 里只有构图词，没有任何人物、动作、场景——那样的图与剧情无关。这次每格的 tags 必须写出：角色外观（来自角色快照）、这个人正在做什么、在哪里、画面里的关键物件。"
+      },
+      caller: makeModeLlmCaller(deps.fullSettings, "comic")
+    });
+    if (!plan.ok || !plan.data) throw new Error(plan.error ?? "分镜计划生成失败。");
+    if (!hasStoryContent(plan.data)) {
+      throw new Error("分镜计划里每格都只有构图词、没有人物与动作（出图会与选段无关）。请换用更有能力的写 tag 模型。");
+    }
+  }
   const totalPanels = plan.data.reduce((sum, page) => sum + page.panels.length, 0);
   let done = 0;
   await ensureModeOutPlan("comic", deps);
+  let previousTag = null;
   for (const page of plan.data) {
     for (const panel of page.panels) {
       if (ctx.signal.aborted) return;
@@ -4077,12 +4824,49 @@ async function runComic(task, ctx, deps) {
         panelLayout: page.layout,
         chibiOn: false
       });
-      const result = await baiBaiAdapter.generate(
-        toNormalizedInput(enforced.prompt, enforced.nl || void 0, void 0),
-        profile ?? fallbackProfile("comic")
+      const prompt = mergeCharacterTags(
+        enforced.prompt,
+        panel.characters.map((c) => c.name),
+        characters.characters
       );
-      const imagePath = result.path ?? result.dataUrl;
-      if (!imagePath) continue;
+      const tag = buildBbiTag({
+        prompt,
+        ...enforced.nl ? { nl: enforced.nl } : {},
+        size: "portrait"
+      });
+      const hash = promptHash(tag);
+      const inserted = await insertImageTag({
+        floor,
+        chatId: task.chatId,
+        swipeId,
+        ...sendDate ? { sendDate } : {},
+        tag,
+        anchorText: previousTag ?? segment.text.slice(0, 120)
+      });
+      if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
+      previousTag = tag;
+      const triggered = await triggerCardGenerate(floor, inserted.seq);
+      if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
+      const waited = await waitForEntry(floor, swipeId, hash, inserted.seq);
+      if (!waited.ok) {
+        console.warn("[ST-Story-Illustrator] 分格结果未取到：", waited.reason, waited.message);
+        done += 1;
+        continue;
+      }
+      let imagePath = waited.entry.path;
+      let bakedPath = "";
+      if (showComposite && ((_c = panel.dialogue) == null ? void 0 : _c.length)) {
+        const baked = await bakeDialogueIntoImage({
+          imagePath,
+          dialogue: panel.dialogue,
+          style: bubbleStyle,
+          font: bubbleFont
+        });
+        if (baked && await replaceEntryPath(floor, swipeId, hash, waited.entry.generationId, baked)) {
+          bakedPath = baked;
+          imagePath = baked;
+        }
+      }
       const artifact = {
         id: createArtifactId(),
         taskId: task.id,
@@ -4090,21 +4874,33 @@ async function runComic(task, ctx, deps) {
         chatId: task.chatId,
         sourceFloors: segment.floorIds,
         anchorFloor: floor,
-        mountMode: defaultMountMode("comic"),
+        mountMode: "trailing",
         pageIndex: page.pageIndex,
         panelIndex: panel.index,
         imagePath,
-        prompt: enforced.prompt,
+        prompt,
         ...panel.nl ? { nl: panel.nl } : {},
         ...panel.dialogue ? { dialogue: panel.dialogue } : {},
-        ...result.seed !== void 0 ? { seed: result.seed } : {},
-        metadata: { pageTitle: page.title, panelTitle: panel.title, layout: page.layout },
+        metadata: {
+          // 图的显示交给柏宝绘卡片，本插件不再挂卡片
+          embeddedInBody: true,
+          pageTitle: page.title,
+          panelTitle: panel.title,
+          layout: page.layout,
+          bbiTag: tag,
+          bbiHash: hash,
+          bbiSlotSeq: inserted.seq,
+          bbiGenerationId: waited.entry.generationId,
+          ...bakedPath ? { bubbleBakedPath: bakedPath } : {},
+          ...typeof waited.entry.seed === "number" ? { seed: waited.entry.seed } : {}
+        },
         createdAt: Date.now()
       };
       appendArtifact(floor, artifact);
       done += 1;
     }
   }
+  await saveChatSafe();
   if (done === 0) throw new Error("所有分格出图均失败。");
   mountFloor(floor);
   ctx.report({ stage: "completed" });
@@ -4233,7 +5029,7 @@ function initQueue() {
     fullSettings: settings
   });
   queue = new TaskQueue(runner, {
-    taskTimeoutMs: 5 * 60 * 1e3,
+    taskTimeoutMs: 12 * 60 * 1e3,
     onStatusChange: (task, status) => {
       console.log(`[ST-Story-Illustrator] 任务 ${task.id} → ${status}`);
     },
