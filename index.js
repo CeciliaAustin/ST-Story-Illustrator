@@ -3192,6 +3192,12 @@ function artifactPanelCountOf(artifact) {
 function clamp01$1(v) {
   return typeof v === "number" && Number.isFinite(v) ? Math.round(Math.min(1, Math.max(0, v)) * 1e4) / 1e4 : void 0;
 }
+function comicBaseImageOf(artifact) {
+  var _a;
+  const raw = (_a = artifact.metadata) == null ? void 0 : _a.rawImagePath;
+  if (typeof raw === "string" && raw.trim() && raw !== artifact.imagePath) return raw;
+  return artifact.imagePath;
+}
 function comicOverlayPlan(artifact, settings2) {
   const items = (artifact.dialogue ?? []).filter((item) => item && typeof item.text === "string" && item.text.trim()).map((item) => {
     const { x: rawX, y: rawY, ...rest } = item;
@@ -8086,12 +8092,13 @@ function attachBubbleOverlay(card, img, artifact) {
   const settings2 = getSettings(DEFAULT_SETTINGS);
   const plan = comicOverlayPlan(artifact, settings2);
   if (!plan) return;
+  const baseSrc = comicBaseImageOf(artifact);
   let generation = 0;
   const held = { current: null };
   const myToken = ++generation;
   void (async () => {
     var _a;
-    const result = await compositeDialogue(artifact.imagePath, plan.items, plan.opts);
+    const result = await compositeDialogue(baseSrc, plan.items, plan.opts);
     if (myToken !== generation || !result) {
       result == null ? void 0 : result.revoke();
       return;
@@ -8122,7 +8129,7 @@ function openComicCardLightbox(floor, artifactId, alt) {
   }
   const pageTitle = typeof ((_a = latest.metadata) == null ? void 0 : _a.pageTitle) === "string" ? latest.metadata.pageTitle : "";
   openComicLightbox({
-    baseSrc: latest.imagePath,
+    baseSrc: comicBaseImageOf(latest),
     caption: pageTitle ? `${pageTitle}${alt ? ` · ${alt}` : ""}` : alt,
     plan,
     onSave: async (items) => {

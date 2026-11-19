@@ -53,6 +53,18 @@ function clamp01(v: unknown): number | undefined {
 }
 
 /**
+ * 这一页该拿去合成的底图（无字原图）。
+ *
+ * 迁移兜底：旧版本把带字烧录图写进 artifact.imagePath、原图留在 metadata.rawImagePath。
+ * 直接对烧录图再合成会双重气泡——凡是无字原图还留着，就以它为准。
+ */
+export function comicBaseImageOf(artifact: VisualArtifact): string {
+  const raw = artifact.metadata?.rawImagePath;
+  if (typeof raw === 'string' && raw.trim() && raw !== artifact.imagePath) return raw;
+  return artifact.imagePath;
+}
+
+/**
  * 显示时合成的完整参数。没有台词返回 null（调用方直接显示无字原图）。
  *
  * 排版参数全部来自 artifact 自己的元数据：生成时的版面（layout/panelCount/

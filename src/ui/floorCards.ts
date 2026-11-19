@@ -15,7 +15,7 @@ import { getArtifacts, updateArtifact } from '../storage/repository';
 import { getMessage, getSettings, saveChatSafe } from '../host/sillytavern';
 import { manwaAnchors, parseManwaTags } from '../baibai/manwaTag';
 import { extractPlainText, findAnchorRange } from '../selection/anchor';
-import { comicOverlayPlan } from '../manga/bubbleOverlay';
+import { comicOverlayPlan, comicBaseImageOf } from '../manga/bubbleOverlay';
 import { compositeDialogue } from '../manga/bubbleComposite';
 import { openLightbox, openComicLightbox } from './lightbox';
 import { rerollComicPage } from '../manga/rerollPage';
@@ -369,12 +369,13 @@ function attachBubbleOverlay(card: HTMLElement, img: HTMLImageElement, artifact:
   const settings = getSettings(DEFAULT_SETTINGS);
   const plan = comicOverlayPlan(artifact, settings);
   if (!plan) return; // 没台词：无字原图直接上，也不占合成资源
+  const baseSrc = comicBaseImageOf(artifact); // 旧烧录卡迁移：原图还在就用原图，避免双重气泡
 
   let generation = 0; // 每张卡一个代次令牌：同卡重复合成时旧的作废（原版坑：异步乱序）
   const held: { current: { revoke: () => void } | null } = { current: null };
   const myToken = ++generation;
   void (async () => {
-    const result = await compositeDialogue(artifact.imagePath, plan.items, plan.opts);
+    const result = await compositeDialogue(baseSrc, plan.items, plan.opts);
     if (myToken !== generation || !result) { result?.revoke(); return; }
     held.current?.revoke();
     held.current = result;
@@ -402,7 +403,7 @@ function openComicCardLightbox(floor: number, artifactId: string, alt: string): 
   }
   const pageTitle = typeof latest.metadata?.pageTitle === 'string' ? latest.metadata.pageTitle : '';
   openComicLightbox({
-    baseSrc: latest.imagePath,
+    baseSrc: comicBaseImageOf(latest),
     caption: pageTitle ? `${pageTitle}${alt ? ` · ${alt}` : ''}` : alt,
     plan,
     onSave: async items => {
