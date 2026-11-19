@@ -14,7 +14,7 @@ import type {
   VisualProfile,
 } from '../types';
 import { resolveModeSettings } from '../types';
-import { readOutConfig } from '../baibai/planConfig';
+import { readOutConfig, nlForMode } from '../baibai/planConfig';
 import { getCharacters } from '../baibai/bridge';
 import { baiBaiAdapter, readBackendState } from '../baibai/imageAdapter';
 import { makeModeLlmCaller } from '../manga/planGenerator';
@@ -224,6 +224,8 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     mangaBw: modeSettings.bwMangaMono !== false,
     dialogue: kind === 'manga' && modeSettings.bwMangaDialogue !== false,
     roster: characters.characters.map(c => c.name),
+    // 要不要写 nl 看这套方案自己的开关（NAI4 一律 false；4.5/V5 跟方案面板走）
+    nl: nlForMode(settings, mode),
     ...(libraryBlock ? { libraryBlock } : {}),
     ...(castBlock ? { castBlock } : {}),
     ...(settings.promptOverrides ? { promptOverrides: settings.promptOverrides } : {}),

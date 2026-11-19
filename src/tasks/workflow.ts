@@ -21,7 +21,7 @@ import type {
 } from '../types';
 import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from './modePlan';
 import { runTheaterTask, bakeTheaterLines } from './theaterRun';
-import { readOutConfig, activePlanModel } from '../baibai/planConfig';
+import { readOutConfig, activePlanModel, nlForMode } from '../baibai/planConfig';
 import { resolveModeSettings, MODE_LABEL } from '../types';
 import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment';
 import { buildAnchor } from '../selection/anchor';
@@ -99,14 +99,15 @@ async function runIllustration(
         + '画出来的人不会是故事里的角色。请到柏宝绘 →「角色」里确认条目存在。',
     });
   }
+  // nl 是柏宝绘的画面细节通道，但**要跟方案的开关走**：方案关了 nl（或底模是
+  // NAI4）时就不该写，写了也用不上。以前这里写死 true，等于替用户把方案开关打开了。
+  const wantNl = nlForMode(deps.fullSettings, 'illustration');
   const plan = await generateIllustrationPlan({
     scene: sceneFromSegment(segment),
     characters: characters.characters,
-    // nl 是柏宝绘的画面细节通道（它自己的每张图都带），以前这里读 includeNl，
-    // 默认 false 且没有 UI → 生成的 tag 里没有 <nl>，看着就像「没走柏宝绘的流程」。
     options: {
       includeChinese: deps.fullSettings.includeChinese,
-      includeNl: true,
+      includeNl: wantNl,
       includeNegative: true,
     },
     ...(libraryBlock ? { libraryBlock } : {}),
@@ -141,7 +142,9 @@ async function runIllustration(
   // 请求也会进它的「请求历史」页。
   const tag = buildBbiTag({
     prompt,
-    ...(plan.data.nl ? { nl: plan.data.nl } : {}),
+    // 方案不要 nl 时，即便模型自作主张写了也不写进 tag：柏宝绘不会用它，
+    // 却会留在正文里被后续「改词」看到，误导以为这张图带自然语言。
+    ...(wantNl && plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
     size: plan.data.size === 'landscape' ? 'landscape' : 'portrait',
   });
@@ -263,6 +266,8 @@ async function runComic(
   const bubbleStyle = modeSettings.comicBubbleStyle ?? deps.fullSettings.bubbleStyle;
   const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
   const showComposite = modeSettings.comicShowComposite !== false;
+  // 这套漫画方案要不要写自然语言（读剧情与写 <bbi_image> 必须同一个答案）
+  const wantComicNl = nlForMode(deps.fullSettings, 'comic');
 
   ctx.report({ stage: 'reading' });
   const characters = await getCharacters(floor);
@@ -275,8 +280,9 @@ async function runComic(
     dialogue: true,
     dialoguePolicy,
     dialogueMode: 'json' as const,
-    // nl 是唯一能分区描述「上格/下格」的通道，关掉就只能靠 tag 碰运气
-    nl: true,
+    // nl 是唯一能分区描述「上格/下格」的通道，关掉就只能靠 tag 碰运气。
+    // 但它同样是方案的属性：方案没有自然语言通道时，漫画只能靠 tags + panels 表达。
+    nl: wantComicNl,
     backend: 'nai' as const,
     charPrompts: false,
     includeChinese: deps.fullSettings.includeChinese,
@@ -342,7 +348,7 @@ async function runComic(
 
     const tag = buildBbiTag({
       prompt: enforced.prompt,
-      ...(enforced.nl ? { nl: enforced.nl } : {}),
+      ...(wantComicNl && enforced.nl ? { nl: enforced.nl } : {}),
       size: 'portrait',
     });
     const hash = promptHash(tag);

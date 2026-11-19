@@ -1321,6 +1321,7 @@ function parsePlans(raw, endpoints, artists = []) {
       portraitSize: str$1(p.portraitSize).trim(),
       landscapeSize: str$1(p.landscapeSize).trim(),
       modelFamily: detectModelFamily(str$1(p.model)),
+      naturalLanguage: p.naturalLanguage === true,
       artistId,
       artistName: (artist == null ? void 0 : artist.name) ?? "",
       layoutWords: artist ? layoutWordsIn(`${artist.prompt}, ${artist.quality}`) : []
@@ -1353,6 +1354,27 @@ function readOutConfig() {
 }
 function activePlanOf(snap) {
   return snap.plans.find((p) => p.id === snap.activePlanId);
+}
+function planNlEnabled(plan) {
+  if (!plan) return false;
+  if (plan.modelFamily !== "5" && plan.modelFamily !== "4.5") return false;
+  return plan.naturalLanguage === true;
+}
+function planForMode(snap, mode, assigned) {
+  if (mode !== "illustration") {
+    const id = assigned == null ? void 0 : assigned[mode];
+    if (id) {
+      const hit = snap.plans.find((p) => p.id === id);
+      if (hit) return hit;
+    }
+  }
+  return activePlanOf(snap);
+}
+function nlOfMode(snap, mode, assigned) {
+  return planNlEnabled(planForMode(snap, mode, assigned));
+}
+function nlForMode(settings2, mode) {
+  return nlOfMode(readOutConfig(), mode, settings2 == null ? void 0 : settings2.modeOutPlans);
 }
 function activePlanModel() {
   var _a;
@@ -2799,18 +2821,19 @@ const COMMON_RULES = [
   "只写 1girl / solo / standing / looking at viewer 这类空景词的图等于没画剧情——至少要有 3 条「动作或与场景互动」的 tag。",
   "characters 最多 2 项；两人互动时主动方和被动方 act 必须分开写。",
   "characters[].name **必须照抄【角色固定外貌库】里的名字**。正文里用「你」「他」「那个金发男生」或另一个叫法时，先判断指的是库里哪一位，再写库里的名字——名字写错就等于这个人没有外貌，会被画成路人。",
-  "nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。",
+  "{{#nl}}nl 里写两个人时必须用正文里的角色名当主语，禁止用 he/she/the man 泛指。{{/nl}}",
   "tags 里必须交代这三件事：① 人数与互动；② 地点或环境（classroom / dormitory / arched corridor / street / outdoors）；③ 光线或时间（sunlight / backlighting / golden hour / night / indoor lighting）。",
   "characters[].act 只写「这个人」的动作、表情、以及和场景/道具的接触；外貌、发型、瞳色、服装由柏宝绘角色库提供，这里**绝对不要写**。",
-  "nl 用英文自然语言写同一件事，不要分点、不要换行。",
+  "{{#nl}}nl 用英文自然语言写同一件事，不要分点、不要换行。{{/nl}}",
+  "{{^nl}}这套出图方案没有自然语言通道：不要输出 nl 字段（写了也不会被用，只会稀释 tag 权重）。{{/nl}}",
   "禁止写：画风、画质（masterpiece / best quality / absurdres）、画师名、角色外貌与服装细节、负面词——这些由柏宝绘的方案负责。",
   "不要解释，不要 markdown 代码块，不要多余文字。"
 ].join("\n");
-const SPEECH_ROOM_RULE = "有台词的那一格，nl 里要写明主角位于画面下半部或偏左右一侧、画面上方留出安静的空白（气泡会叠在那里）——人物头顶顶到画面上沿时，气泡只能盖在脸上。";
+const SPEECH_ROOM_RULE = "{{#nl}}有台词的那一格，nl 里要写明主角位于画面下半部或偏左右一侧、画面上方留出安静的空白（气泡会叠在那里）——人物头顶顶到画面上沿时，气泡只能盖在脸上。{{/nl}}";
 const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你的任务是根据给定剧情，输出结构化的英文生图标签。
 严格遵守：
 1. 先按前面的规范在心里过一遍检查清单（要写出来就写在 <thinking>…</thinking> 里，并且必须闭合）；然后只输出一个 JSON 对象，JSON 之外不要任何解释文字、不要 Markdown 代码围栏。
-2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}],"nl":"可选英文自然语言描述","negative":"可选英文负面词","size":"portrait|landscape"}。
+2. 结构：{"segments":[{"id":"...","source":"character|scene|global","characterName":"角色名(仅character段)","english":["英文tag",...],"chinese":["中文辅助翻译",...],"order":数字}]{{#nl}},"nl":"可选英文自然语言描述"{{/nl}},"negative":"可选英文负面词","size":"portrait|landscape"}。
 3. english / nl / negative 必须是纯英文，绝不能出现中文——中文只放在 chinese 字段作辅助阅读。
 4. character 段只写角色固定外貌（来自提供的角色快照，原样保留其 tag，不得改写）；scene 段写本次画面新增的动作、场景、构图、光线、情绪 tag。
 5. 一次只策划一个明确的瞬间，不要描述整段剧情的时间跨度。
@@ -2818,23 +2841,22 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 7. segment 按 order 从小到大排列；无需的字段直接省略，不要填空字符串或空数组。
 8. 若剧情里的名场面适合漫画分镜，仍按单幅插画输出（漫画由专门的模式处理）。
 9. 选段里出场的**每一个人**都要有自己的 character 段：name 照抄角色库里的名字，外貌照抄该条目的 tag（不改写、不合并）。漏掉一个人，图上就少一个人。
-10. nl 必须写：英文 1~2 句，把「谁、在哪里、正在做什么」串起来——柏宝绘的 nl 通道决定这些细节能不能真的落在画面上。
+10. {{#nl}}nl 必须写：英文 1~2 句，把「谁、在哪里、正在做什么」串起来——柏宝绘的 nl 通道决定这些细节能不能真的落在画面上。{{/nl}}{{^nl}}不要生成 nl 字段：这套出图方案不需要自然语言通道，写了反而会稀释 tag 权重。{{/nl}}
 {{#hasFlags}}
 补充约束：
 {{#noChinese}}不要生成 chinese 字段（用户已关闭中文辅助）。{{/noChinese}}
-{{#noNl}}不要生成 nl 字段（当前后端不使用自然语言通道）。{{/noNl}}
 {{#noNegative}}不要生成 negative 字段。{{/noNegative}}
 {{#sizeClause}}画幅倾向：{{sizeClause}}。{{/sizeClause}}
 {{/hasFlags}}`;
 const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔","nl":"英文分区描述","dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"英文分区描述"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","characters":[{"name":"角色","act":"动作"}],"mood":"氛围"}]}]}
 硬要求：
 1. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
 2. page.tags 必须写出：在场角色的外观（用给你的角色快照）、他们正在做什么、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。
 3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
-4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），各格远近只写在 nl 里。
-5. page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。
+4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），{{#nl}}各格远近只写在 nl 里{{/nl}}{{^nl}}各格远近只能用构图 tag 区分{{/nl}}。
+5. {{#nl}}page.nl 必须分区写：第一句总述版面（几格、怎么分），之后每格一句，用 "In the upper panel, ..." / "The lower panel shows ..." 这类句式；不要用 Panel 1 / Panel 2 编号，不要写对白。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}
 6. panels 数组只用来标「每一格画了什么」：{{#fixedPanels}}**每页固定 {{panelsPerPage}} 格**——panels 必须正好 {{panelsPerPage}} 条，nl 必须按 {{panelsPerPage}} 格分区写，版面也必须真的切出 {{panelsPerPage}} 格。{{/fixedPanels}}{{^fixedPanels}}2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致；**版面必须真的切出这么多格**——说 three panels 就要画三格，不能拿两格模板套四段内容。{{/fixedPanels}}
 7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。panel 字段是这句出现在第几格（1 起，按阅读顺序）——气泡只会画在那**一格**里，所以必须与该格 characters 里说话的人对得上；对不上就别写这句。speaker 写说话人名字（照抄 characters 里的名字）：它不会被画进气泡，只用来定位，写对了气泡才会贴着说话的人。
 8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。
@@ -2848,13 +2870,13 @@ const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布
 【输出约束】最多 {{maxPages}} 页；{{#dialogue}}dialogue 必须写：每页 2~3 条中文台词，取自这一段里真的说过的话；实在没有对白才用一句旁白式台词顶上。{{/dialogue}}{{^dialogue}}本次不要输出 dialogue 字段。{{/dialogue}}
 {{#noChinese}}除台词外的辅助中文一律不要输出。{{/noChinese}}`;
 const STATUS_SINGLE = `读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，这一楼发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}
+格式：{"title":"中文，14 字以内，这一楼发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}}
 tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。
 ${COMMON_RULES}
 景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。
 没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。`;
 const STATUS_MANY = `读一段角色扮演正文，把这一楼发生的事挑成 {{count}} 个先后画面，像一条小分镜，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，这一楼讲了一件什么事",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}]}
+格式：{"title":"中文，14 字以内，这一楼讲了一件什么事",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}}]}
 panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。
 每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。
 ${COMMON_RULES}
@@ -2862,7 +2884,7 @@ ${COMMON_RULES}
 没有角色出场时输出 {"title":"","cast":[],"panels":[]}。`;
 const BONUS_LINES = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
 const BONUS_SINGLE = `读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${BONUS_LINES}}
+格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag"{{#nl}},"nl":"English, 1-2 sentences"{{/nl}},${BONUS_LINES}}
 题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。
 每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。
 每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。只画一个画面。
@@ -2870,7 +2892,7 @@ const BONUS_SINGLE = `读一段角色扮演正文，忘掉它的剧情，只为�
 ${COMMON_RULES}
 ${SPEECH_ROOM_RULE}`;
 const BONUS_MANY = `读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences",${BONUS_LINES},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag","nl":"English, 1-2 sentences","lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]}
+格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag"{{#nl}},"nl":"English, 1-2 sentences"{{/nl}},${BONUS_LINES},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag"{{#nl}},"nl":"English, 1-2 sentences"{{/nl}},"lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]}
 题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。
 每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。
 每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。把彩蛋拆成最多 {{count}} 个先后画面（panels），按时间顺序，每格不同瞬间。
@@ -2879,7 +2901,7 @@ ${COMMON_RULES}
 ${SPEECH_ROOM_RULE}`;
 const MANGA_BASE_RULES = "禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。\n禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。";
 const MANGA_SINGLE = `读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，这一格发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"{{#dialogue}},${BONUS_LINES}{{/dialogue}}}
+格式：{"title":"中文，14 字以内，这一格发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}{{#dialogue}},${BONUS_LINES}{{/dialogue}}}
 ${COMMON_RULES}
 tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。
 **这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。
@@ -2889,7 +2911,7 @@ ${SPEECH_ROOM_RULE}{{/dialogue}}
 {{#safe}}这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。{{/safe}}
 没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。`;
 const MANGA_MANY = `读一段角色扮演正文，把这一楼发生的事挑成最多 {{count}} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"{{#dialogue}},${BONUS_LINES}{{/dialogue}}}]}
+格式：{"title":"中文，14 字以内",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}{{#dialogue}},${BONUS_LINES}{{/dialogue}}}]}
 panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。
 ${COMMON_RULES}
 tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。
@@ -2904,35 +2926,35 @@ const PROMPT_DOCS = [
     id: "illustration",
     label: "正文插画",
     hint: "读选段 → 输出 tag 段（segment）与 nl。改字段名会导致解析失败。",
-    vars: ["hasFlags", "noChinese", "noNl", "noNegative", "sizeClause"],
+    vars: ["nl", "hasFlags", "noChinese", "noNegative", "sizeClause"],
     defaults: { single: ILLUSTRATION }
   },
   {
     id: "comic",
     label: "正文漫画分镜",
     hint: "一页一张图。{{panelRule}} 是系统按「分镜档位 / 页型 / 后端」注入的规则块，别删。",
-    vars: ["hasRule", "panelRule", "maxPages", "dialogue", "noChinese", "fixedPanels", "panelsPerPage"],
+    vars: ["nl", "hasRule", "panelRule", "maxPages", "dialogue", "noChinese", "fixedPanels", "panelsPerPage"],
     defaults: { single: COMIC }
   },
   {
     id: "status",
     label: "QQ 人状态栏",
     hint: "只画这一楼最要紧的一张。{{count}} 是多格模式要的格数。",
-    vars: ["count"],
+    vars: ["nl", "count"],
     defaults: { single: STATUS_SINGLE, many: STATUS_MANY }
   },
   {
     id: "bonus",
     label: "QQ 人彩蛋",
     hint: "架空小片段，与正文剧情无关，但人物性格照旧。",
-    vars: ["count"],
+    vars: ["nl", "count"],
     defaults: { single: BONUS_SINGLE, many: BONUS_MANY }
   },
   {
     id: "manga",
     label: "黑白漫小剧场",
-    hint: "单格黑白漫画；{{#safe}} 是安全模式，{{#dialogue}} 是台词。",
-    vars: ["count", "safe", "dialogue"],
+    hint: "单格黑白漫画；{{#safe}} 是安全模式，{{#dialogue}} 是台词，{{#nl}} 是方案是否要自然语言。",
+    vars: ["nl", "count", "safe", "dialogue"],
     defaults: { single: MANGA_SINGLE, many: MANGA_MANY }
   }
 ];
@@ -4671,8 +4693,9 @@ function characterToSegment(character, order, includeChinese) {
   };
 }
 function buildIllustrationSystemPrompt(options, overrides) {
-  const hasFlags = !options.includeChinese || !options.includeNl || !options.includeNegative || !!options.size;
+  const hasFlags = !options.includeChinese || !options.includeNegative || !!options.size;
   return renderPromptDoc("illustration", "single", {
+    nl: options.includeNl,
     hasFlags,
     noChinese: !options.includeChinese,
     noNl: !options.includeNl,
@@ -4763,6 +4786,8 @@ function buildComicSystemPrompt(options, overrides) {
   const rule = buildPanelRule(options.panelMode, ruleOptions);
   const fixedPanels = resolvePanelsPerPage(normalizePanelLayout(options.panelLayout), options.panelsPerPage);
   return renderPromptDoc("comic", "single", {
+    // 方案没有自然语言通道时，整页 nl 分区描述就无从谈起
+    nl: options.nl !== false,
     // 不启用分镜时别谈「每页几格」——那一页根本不是漫画页
     fixedPanels: options.panelMode && fixedPanels >= 2,
     panelsPerPage: fixedPanels >= 2 ? fixedPanels : "",
@@ -4803,7 +4828,7 @@ const defaultLlmCaller = async (system, user) => {
 function makeModeLlmCaller(settings2, mode) {
   const channelId = resolveChannelId(mode, settings2.modeChannels, settings2.llmSource);
   const base = channelId === "main" ? mainApiLlmCaller : async (system, user) => generateViaChannelStrict(channelId, system, user);
-  return async (system, user) => base(withSpecPreamble(system, true), user);
+  return async (system, user) => base(withSpecPreamble(system, nlForMode(settings2, mode)), user);
 }
 async function generateIllustrationPlan(input) {
   const caller = input.caller ?? defaultLlmCaller;
@@ -5218,7 +5243,10 @@ function buildTheaterPrompt(input) {
   const body = clampBody(input.body, many || input.kind === "bonus");
   const name = input.characterName || "（未命名）";
   const docId = DOC_OF_KIND[input.kind] ?? "status";
-  const systemVars = { count };
+  const systemVars = {
+    count,
+    nl: input.nl !== false
+  };
   if (input.kind === "manga") {
     systemVars.safe = input.mangaSafe !== false;
     systemVars.dialogue = input.dialogue === true;
@@ -5443,6 +5471,7 @@ async function readTheater(input, extraInstruction = "") {
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe,
     dialogue: input.dialogue === true,
+    nl: input.nl !== false,
     ...((_a = input.roster) == null ? void 0 : _a.length) ? { roster: input.roster } : {},
     ...input.libraryBlock ? { libraryBlock: input.libraryBlock } : {},
     ...input.castBlock ? { castBlock: input.castBlock } : {},
@@ -5540,7 +5569,7 @@ async function runTheaterOne(input) {
         input.chibi,
         input.mangaBw !== false
       );
-      const nl = input.kind === "manga" ? buildMangaNl(panel.nl) : panel.nl;
+      const nl = input.nl === false ? void 0 : input.kind === "manga" ? buildMangaNl(panel.nl) : panel.nl;
       const negativeText = input.kind === "manga" ? mergeNegative(
         input.mangaBw !== false ? MANGA_BW_NEGATIVE : "",
         input.mangaSafe ? MANGA_SAFE_NEGATIVE : ""
@@ -6749,6 +6778,8 @@ async function runTheaterTask(input) {
     mangaBw: modeSettings.bwMangaMono !== false,
     dialogue: kind === "manga" && modeSettings.bwMangaDialogue !== false,
     roster: characters.characters.map((c) => c.name),
+    // 要不要写 nl 看这套方案自己的开关（NAI4 一律 false；4.5/V5 跟方案面板走）
+    nl: nlForMode(settings2, mode),
     ...libraryBlock ? { libraryBlock } : {},
     ...castBlock ? { castBlock } : {},
     ...settings2.promptOverrides ? { promptOverrides: settings2.promptOverrides } : {},
@@ -6857,7 +6888,7 @@ async function rerollPanel(floor, kind, setId, index2, edit) {
   const startedAt = Date.now();
   try {
     await ensureModeOutPlan(mode, settings2);
-    const nl = kind === "manga" ? buildMangaNl(rawNl) : rawNl;
+    const nl = nlForMode(settings2, mode) ? kind === "manga" ? buildMangaNl(rawNl) : rawNl : void 0;
     const result = await baiBaiAdapter.generate(
       {
         prompt: promptText,
@@ -8237,14 +8268,13 @@ async function runIllustration(task, ctx, deps) {
       text: "柏宝绘角色库是空的（或这一楼之前还没有档案）：这次插图没有任何外貌可抄，画出来的人不会是故事里的角色。请到柏宝绘 →「角色」里确认条目存在。"
     });
   }
+  const wantNl = nlForMode(deps.fullSettings, "illustration");
   const plan = await generateIllustrationPlan({
     scene: sceneFromSegment(segment),
     characters: characters.characters,
-    // nl 是柏宝绘的画面细节通道（它自己的每张图都带），以前这里读 includeNl，
-    // 默认 false 且没有 UI → 生成的 tag 里没有 <nl>，看着就像「没走柏宝绘的流程」。
     options: {
       includeChinese: deps.fullSettings.includeChinese,
-      includeNl: true,
+      includeNl: wantNl,
       includeNegative: true
     },
     ...libraryBlock ? { libraryBlock } : {},
@@ -8266,7 +8296,9 @@ async function runIllustration(task, ctx, deps) {
   ctx.report({ stage: "generating" });
   const tag = buildBbiTag({
     prompt,
-    ...plan.data.nl ? { nl: plan.data.nl } : {},
+    // 方案不要 nl 时，即便模型自作主张写了也不写进 tag：柏宝绘不会用它，
+    // 却会留在正文里被后续「改词」看到，误导以为这张图带自然语言。
+    ...wantNl && plan.data.nl ? { nl: plan.data.nl } : {},
     ...plan.data.negative ? { negative: plan.data.negative } : {},
     size: plan.data.size === "landscape" ? "landscape" : "portrait"
   });
@@ -8373,6 +8405,7 @@ async function runComic(task, ctx, deps) {
   const bubbleStyle = modeSettings.comicBubbleStyle ?? deps.fullSettings.bubbleStyle;
   const bubbleFont = modeSettings.comicBubbleFont ?? deps.fullSettings.bubbleFont;
   const showComposite = modeSettings.comicShowComposite !== false;
+  const wantComicNl = nlForMode(deps.fullSettings, "comic");
   ctx.report({ stage: "reading" });
   const characters = await getCharacters(floor);
   const planOptions = {
@@ -8383,8 +8416,9 @@ async function runComic(task, ctx, deps) {
     dialogue: true,
     dialoguePolicy,
     dialogueMode: "json",
-    // nl 是唯一能分区描述「上格/下格」的通道，关掉就只能靠 tag 碰运气
-    nl: true,
+    // nl 是唯一能分区描述「上格/下格」的通道，关掉就只能靠 tag 碰运气。
+    // 但它同样是方案的属性：方案没有自然语言通道时，漫画只能靠 tags + panels 表达。
+    nl: wantComicNl,
     backend: "nai",
     charPrompts: false,
     includeChinese: deps.fullSettings.includeChinese,
@@ -8435,7 +8469,7 @@ async function runComic(task, ctx, deps) {
     });
     const tag = buildBbiTag({
       prompt: enforced.prompt,
-      ...enforced.nl ? { nl: enforced.nl } : {},
+      ...wantComicNl && enforced.nl ? { nl: enforced.nl } : {},
       size: "portrait"
     });
     const hash = promptHash(tag);
@@ -8623,6 +8657,31 @@ function createVisualTask(segment, mode) {
     updatedAt: now
   };
 }
+const AUTO_ORDER = [
+  { mode: "illustration" },
+  { mode: "comic" },
+  { mode: "chibi-status", kind: "status" },
+  { mode: "chibi-bonus", kind: "bonus" },
+  { mode: "bw-manga", kind: "manga" }
+];
+function pickAutoModes(settings2, floor, ctx) {
+  const random = ctx.random ?? Math.random;
+  const picks = [];
+  for (const { mode, kind } of AUTO_ORDER) {
+    const conf = resolveModeSettings(settings2, mode);
+    if (!conf.autoTrigger) continue;
+    if (kind && ctx.hasStory(kind)) continue;
+    if (!kind && ctx.hasArtifact(mode)) continue;
+    if (kind === "bonus") {
+      const chance = Number(conf.chibiBonusChance ?? (settings2 == null ? void 0 : settings2.chibiBonusChance) ?? 25);
+      if (!Number.isFinite(chance) || chance <= 0) continue;
+      if (chance < 100 && random() * 100 >= chance) continue;
+    }
+    if (ctx.busy(`${floor}:${mode}`)) continue;
+    picks.push(mode);
+  }
+  return picks;
+}
 let initialized = false;
 let settings = { ...DEFAULT_SETTINGS };
 const cleanupFunctions = [];
@@ -8703,12 +8762,15 @@ function initQueue() {
       } else if (status === "completed") {
         finishRunStatus("ok", ((_c = task.progress) == null ? void 0 : _c.message) ?? "");
         if ((_d = task.progress) == null ? void 0 : _d.message) showToast(task.progress.message, "warn");
+        releaseAutoKey(task);
         runTaskId = "";
       } else if (status === "failed") {
         finishRunStatus("error", task.error ?? "未知错误");
+        releaseAutoKey(task);
         runTaskId = "";
       } else if (status === "cancelled") {
         finishRunStatus("error", "已取消");
+        releaseAutoKey(task);
         runTaskId = "";
       }
     },
@@ -8773,6 +8835,7 @@ function registerEvents() {
   const offChatChanged = on(events.CHAT_CHANGED, () => {
     hideToolbar();
     hideSelectionPanel();
+    autoPending.clear();
     queue == null ? void 0 : queue.cancelAll();
   });
   cleanupFunctions.push(offChatChanged);
@@ -8791,10 +8854,17 @@ function registerEvents() {
       }
     }
   };
+  const offReceived = on(events.MESSAGE_RECEIVED, (...args) => {
+    const floor = extractFloorFromEventArg(args[0]);
+    if (floor < 0) return;
+    if (!isAiStoryMessage(getMessage(floor))) return;
+    autoPending.add(floor);
+  });
+  cleanupFunctions.push(offReceived);
   cleanupFunctions.push(on(events.CHARACTER_MESSAGE_RENDERED, (...args) => {
     reMount(...args);
     const floor = extractFloorFromEventArg(args[0]);
-    if (floor >= 0) maybeAutoTrigger(floor);
+    if (floor >= 0 && autoPending.delete(floor)) maybeAutoTrigger(floor);
   }));
   cleanupFunctions.push(on(events.MESSAGE_SWIPED, reMount));
 }
@@ -8874,36 +8944,38 @@ function openGeneratePanel(options) {
   }
 }
 const autoRunning = /* @__PURE__ */ new Set();
+const autoWaited = /* @__PURE__ */ new Set();
+const autoPending = /* @__PURE__ */ new Set();
+function releaseAutoKey(task) {
+  const floor = task.source.floorIds[0];
+  if (typeof floor === "number") autoRunning.delete(`${floor}:${task.mode}`);
+}
 function maybeAutoTrigger(floor) {
-  if (!isAvailable()) return;
-  if (settings.enabled === false) return;
-  const orders = [
-    // 正文两套排前面：它们是「正文的图」，出完正文就完整了；
-    // 小剧场是附加物，后出不影响阅读。
-    { mode: "illustration" },
-    { mode: "comic" },
-    { mode: "chibi-status", kind: "status" },
-    { mode: "chibi-bonus", kind: "bonus" },
-    { mode: "bw-manga", kind: "manga" }
-  ];
-  const picks = [];
-  for (const { mode, kind } of orders) {
-    const conf = resolveModeSettings(settings, mode);
-    if (!conf.autoTrigger) continue;
-    if (kind && hasStory(floor, kind)) continue;
-    if (!kind && getArtifacts(floor).some((a) => a.mode === mode)) continue;
-    if (kind === "bonus") {
-      const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);
-      if (chance <= 0) continue;
-      if (chance < 100 && Math.random() * 100 >= chance) continue;
+  if (!isAvailable()) {
+    if (!autoWaited.has(floor)) {
+      autoWaited.add(floor);
+      void waitForApi(6).then((r) => {
+        if (r.status === "available") maybeAutoTrigger(floor);
+      });
     }
-    const key = `${floor}:${mode}`;
-    if (autoRunning.has(key)) continue;
-    picks.push(mode);
+    return;
   }
-  if (picks.length === 0) return;
+  const picks = pickAutoModes(settings, floor, {
+    hasStory: (kind) => hasStory(floor, kind),
+    hasArtifact: (mode) => getArtifacts(floor).some((a) => a.mode === mode),
+    busy: (key) => autoRunning.has(key)
+  });
+  if (picks.length === 0) {
+    console.debug(`[ST-Story-Illustrator] 第 ${floor} 层没有需要自动生成的模式。`);
+    return;
+  }
   const segment = buildSingleSegment(floor);
-  if (!segment) return;
+  if (!segment) {
+    console.warn(`[ST-Story-Illustrator] 第 ${floor} 层取不到正文，跳过自动出图。`);
+    showToast("自动出图跳过：这一楼没有可读的正文。", "warn");
+    return;
+  }
+  if (!queue) initQueue();
   for (const mode of picks) {
     autoRunning.add(`${floor}:${mode}`);
     const task = createVisualTask(segment, mode);

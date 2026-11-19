@@ -34,6 +34,7 @@ import {
 import { parseComicPagePlan } from './panelPlan';
 import type { PromptOverrideMap } from '../prompt/presets';
 import { withSpecPreamble } from '../baibai/specPrompt';
+import { nlForMode } from '../baibai/planConfig';
 
 // ============================================================
 // 可注入的 LLM 调用器
@@ -74,7 +75,8 @@ export function makeModeLlmCaller(
   settings: {
     modeChannels?: ModeChannelMap;
     llmSource?: 'auto' | 'main' | 'secondary';
-    /** 是否生成自然语言（nl）。柏宝绘的规范里 {{#nl}}/{{^nl}} 条件段按它展开 */
+    modeOutPlans?: Partial<Record<string, string>>;
+    /** @deprecated 已改为跟随出图方案（方案里的「生成自然语言」开关），这里不再生效 */
     includeNl?: boolean;
   },
   mode: CreationMode,
@@ -90,10 +92,10 @@ export function makeModeLlmCaller(
   // 用户改过它而我们只用自己的紧凑规则，等于他写的规则对本插件完全无效
   // ——「人物对了，服装每格都不一样」就是这么来的。柏宝绘每一张都过一遍，我们也过。
   //
-  // nl 恒为 true：五种模式都会写自然语言（插图有 nl 通道、小剧场每格一句、漫画页分区描述），
-  // 规范里的 {{#nl}} 段必须展开。以前这里读 settings.includeNl，而它默认 false 且**没有 UI**，
-  // 等于把用户贴进去的规范与思维链砍掉一半——「没走我的提示词」就是这么来的。
-  return async (system, user) => base(withSpecPreamble(system, true), user);
+  // nl 段跟着**这套方案**的开关走：方案开了自然语言才展开规范里的 {{#nl}}，
+  // 否则那段规则（以及它对模型「必须写 nl」的要求）本身就不该发出去。
+  // 以前这里写死 true，等于替用户把 4.5 方案上的开关打开了。
+  return async (system, user) => base(withSpecPreamble(system, nlForMode(settings, mode)), user);
 }
 
 // ============================================================

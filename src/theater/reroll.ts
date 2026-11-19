@@ -15,7 +15,7 @@ import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from '../tasks/
 import { bakeTheaterLines, fallbackProfile, modeOfKind, pickProfile, runTheaterTask } from '../tasks/theaterRun';
 import { getSets, replaceSet, updatePanel } from './store';
 import { recordImageLog } from '../log/imageLog';
-import { readOutConfig } from '../baibai/planConfig';
+import { readOutConfig, nlForMode } from '../baibai/planConfig';
 import { buildMangaNl, withMangaMono } from './prompts';
 import { MANGA_BW_NEGATIVE, mergeNegative } from './safeFilter';
 
@@ -72,7 +72,10 @@ export async function rerollPanel(
     await ensureModeOutPlan(mode, settings);
     // 这张图当时是靠 nl 把剧情落下去的，重画也必须带同一段 nl，
     // 否则重画出来的图会忽然和第一版不是同一件事。
-    const nl = kind === 'manga' ? buildMangaNl(rawNl) : rawNl;
+    // 但如果现在这套方案没有自然语言通道，就别发了——多余英文只会稀释 tag。
+    const nl = nlForMode(settings, mode)
+      ? (kind === 'manga' ? buildMangaNl(rawNl) : rawNl)
+      : undefined;
     const result = await baiBaiAdapter.generate(
       {
         prompt: promptText,

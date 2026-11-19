@@ -125,3 +125,43 @@ describe('插画 / 漫画提示词', () => {
     expect(p).not.toContain('2koma');
   });
 });
+
+describe('nl 跟随方案：关掉时提示词里不能还有「必须写 nl」', () => {
+  it('插画：关 nl → 结构里没有 nl 字段，并明确禁止输出', () => {
+    const p = buildIllustrationSystemPrompt({ includeChinese: true, includeNl: false, includeNegative: true });
+    expect(p).not.toContain('"nl":"可选英文自然语言描述"');
+    expect(p).toContain('不要生成 nl 字段');
+    expect(p).not.toContain('nl 必须写');
+  });
+
+  it('插画：开 nl → schema 与「必须写」都在', () => {
+    const p = buildIllustrationSystemPrompt({ includeChinese: true, includeNl: true, includeNegative: true });
+    expect(p).toContain('"nl":"可选英文自然语言描述"');
+    expect(p).toContain('nl 必须写');
+    expect(p).not.toContain('不要生成 nl 字段');
+  });
+
+  it('漫画：关 nl → 号召用 tags 表达，而不是分区 nl', () => {
+    const base = {
+      panelMode: true, panelLayout: 'regular' as const, pageType: 'auto' as const, dialogue: true,
+      dialoguePolicy: 'auto' as const, dialogueMode: 'json' as const, backend: 'nai' as const,
+      charPrompts: false, includeChinese: true, maxPages: 1,
+    };
+    const off = buildComicSystemPrompt({ ...base, nl: false });
+    const on = buildComicSystemPrompt({ ...base, nl: true });
+    expect(off).not.toContain('"nl":"英文分区描述"');
+    expect(off).toContain('没有自然语言通道');
+    expect(on).toContain('"nl":"英文分区描述"');
+    expect(on).toContain('In the upper panel');
+  });
+
+  it('小剧场（状态栏/彩蛋/黑白漫）同样跟着关', () => {
+    for (const kind of ['status', 'bonus', 'manga'] as const) {
+      const off = buildTheaterPrompt({ kind, characterName: 'A', body: '正文', shots: 1, nl: false }).system;
+      const on = buildTheaterPrompt({ kind, characterName: 'A', body: '正文', shots: 1, nl: true }).system;
+      expect(off).not.toContain('"nl":"English');
+      expect(off).toContain('这套出图方案没有自然语言通道');
+      expect(on).toContain('"nl":"English');
+    }
+  });
+});

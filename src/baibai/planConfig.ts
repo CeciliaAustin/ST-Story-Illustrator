@@ -35,6 +35,15 @@ export interface PlanInfo {
   landscapeSize: string;
   /** 模型大版本：'5' | '4.5' | '4' | 'unknown'（用于省钱提示） */
   modelFamily: string;
+  /**
+   * 方案里的「生成自然语言」开关（柏宝绘 4.5/V5 方案面板上的那一项）。
+   *
+   * 为什么必须读它：nl 是**底模的属性**，不是插件的偏好。Illustrious/Pony 这类
+   * 只吃 danbooru 短 tag 的方案开了 nl 会让画面变味，4.5 关掉 nl 的方案再硬塞
+   * 一段英文句子同样是错的。柏宝绘自己每张图都按这个开关决定写不写 nl，
+   * 我们之前一律写死「要 nl」，于是「方案明明关了，4.5 还是给我写自然语言」。
+   */
+  naturalLanguage: boolean;
   /** 引用的画师串 id / 名字 */
   artistId: string;
   artistName: string;
@@ -166,6 +175,7 @@ export function parsePlans(
       portraitSize: str(p.portraitSize).trim(),
       landscapeSize: str(p.landscapeSize).trim(),
       modelFamily: detectModelFamily(str(p.model)),
+      naturalLanguage: p.naturalLanguage === true,
       artistId,
       artistName: artist?.name ?? '',
       layoutWords: artist ? layoutWordsIn(`${artist.prompt}, ${artist.quality}`) : [],
@@ -203,6 +213,66 @@ export function readOutConfig(): OutConfigSnapshot {
 /** 快照里「当前方案」那一条（读模型/画师串等细节用）。 */
 export function activePlanOf(snap: OutConfigSnapshot): PlanInfo | undefined {
   return snap.plans.find(p => p.id === snap.activePlanId);
+}
+
+/**
+ * 这套方案要不要写自然语言（nl）。
+ *
+ * 抄的是柏宝绘自己的判据：`naiSupportsCharacterPrompts(model) && plan.naturalLanguage`
+ * ——自然语言是 4.5 才引入的，原版 NAI4 只吃 tag，给它发英文句子只会稀释权重；
+ * 4.5/V5 上则完全由方案里的开关说了算。
+ */
+export function planNlEnabled(plan: PlanInfo | undefined): boolean {
+  if (!plan) return false;
+  if (plan.modelFamily !== '5' && plan.modelFamily !== '4.5') return false;
+  return plan.naturalLanguage === true;
+}
+
+/**
+ * 某个创作模式真正会用的那套方案。
+ *
+ * 正文插图**不切方案**（卡片直接用用户当前选的那套），其余模式若指派了方案，
+ * 出图前会切过去——所以读剧情阶段就得按「将要用的那套」判断 nl，
+ * 否则判断的是还没被切走的旧方案。
+ */
+export function planForMode(
+  snap: OutConfigSnapshot,
+  mode: string,
+  assigned?: Partial<Record<string, string>>,
+): PlanInfo | undefined {
+  if (mode !== 'illustration') {
+    const id = assigned?.[mode];
+    if (id) {
+      const hit = snap.plans.find(p => p.id === id);
+      if (hit) return hit;
+      // 指派了一个已经不存在的方案：出图前会报错，这里退回当前方案，
+      // 至少 nl 判断不会莫名变成 false。
+    }
+  }
+  return activePlanOf(snap);
+}
+
+/** 纯函数版：某模式这次要不要写 nl（便于测试）。 */
+export function nlOfMode(
+  snap: OutConfigSnapshot,
+  mode: string,
+  assigned?: Partial<Record<string, string>>,
+): boolean {
+  return planNlEnabled(planForMode(snap, mode, assigned));
+}
+
+/**
+ * 某模式这次要不要写 nl（读当前柏宝绘配置）。
+ *
+ * 调用点：拼 system（模板里 `{{#nl}}` 段）、拼柏宝绘规范（`{{#nl}}` 条件段）、
+ * 以及要不要真的把 `<nl>` 写进 `<bbi_image>`。三处必须同一个答案，
+ * 否则会出现「提示词说别写、代码却在等 nl」这种自相矛盾。
+ */
+export function nlForMode(
+  settings: { modeOutPlans?: Partial<Record<string, string>> } | undefined,
+  mode: string,
+): boolean {
+  return nlOfMode(readOutConfig(), mode, settings?.modeOutPlans);
 }
 
 /** 当前方案的模型名，写进日志用：`NAI5` 与 `NAI4.5` 的账单差一倍，必须留证据。 */

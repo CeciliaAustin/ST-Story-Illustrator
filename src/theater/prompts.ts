@@ -42,6 +42,12 @@ export interface TheaterPromptInput {
   libraryBlock?: string;
   /** 「谁是谁」：用户扮演谁、角色卡是谁（正文里的「你」才不会丢）。 */
   castBlock?: string;
+  /**
+   * 这套出图方案要不要自然语言（nl）。
+   * 方案里关了 nl（或者用的 NAI4 这类根本不支持 nl 的底模），
+   * 就不能再让模型写那一句英文描述——写了也用不上，还会稀释 tag。
+   */
+  nl?: boolean;
   /** 用户在「提示词」标签页里改过的模板 */
   promptOverrides?: PromptOverrideMap;
 }
@@ -60,7 +66,10 @@ export function buildTheaterPrompt(input: TheaterPromptInput): { system: string;
   const name = input.characterName || '（未命名）';
 
   const docId = DOC_OF_KIND[input.kind] ?? 'status';
-  const systemVars: Record<string, string | number | boolean> = { count };
+  const systemVars: Record<string, string | number | boolean> = {
+    count,
+    nl: input.nl !== false,
+  };
   if (input.kind === 'manga') {
     systemVars.safe = input.mangaSafe !== false;
     systemVars.dialogue = input.dialogue === true;

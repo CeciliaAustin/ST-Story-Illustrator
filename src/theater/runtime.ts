@@ -88,6 +88,15 @@ export interface RunOneInput {
   /** 「谁是谁」：用户扮演谁 / 角色卡是谁。正文里的「你」靠它落到具体条目上。 */
   castBlock?: string;
   /**
+   * 这套出图方案要不要自然语言（nl）。
+   *
+   * nl 是**底模 + 方案开关**的属性：NAI4 根本不吃自然语言，4.5/V5 上则由
+   * 方案面板里那个「生成自然语言」决定。以前这里一律把模型写的 nl 发出去，
+   * 于是「方案明明关了 nl，4.5 还是在写自然语言」。false 时既不让模型写，
+   * 也不往 `<bbi_image>` 与出图接口里塞。
+   */
+  nl?: boolean;
+  /**
    * 后端是否支持原生多角色提示（NAI4.5/V5）。true = 外貌走 characters 通道；
    * false（NAI3/ComfyUI）= 只能回落成把外貌拼进正向词。
    */
@@ -201,6 +210,7 @@ export async function readTheater(
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe,
     dialogue: input.dialogue === true,
+    nl: input.nl !== false,
     ...(input.roster?.length ? { roster: input.roster } : {}),
     ...(input.libraryBlock ? { libraryBlock: input.libraryBlock } : {}),
     ...(input.castBlock ? { castBlock: input.castBlock } : {}),
@@ -350,7 +360,11 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
       );
       // nl 以前**整段丢掉**了：模型写的那句「谁在哪里做了什么」只有 nl 里有，
       // 而柏宝绘的公开接口本来支持 nl 通道。不带它，画面只能靠十几个 tag 猜。
-      const nl = input.kind === 'manga' ? buildMangaNl(panel.nl) : panel.nl;
+      // 但反过来也不能无脑带：方案关了 nl（或底模是 NAI4）时，这段英文
+      // 只会稀释 tag 权重。所以由 input.nl 统一裁决。
+      const nl = input.nl === false
+        ? undefined
+        : (input.kind === 'manga' ? buildMangaNl(panel.nl) : panel.nl);
       // 负面词两路合并：黑白（压彩色）+ 安全（压 NSFW）。两者互不替代——
       // 只写 color 不会让画面变黑白，只写 nsfw 更不会；以前两者混在一个开关里。
       const negativeText = input.kind === 'manga'

@@ -140,8 +140,11 @@ export function buildIllustrationSystemPrompt(
   options: IllustrationPromptOptions,
   overrides?: PromptOverrideMap,
 ): string {
-  const hasFlags = !options.includeChinese || !options.includeNl || !options.includeNegative || !!options.size;
+  // nl 不再是「插件偏好」，而是**这套出图方案的能力**：方案开了自然语言才写。
+  // 以前 noNl 与模板第 10 条各说一套，模型只能猜，4.5 关掉 nl 也照写。
+  const hasFlags = !options.includeChinese || !options.includeNegative || !!options.size;
   return renderPromptDoc('illustration', 'single', {
+    nl: options.includeNl,
     hasFlags,
     noChinese: !options.includeChinese,
     noNl: !options.includeNl,
@@ -312,6 +315,8 @@ export function buildComicSystemPrompt(
   const rule = buildPanelRule(options.panelMode, ruleOptions);
   const fixedPanels = resolvePanelsPerPage(normalizePanelLayout(options.panelLayout), options.panelsPerPage);
   return renderPromptDoc('comic', 'single', {
+    // 方案没有自然语言通道时，整页 nl 分区描述就无从谈起
+    nl: options.nl !== false,
     // 不启用分镜时别谈「每页几格」——那一页根本不是漫画页
     fixedPanels: options.panelMode && fixedPanels >= 2,
     panelsPerPage: fixedPanels >= 2 ? fixedPanels : '',

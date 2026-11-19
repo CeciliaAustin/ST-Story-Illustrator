@@ -117,25 +117,56 @@ describe('readPromptSet：真的从柏宝绘设置里读', () => {
   });
 });
 
-describe('makeModeLlmCaller：五种模式都必须展开规范里的 nl 段', () => {
-  it('设置里 includeNl=false（旧默认且没有 UI）也不许把规范砍一半', async () => {
-    const seen: string[] = [];
+describe('makeModeLlmCaller：规范里的 nl 段跟着出图方案的开关走', () => {
+  /** 造一个「柏宝绘设置里有一套方案」的 ST 上下文。 */
+  function usePlan(model: string, naturalLanguage: boolean, seen: string[]) {
     (globalThis as unknown as Record<string, unknown>).getContext = () => ({
       chat: [],
-      extensionSettings: rawSettings({
-        naiV5Spec: '{{#nl}}有自然语言时的规范{{/nl}}{{^nl}}没有 nl 时的规范{{/nl}}',
-      }),
+      extensionSettings: {
+        baibai_image: {
+          autoTag: {
+            prompts: { naiV5Spec: '{{#nl}}有自然语言时的规范{{/nl}}{{^nl}}没有 nl 时的规范{{/nl}}' },
+          },
+          nai: {
+            plans: [{ id: 'p1', name: '测试方案', model, naturalLanguage }],
+            activePlanId: 'p1',
+          },
+        },
+      },
       generateQuietPrompt: async (prompt: string) => {
         seen.push(prompt);
         return '';
       },
     });
+  }
+
+  it('4.5 方案开了「生成自然语言」→ 展开 #nl 段', async () => {
+    const seen: string[] = [];
+    usePlan('nai-diffusion-4-5-full', true, seen);
     await initSTEnvironment();
     const { makeModeLlmCaller } = await import('../src/manga/planGenerator');
-    const caller = makeModeLlmCaller({ llmSource: 'main', includeNl: false }, 'illustration');
-    await caller('【任务协议】只输出 JSON', '正文');
+    await makeModeLlmCaller({ llmSource: 'main' }, 'illustration')('【任务协议】只输出 JSON', '正文');
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContain('有自然语言时的规范');
     expect(seen[0]).not.toContain('没有 nl 时的规范');
+  });
+
+  it('4.5 方案关掉自然语言 → 不能硬塞 nl 规则', async () => {
+    const seen: string[] = [];
+    usePlan('nai-diffusion-4-5-full', false, seen);
+    await initSTEnvironment();
+    const { makeModeLlmCaller } = await import('../src/manga/planGenerator');
+    await makeModeLlmCaller({ llmSource: 'main' }, 'illustration')('【任务协议】只输出 JSON', '正文');
+    expect(seen[0]).toContain('没有 nl 时的规范');
+    expect(seen[0]).not.toContain('有自然语言时的规范');
+  });
+
+  it('NAI4 底模不支持自然语言：即使方案勾了也不展开', async () => {
+    const seen: string[] = [];
+    usePlan('nai-diffusion-4-full', true, seen);
+    await initSTEnvironment();
+    const { makeModeLlmCaller } = await import('../src/manga/planGenerator');
+    await makeModeLlmCaller({ llmSource: 'main' }, 'status')('【任务协议】只输出 JSON', '正文');
+    expect(seen[0]).toContain('没有 nl 时的规范');
   });
 });

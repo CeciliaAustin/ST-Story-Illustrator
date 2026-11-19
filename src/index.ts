@@ -9,7 +9,15 @@
 
 import './styles/style.css';
 
-import { initSTEnvironment, getEventTypes, on, getSettings, lastAssistantFloor } from './host/sillytavern';
+import {
+  initSTEnvironment,
+  getEventTypes,
+  on,
+  getSettings,
+  getMessage,
+  isAiStoryMessage,
+  lastAssistantFloor,
+} from './host/sillytavern';
 import { checkAvailability, waitForApi, isAvailable } from './baibai/bridge';
 import { startSelectionListener, stopSelectionListener, isSelectionInMesText, getSelectionText } from './selection/selector';
 import { resolveFloorFromSelection } from './selection/floorResolver';
@@ -36,13 +44,13 @@ import { getArtifacts } from './storage/repository';
 import { buildSingleSegment } from './selection/storySegment';
 import {
   DEFAULT_SETTINGS,
-  resolveModeSettings,
   type StoryIllustratorSettings,
   type CreationMode,
   type StorySegment,
 } from './types';
 import { TaskQueue } from './tasks/taskQueue';
 import { createTaskRunner, createVisualTask, MODE_LABEL } from './tasks/workflow';
+import { pickAutoModes } from './tasks/autoTrigger';
 
 // ============================================================
 // 模块状态
@@ -129,12 +137,15 @@ function initQueue(): void {
         // 不报的话用户只会觉得「怎么又不像我的人」，永远想不到是角色库缺条目。
         finishRunStatus('ok', task.progress?.message ?? '');
         if (task.progress?.message) showToast(task.progress.message, 'warn');
+        releaseAutoKey(task);
         runTaskId = '';
       } else if (status === 'failed') {
         finishRunStatus('error', task.error ?? '未知错误');
+        releaseAutoKey(task);
         runTaskId = '';
       } else if (status === 'cancelled') {
         finishRunStatus('error', '已取消');
+        releaseAutoKey(task);
         runTaskId = '';
       }
     },
@@ -205,6 +216,8 @@ function registerEvents(): void {
   const offChatChanged = on(events.CHAT_CHANGED, () => {
     hideToolbar();
     hideSelectionPanel();
+    // 上一条聊天里没等到渲染的标记必须清掉：楼层号在另一条聊天里没有意义
+    autoPending.clear();
     queue?.cancelAll();
   });
   cleanupFunctions.push(offChatChanged);
@@ -222,10 +235,22 @@ function registerEvents(): void {
       try { mountFloor(floor); mountTheater(floor); } catch { /* ignore */ }
     }
   };
+  // 只有「这一层刚到」才配自动出图。不能直接挂在渲染事件上：
+  // 打开聊天 / 切聊天时 ST 会把整段历史重新渲染一遍，每一条都会触发，
+  // 轻则给历史楼层补一堆图，重则几十个任务同时排队。
+  const offReceived = on(events.MESSAGE_RECEIVED, (...args: unknown[]) => {
+    const floor = extractFloorFromEventArg(args[0]);
+    if (floor < 0) return;
+    if (!isAiStoryMessage(getMessage(floor))) return;
+    autoPending.add(floor);
+  });
+  cleanupFunctions.push(offReceived);
+
   cleanupFunctions.push(on(events.CHARACTER_MESSAGE_RENDERED, (...args: unknown[]) => {
     reMount(...args);
     const floor = extractFloorFromEventArg(args[0]);
-    if (floor >= 0) maybeAutoTrigger(floor);
+    // 标记只看一次：这条渲染是新楼层才算，历史重渲直接忽略
+    if (floor >= 0 && autoPending.delete(floor)) maybeAutoTrigger(floor);
   }));
   cleanupFunctions.push(on(events.MESSAGE_SWIPED, reMount));
 }
@@ -330,42 +355,61 @@ function openGeneratePanel(options?: { floor?: number; text?: string }): void {
 // ============================================================
 
 const autoRunning = new Set<string>();
+/** 已经为「柏宝绘还没握手」重试过的楼层：只补一次，避免没装扩展时反复排队 */
+const autoWaited = new Set<number>();
+/**
+ * 刚「到达」的 AI 楼层（MESSAGE_RECEIVED 打过标记，渲染完再消费）。
+ * 不在渲染事件里直接触发，是因为打开聊天会把整段历史重渲一遍。
+ */
+const autoPending = new Set<number>();
 
-/** 按设置决定这一层要不要自动出图；只出一次，失败不重试。 */
+/**
+ * 任务收尾后交还占位。
+ *
+ * 以前这个 set 只进不出：某一层自动出图失败后，那一条 `${floor}:${mode}`
+ * 永久留在里面，用户重新渲染 / 重试都再也不会触发——只能重启酒馆。
+ */
+function releaseAutoKey(task: { source: StorySegment; mode: CreationMode }): void {
+  const floor = task.source.floorIds[0];
+  if (typeof floor === 'number') autoRunning.delete(`${floor}:${task.mode}`);
+}
+
+/** 按设置决定这一层要不要自动出图；每个模式每层只出一次。 */
 function maybeAutoTrigger(floor: number): void {
-  if (!isAvailable()) return;
-  if (settings.enabled === false) return;
-
-  const orders: Array<{ mode: CreationMode; kind?: 'status' | 'bonus' | 'manga' }> = [
-    // 正文两套排前面：它们是「正文的图」，出完正文就完整了；
-    // 小剧场是附加物，后出不影响阅读。
-    { mode: 'illustration' },
-    { mode: 'comic' },
-    { mode: 'chibi-status', kind: 'status' },
-    { mode: 'chibi-bonus', kind: 'bonus' },
-    { mode: 'bw-manga', kind: 'manga' },
-  ];
-
-  const picks: CreationMode[] = [];
-  for (const { mode, kind } of orders) {
-    const conf = resolveModeSettings(settings, mode);
-    if (!conf.autoTrigger) continue;
-    if (kind && hasStory(floor, kind)) continue;
-    // 正文两套：本楼已经有作品就不再自动插（刷新/重渲会重复触发）
-    if (!kind && getArtifacts(floor).some(a => a.mode === mode)) continue;
-    if (kind === 'bonus') {
-      const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);
-      if (chance <= 0) continue;
-      if (chance < 100 && Math.random() * 100 >= chance) continue;
+  if (!isAvailable()) {
+    // 以前这里是 `if (!isAvailable()) return;` 直接退出，而本楼渲染往往早于
+    // 柏宝绘桥接握手（尤其刚刷新页面）——那一层就永远不出图了。
+    // 现在等一次 API 就绪再补一次，且只补一次。
+    if (!autoWaited.has(floor)) {
+      autoWaited.add(floor);
+      void waitForApi(6).then(r => {
+        if (r.status === 'available') maybeAutoTrigger(floor);
+      });
     }
-    const key = `${floor}:${mode}`;
-    if (autoRunning.has(key)) continue;
-    picks.push(mode);
+    return;
   }
-  if (picks.length === 0) return;
+  // 这里曾经有一道 `settings.enabled === false` 的门。那个总开关默认 false，
+  // 而整个插件**没有任何界面**能把它改成 true（它只写在设置结构里）——
+  // 于是自动出图对所有用户都是死代码：「勾了自动出图但没出」就是这个。
+  // 真正该管这件事的是各模式自己的 autoTrigger（见 pickAutoModes）。
+  const picks = pickAutoModes(settings, floor, {
+    hasStory: kind => hasStory(floor, kind),
+    hasArtifact: mode => getArtifacts(floor).some(a => a.mode === mode),
+    busy: key => autoRunning.has(key),
+  });
+  if (picks.length === 0) {
+    console.debug(`[ST-Story-Illustrator] 第 ${floor} 层没有需要自动生成的模式。`);
+    return;
+  }
 
   const segment = buildSingleSegment(floor);
-  if (!segment) return;
+  if (!segment) {
+    // 取不到正文就等于没有可画的剧情：说清楚，否则用户只看到「勾了却没反应」
+    console.warn(`[ST-Story-Illustrator] 第 ${floor} 层取不到正文，跳过自动出图。`);
+    showToast('自动出图跳过：这一楼没有可读的正文。', 'warn');
+    return;
+  }
+  if (!queue) initQueue();
 
   for (const mode of picks) {
     autoRunning.add(`${floor}:${mode}`);
