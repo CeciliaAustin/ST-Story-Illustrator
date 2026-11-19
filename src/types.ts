@@ -329,6 +329,8 @@ export interface BbiStatusInfo {
   manga?: boolean;
   /** 出图结果地址（path 或 dataUrl），供楼层卡片显示 */
   imagePath?: string;
+  /** 叠了台词气泡的带字版覆盖 imagePath 时，这里留无字原图（下载/重画用） */
+  originalPath?: string;
 
   // ── 卡片分组（一次生成的 N 格共用一个 setId，卡片按它合并成一张）──
   /** 同一次生成的格共用一个 setId；旧数据没有这个字段，视为单格卡片 */
@@ -602,6 +604,9 @@ export interface ModeSettings {
   chibiBonusChance?: number;
   bwMangaSafeMode?: boolean;
   bwMangaArtistId?: string;
+  /** 黑白漫是否带对白气泡（文档原设计没有台词，这里做成可关的加分项） */
+  bwMangaDialogue?: boolean;
+  bwMangaBubbleStyle?: BubbleStyleId;
 }
 
 export interface StoryIllustratorSettings {
@@ -629,6 +634,14 @@ export interface StoryIllustratorSettings {
    * 因此出图前会临时切到该模式的方案（串行队列内安全，出图后不自动切回）。
    */
   modeOutPlans: Partial<Record<CreationMode, string>>;
+  /**
+   * 出完图是否把柏宝绘的「当前方案」切回任务开始前那套。
+   *
+   * 柏宝绘的方案是**全局**的：切到 QQ 人那套之后如果不切回来，接下来
+   * 正文插图（走柏宝绘卡片）就会莫名其妙用 QQ 人的模型与画师串出图。
+   * 默认 true —— 正文永远用用户自己选的那套。
+   */
+  restorePlanAfterTask: boolean;
   /** 是否显示右下角悬浮球（🎨）。关掉后仍可从魔杖菜单打开面板。 */
   showFloatingBall: boolean;
   /** 悬浮球位置（left/top，px）。缺省时用右下角默认位置。 */
@@ -678,7 +691,8 @@ function defaultModeSettings(mode: CreationMode): ModeSettings {
     case 'chibi-bonus':
       return { ...base, chibiBonusChance: 25 };
     case 'bw-manga':
-      return { ...base, bwMangaSafeMode: true, bwMangaArtistId: '' };
+      return { ...base, bwMangaSafeMode: true, bwMangaArtistId: '',
+        bwMangaDialogue: true, bwMangaBubbleStyle: 'classic' };
     default:
       return base;
   }
@@ -722,6 +736,7 @@ export const DEFAULT_SETTINGS: StoryIllustratorSettings = {
   modeChannels: {},
   // 默认不指定，跟随柏宝绘当前出图方案；用户在弹窗里可为每个模式分别指派
   modeOutPlans: {},
+  restorePlanAfterTask: true,
   showFloatingBall: true,
   showSelectionToolbar: true,
   modes: {

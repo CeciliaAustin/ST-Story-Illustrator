@@ -35,6 +35,38 @@ export interface PlanInfo {
   landscapeSize: string;
   /** 模型大版本：'5' | '4.5' | '4' | 'unknown'（用于省钱提示） */
   modelFamily: string;
+  /** 引用的画师串 id / 名字 */
+  artistId: string;
+  artistName: string;
+  /**
+   * 画师串里命中的「分格/整页」词（multiple views、4koma…）。
+   *
+   * 为什么值得单独算：方案是「模型 + 画师串」一整套，画师串会拼在正向词最前面。
+   * 如果它是照「一页多格」写的，那我们每张卡片要的**单格**图就会被画成一整页，
+   * 四张卡片全是重复的大头——看起来像「图跟剧情无关」，其实是版面被方案接管了。
+   * 这类问题在成图上极难反推，只能在这里指明。
+   */
+  layoutWords: string[];
+}
+
+/** 柏宝绘画师串（只取判定需要的三个字段）。 */
+export interface ArtistInfo {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+/** 画师串里会抢走版面的词。 */
+const PAGE_LAYOUT_WORDS = [
+  'multiple views', 'split screen', '2koma', '3koma', '4koma',
+  'comic page', 'manga page', 'paneled', 'panels', 'panel layout',
+];
+
+/** 在一段画师串里找出会抢版面的词（纯函数）。 */
+export function layoutWordsIn(text: string): string[] {
+  const lower = String(text ?? '').toLowerCase();
+  if (!lower) return [];
+  return PAGE_LAYOUT_WORDS.filter(word => lower.includes(word));
 }
 
 /** 出图配置快照。 */
@@ -85,10 +117,33 @@ export function parseEndpoints(raw: unknown): EndpointInfo[] {
   return out;
 }
 
-/** 解析方案数组（纯函数），接入点名按 id 关联。 */
-export function parsePlans(raw: unknown, endpoints: EndpointInfo[]): PlanInfo[] {
+/** 解析画师串库（纯函数）。 */
+export function parseArtists(raw: unknown): ArtistInfo[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ArtistInfo[] = [];
+  for (const item of raw) {
+    const a = asRecord(item);
+    if (!a) continue;
+    const id = str(a.id).trim();
+    if (!id) continue;
+    out.push({
+      id,
+      name: str(a.name).trim() || id,
+      prompt: str(a.prompt).trim(),
+    });
+  }
+  return out;
+}
+
+/** 解析方案数组（纯函数），接入点名按 id 关联、画师串按 artistId 关联。 */
+export function parsePlans(
+  raw: unknown,
+  endpoints: EndpointInfo[],
+  artists: ArtistInfo[] = [],
+): PlanInfo[] {
   if (!Array.isArray(raw)) return [];
   const byId = new Map(endpoints.map(e => [e.id, e]));
+  const artistById = new Map(artists.map(a => [a.id, a]));
   const out: PlanInfo[] = [];
   for (const item of raw) {
     const p = asRecord(item);
@@ -96,6 +151,8 @@ export function parsePlans(raw: unknown, endpoints: EndpointInfo[]): PlanInfo[] 
     const id = str(p.id).trim();
     if (!id) continue;
     const endpointId = str(p.endpointId).trim();
+    const artistId = str(p.artistId).trim();
+    const artist = artistById.get(artistId);
     out.push({
       id,
       name: str(p.name).trim() || '未命名方案',
@@ -106,6 +163,9 @@ export function parsePlans(raw: unknown, endpoints: EndpointInfo[]): PlanInfo[] 
       portraitSize: str(p.portraitSize).trim(),
       landscapeSize: str(p.landscapeSize).trim(),
       modelFamily: detectModelFamily(str(p.model)),
+      artistId,
+      artistName: artist?.name ?? '',
+      layoutWords: artist ? layoutWordsIn(artist.prompt) : [],
     });
   }
   return out;
@@ -116,7 +176,8 @@ export function parseOutConfig(raw: unknown): OutConfigSnapshot {
   const settings = asRecord(raw) ?? {};
   const nai = asRecord(settings.nai) ?? {};
   const endpoints = parseEndpoints(nai.endpoints);
-  const plans = parsePlans(nai.plans, endpoints);
+  const artists = parseArtists(nai.artistPresets);
+  const plans = parsePlans(nai.plans, endpoints, artists);
   const activePlanId = str(nai.activePlanId).trim();
   const active = plans.find(p => p.id === activePlanId) ?? plans[0];
   const activeEndpoint = endpoints.find(e => e.id === active?.endpointId);

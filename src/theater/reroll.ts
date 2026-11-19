@@ -7,15 +7,16 @@
  * 两者都先落盘再让 UI 重挂，刷新后仍然是新图。
  */
 
-import type { StoryKind } from '../types';
+import type { BbiStatusInfo, StoryKind } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import { getCurrentChatId, getSettings, getSwipeId, saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
-import { ensureModeOutPlan } from '../tasks/modePlan';
-import { fallbackProfile, modeOfKind, pickProfile, runTheaterTask } from '../tasks/theaterRun';
+import { ensureModeOutPlan, restoreOutPlan } from '../tasks/modePlan';
+import { bakeTheaterLines, fallbackProfile, modeOfKind, pickProfile, runTheaterTask } from '../tasks/theaterRun';
 import { getSets, replaceSet, updatePanel } from './store';
 import { recordImageLog } from '../log/imageLog';
 import { readOutConfig } from '../baibai/planConfig';
+import { buildMangaNl } from './prompts';
 
 export interface RerollResult {
   ok: boolean;
@@ -48,9 +49,13 @@ export async function rerollPanel(
   const seed = randomSeed();
   const startedAt = Date.now();
   try {
+    // 这张图当时是靠 nl 把剧情落下去的，重画也必须带同一段 nl，
+    // 否则重画出来的图会忽然和第一版不是同一件事。
+    const nl = kind === 'manga' ? buildMangaNl(panel.story ?? '') : (panel.story ?? '');
     const result = await baiBaiAdapter.generate(
       {
         prompt: panel.prompt,
+        ...(nl ? { nl } : {}),
         ...(panel.negative ? { negative: panel.negative } : {}),
         seed,
         size: 'portrait',
@@ -58,13 +63,14 @@ export async function rerollPanel(
       },
       pickProfile(settings.profiles ?? [], mode) ?? fallbackProfile(mode),
     );
-    const path = result.path ?? result.dataUrl;
-    if (!path) return { ok: false, message: '出图没有返回图片。' };
+    const raw = result.path ?? result.dataUrl;
+    if (!raw) return { ok: false, message: '出图没有返回图片。' };
 
     recordImageLog({
       mode, floor, source: 'api',
       plan: readOutConfig().activePlanName,
       prompt: panel.prompt,
+      ...(nl ? { nl } : {}),
       ...(panel.negative ? { negative: panel.negative } : {}),
       size: 'portrait',
       ...(typeof result.seed === 'number' ? { seed: result.seed } : { seed }),
@@ -72,8 +78,20 @@ export async function rerollPanel(
       durationMs: Date.now() - startedAt,
     });
 
+    // 黑白漫带台词：单格重画也要重新叠气泡，否则这一格会突然变成无字版
+    let path = raw;
+    let originalPath: string | undefined;
+    if (kind === 'manga' && panel.lines?.length) {
+      const baked = await bakeTheaterLines(raw, panel.lines, settings, kind);
+      if (baked.baked) {
+        originalPath = raw;
+        path = baked.path;
+      }
+    }
+
     updatePanel(floor, kind, setId, index, {
       imagePath: path,
+      ...(originalPath ? { originalPath } : {}),
       seed: result.seed ?? seed,
       storyAt: Date.now(),
     });
@@ -90,6 +108,8 @@ export async function rerollPanel(
       durationMs: Date.now() - startedAt,
     });
     return { ok: false, message };
+  } finally {
+    await restoreOutPlan(settings);
   }
 }
 
@@ -111,26 +131,45 @@ export async function rerollSet(
   const mode = modeOfKind(kind);
   await ensureModeOutPlan(mode, settings);
 
-  const result = await runTheaterTask({
-    mode,
-    settings,
-    floor,
-    chatId: getCurrentChatId(),
-    swipe: getSwipeId(floor),
-    body,
-    characterName: set.characterName,
-  });
+  let result: Awaited<ReturnType<typeof runTheaterTask>>;
+  try {
+    result = await runTheaterTask({
+      mode,
+      settings,
+      floor,
+      chatId: getCurrentChatId(),
+      swipe: getSwipeId(floor),
+      body,
+      characterName: set.characterName,
+    });
+  } finally {
+    await restoreOutPlan(settings);
+  }
   if (!result.ok) return { ok: false, message: result.error ?? '整条重出失败。' };
 
   const total = result.stories.length;
-  const stories = result.stories.map(story => ({
-    ...story,
-    setId,
-    setTitle: story.title ?? set.title,
-    setSize: total,
-    sourceText: body,
-    characterName: set.characterName,
-  }));
+  const stories: BbiStatusInfo[] = [];
+  for (const story of result.stories) {
+    let imagePath = story.imagePath;
+    let originalPath: string | undefined;
+    if (kind === 'manga' && story.lines?.length && imagePath) {
+      const baked = await bakeTheaterLines(imagePath, story.lines, settings, kind);
+      if (baked.baked) {
+        originalPath = imagePath;
+        imagePath = baked.path;
+      }
+    }
+    stories.push({
+      ...story,
+      imagePath,
+      ...(originalPath ? { originalPath } : {}),
+      setId,
+      setTitle: story.title ?? set.title,
+      setSize: total,
+      sourceText: body,
+      characterName: set.characterName,
+    });
+  }
 
   replaceSet(floor, kind, setId, stories);
   await saveChatSafe();

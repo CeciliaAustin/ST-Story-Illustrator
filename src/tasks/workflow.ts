@@ -16,10 +16,11 @@ import type {
   VisualProfile,
   BaiBaiCharacter,
   ComicPagePlan,
+  BbiStatusInfo,
   StoryIllustratorSettings,
 } from '../types';
-import { ensureModeOutPlan } from './modePlan';
-import { makeLookReader } from './theaterRun';
+import { ensureModeOutPlan, restoreOutPlan } from './modePlan';
+import { runTheaterTask, bakeTheaterLines } from './theaterRun';
 import { readOutConfig, activePlanModel } from '../baibai/planConfig';
 import { resolveModeSettings, MODE_LABEL } from '../types';
 import { getAnchorFloor, getSurroundingContext } from '../selection/storySegment';
@@ -27,7 +28,6 @@ import { buildAnchor } from '../selection/anchor';
 import { extractPlainText } from '../selection/anchor';
 import { getCharacters } from '../baibai/bridge';
 import { saveChatSafe } from '../host/sillytavern';
-import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { composeEnglishPrompt } from '../prompt/compose';
 import { enforceForGeneration } from '../manga/panelEnforce';
@@ -45,7 +45,6 @@ import {
   promptHash,
 } from '../baibai/bbiTag';
 import { mountTheater } from '../theater/mount';
-import { runTheaterOne } from '../theater/runtime';
 import { recordImageLog, recordLlmError } from '../log/imageLog';
 import { saveSet, newSetId } from '../theater/store';
 import type { QueueRunContext } from './taskQueue';
@@ -57,10 +56,6 @@ import type { QueueRunContext } from './taskQueue';
 export interface WorkflowDeps {
   settings: VisualProfile[];
   fullSettings: StoryIllustratorSettings;
-}
-
-function pickProfile(profiles: VisualProfile[], mode: CreationMode): VisualProfile | undefined {
-  return profiles.find(p => p.mode === mode);
 }
 
 function sceneFromSegment(segment: StorySegment) {
@@ -112,7 +107,11 @@ async function runIllustration(
   if (!prompt.trim()) throw new Error('组装后的英文 prompt 为空。');
 
   ctx.report({ stage: 'generating' });
-  await ensureModeOutPlan('illustration', deps.fullSettings);
+
+  // 正文插图**不切方案**：柏宝绘卡片用的就是用户自己选的那套。
+  // 以前这里会切到「正文插画」的模式方案，配合小剧场切走不切回，
+  // 结果「选了 QQ 人，正文插图也跟着变 Q 版」。正文是用户的主画面，
+  // 方案归用户管，插件不插手。
 
   // 图片不再由本插件直接出、也不写 markdown：
   // 写一条柏宝绘的 <bbi_image> tag 进正文，点卡片上的「生成图片」，其余全交给柏宝绘
@@ -210,13 +209,6 @@ function cardFailureMessage(result: { reason: string; message?: string }): strin
     return '正文已写入 tag，但楼层卡片没有出现。请确认柏宝绘已启用（它负责把 tag 显示成卡片）。';
   }
   return '正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。';
-}
-
-function fallbackProfile(mode: CreationMode): VisualProfile {
-  return {
-    id: `default-${mode}`, name: '默认', mode, backend: 'nai',
-    promptTemplateId: 'default', options: {},
-  };
 }
 
 // ============================================================
@@ -422,75 +414,22 @@ async function runTheaterMode(
   if (floor === null) throw new Error('无法确定挂载楼层。');
 
   const kind = mode === 'chibi-status' ? 'status' : mode === 'chibi-bonus' ? 'bonus' : 'manga';
-  const modeSettings = resolveModeSettings(deps.fullSettings, mode);
-  const characters = await getCharacters(floor);
   const characterName = segment.messages.find(m => !m.isUser)?.speaker ?? '';
 
   ctx.report({ stage: 'reading' });
   await ensureModeOutPlan(mode, deps.fullSettings);
-  const result = await runTheaterOne({
-    kind,
-    chatId: task.chatId,
+
+  // 首次生成与「整条重出」走同一条链路（theaterRun.runTheaterTask），
+  // 免得两处各拼一套出图词、行为悄悄分叉。
+  const result = await runTheaterTask({
+    mode,
+    settings: deps.fullSettings,
     floor,
+    chatId: task.chatId,
     swipe: segment.messages[0]?.swipeId ?? 0,
-    characterName,
     body: segment.text,
-    shots: modeSettings.shots,
-    chibi: kind !== 'manga' && (modeSettings.chibiStyle !== 'thumb'),
-    mangaSafe: modeSettings.bwMangaSafeMode ?? true,
-    backend: 'nai',
-    profile: pickProfile(deps.settings, mode),
-    // 小剧场文本按该模式指派的渠道生成；副 API 报错就抛，**不回退主 API**
-    llm: async (prompt) => {
-      try {
-        return await makeModeLlmCaller(deps.fullSettings, mode)('', prompt);
-      } catch (err) {
-        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
-        throw err;
-      }
-    },
-    generate: async (input, profile) => {
-      const startedAt = Date.now();
-      try {
-        // 每张图前复核一次方案：读剧情那几十秒里，用户可能手动切了方案，
-        // 或上一轮任务留下的方案不是这一套。已经是目标方案时只读一次配置（几乎零成本），
-        // 不一致就重新切；切不动会抛错中止，绝不用错方案出图。
-        await ensureModeOutPlan(mode, deps.fullSettings);
-        const r = await baiBaiAdapter.generate({
-          prompt: input.prompt,
-          ...(input.negative ? { negative: input.negative } : {}),
-          seed: input.seed,
-          size: input.size,
-          save: true,
-        }, profile ?? fallbackProfile(mode));
-        recordImageLog({
-          mode, floor, source: 'api',
-          plan: readOutConfig().activePlanName,
-          model: activePlanModel(),
-          prompt: input.prompt,
-          ...(input.negative ? { negative: input.negative } : {}),
-          ...(input.size ? { size: input.size } : {}),
-          ...(typeof r.seed === 'number' ? { seed: r.seed } : typeof input.seed === 'number' ? { seed: input.seed } : {}),
-          status: 'ok',
-          durationMs: Date.now() - startedAt,
-        });
-        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
-      } catch (err) {
-        recordImageLog({
-          mode, floor, source: 'api',
-          plan: readOutConfig().activePlanName,
-          model: activePlanModel(),
-          prompt: input.prompt,
-          ...(input.negative ? { negative: input.negative } : {}),
-          ...(input.size ? { size: input.size } : {}),
-          status: 'error',
-          error: err instanceof Error ? err.message : String(err),
-          durationMs: Date.now() - startedAt,
-        });
-        throw err;
-      }
-    },
-    readLooks: makeLookReader(characters.characters, characterName),
+    characterName,
+    onPanel: (index, total) => ctx.report({ stage: 'generating', page: index + 1, totalPages: total }),
   });
 
   if (!result.ok) throw new Error(result.error ?? '小剧场生成失败。');
@@ -500,14 +439,30 @@ async function runTheaterMode(
   const setId = newSetId();
   const setTitle = result.stories[0]?.title ?? '';
   const total = result.stories.length;
-  const stories = result.stories.map(story => ({
-    ...story,
-    setId,
-    setTitle,
-    setSize: total,
-    sourceText: segment.text,
-    characterName,
-  }));
+  const stories: BbiStatusInfo[] = [];
+  for (const story of result.stories) {
+    let imagePath = story.imagePath;
+    let originalPath: string | undefined;
+    // 黑白漫带台词：把 lines 画成气泡叠上去。卡片只认一个路径，
+    // 原图留在图库里（originalPath），带字版给卡片显示。
+    if (kind === 'manga' && story.lines?.length && imagePath) {
+      const baked = await bakeTheaterLines(imagePath, story.lines, deps.fullSettings, kind);
+      if (baked.baked) {
+        originalPath = imagePath;
+        imagePath = baked.path;
+      }
+    }
+    stories.push({
+      ...story,
+      imagePath,
+      ...(originalPath ? { originalPath } : {}),
+      setId,
+      setTitle,
+      setSize: total,
+      sourceText: segment.text,
+      characterName,
+    });
+  }
   if (!saveSet(floor, kind, stories)) throw new Error('小剧场已生成，但写不进本楼（聊天上下文不可用）。');
   await saveChatSafe();
 
@@ -521,13 +476,22 @@ async function runTheaterMode(
 
 export function createTaskRunner(deps: WorkflowDeps) {
   return async (task: VisualTask, ctx: QueueRunContext): Promise<void> => {
-    switch (task.mode) {
-      case 'illustration': return runIllustration(task, ctx, deps);
-      case 'comic': return runComic(task, ctx, deps);
-      case 'chibi-status':
-      case 'chibi-bonus':
-      case 'bw-manga': return runTheaterMode(task, ctx, deps);
-      default: throw new Error(`未知创作模式: ${task.mode}`);
+    try {
+      switch (task.mode) {
+        case 'illustration': return await runIllustration(task, ctx, deps);
+        case 'comic': return await runComic(task, ctx, deps);
+        case 'chibi-status':
+        case 'chibi-bonus':
+        case 'bw-manga': return await runTheaterMode(task, ctx, deps);
+        default: throw new Error(`未知创作模式: ${task.mode}`);
+      }
+    } finally {
+      // 方案是柏宝绘的**全局**状态：本任务切走过，就必须切回用户原来那套，
+      // 否则接下来正文插图会用 QQ 人/黑白漫的模型与画师串出图。
+      const restored = await restoreOutPlan(deps.fullSettings);
+      if (!restored.ok && restored.message) {
+        console.warn('[ST-Story-Illustrator]', restored.message);
+      }
     }
   };
 }

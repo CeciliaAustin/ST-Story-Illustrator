@@ -20,6 +20,9 @@ import { baiBaiAdapter } from '../baibai/imageAdapter';
 import { makeModeLlmCaller } from '../manga/planGenerator';
 import { runTheaterOne, type LookReader } from '../theater/runtime';
 import { recordImageLog, recordLlmError } from '../log/imageLog';
+import { bakeDialogueIntoImage } from '../manga/bubbleBake';
+import type { StatusLine } from '../types';
+import { ensureModeOutPlan } from './modePlan';
 
 export function kindOfMode(mode: CreationMode): StoryKind {
   if (mode === 'chibi-status') return 'status';
@@ -42,6 +45,33 @@ export function fallbackProfile(mode: CreationMode): VisualProfile {
     id: `default-${mode}`, name: '默认', mode, backend: 'nai',
     promptTemplateId: 'default', options: {},
   };
+}
+
+/**
+ * 台词 → 气泡叠到图上（黑白漫）。
+ *
+ * 文档原设计里黑白漫不带台词（"分镜靠画面说话"），但用户要的是漫画感：
+ * 有对白才读得懂。台词由模型吐 JSON，字由本地 canvas 画——不能让 NAI 画字，
+ * 中文必乱码。合成失败不升级成「生成失败」，原图照用。
+ */
+export async function bakeTheaterLines(
+  imagePath: string,
+  lines: StatusLine[] | undefined,
+  settings: StoryIllustratorSettings,
+  kind: StoryKind,
+): Promise<{ path: string; baked: boolean }> {
+  if (!imagePath || !lines?.length) return { path: imagePath, baked: false };
+  const modeSettings = resolveModeSettings(settings, modeOfKind(kind));
+  const baked = await bakeDialogueIntoImage({
+    imagePath,
+    dialogue: lines.map(line => ({
+      text: line.text,
+      ...(line.speaker && line.speaker !== '旁白' ? { speaker: line.speaker } : {}),
+    })),
+    ...(modeSettings.bwMangaBubbleStyle ? { style: modeSettings.bwMangaBubbleStyle } : {}),
+    ...(settings.bubbleFont ? { font: settings.bubbleFont } : {}),
+  });
+  return baked ? { path: baked, baked: true } : { path: imagePath, baked: false };
 }
 
 /** 名字比对用的归一：去掉空白、括号、标点，忽略大小写。 */
@@ -91,6 +121,8 @@ export interface TheaterTaskInput {
   swipe: number;
   body: string;
   characterName: string;
+  /** 逐格进度（画「生成中 2/3」用） */
+  onPanel?: (index: number, total: number) => void;
 }
 
 export interface TheaterTaskResult {
@@ -117,8 +149,10 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     shots: modeSettings.shots,
     chibi: kind !== 'manga' && modeSettings.chibiStyle !== 'thumb',
     mangaSafe: modeSettings.bwMangaSafeMode ?? true,
+    dialogue: kind === 'manga' && modeSettings.bwMangaDialogue !== false,
     backend: 'nai',
     ...(profile ? { profile } : {}),
+    ...(input.onPanel ? { onPanel: input.onPanel } : {}),
     // 副 API 报错即停，不回退主 API（并把原文记进日志）
     llm: async (prompt) => {
       try {
@@ -131,8 +165,12 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
     generate: async (genInput, genProfile) => {
       const startedAt = Date.now();
       try {
+        // 每张图前复核一次方案：读剧情那几十秒里用户可能手动切了方案，
+        // 不一致就重新切；切不动会抛错中止，绝不用错方案出图。
+        await ensureModeOutPlan(mode, settings);
         const r = await baiBaiAdapter.generate({
           prompt: genInput.prompt,
+          ...(genInput.nl ? { nl: genInput.nl } : {}),
           ...(genInput.negative ? { negative: genInput.negative } : {}),
           seed: genInput.seed,
           size: genInput.size,
@@ -142,6 +180,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
           mode, floor, source: 'api',
           plan: readOutConfig().activePlanName,
           prompt: genInput.prompt,
+          ...(genInput.nl ? { nl: genInput.nl } : {}),
           ...(genInput.negative ? { negative: genInput.negative } : {}),
           ...(genInput.size ? { size: genInput.size } : {}),
           ...(typeof r.seed === 'number' ? { seed: r.seed } : typeof genInput.seed === 'number' ? { seed: genInput.seed } : {}),
@@ -154,6 +193,7 @@ export async function runTheaterTask(input: TheaterTaskInput): Promise<TheaterTa
           mode, floor, source: 'api',
           plan: readOutConfig().activePlanName,
           prompt: genInput.prompt,
+          ...(genInput.nl ? { nl: genInput.nl } : {}),
           ...(genInput.negative ? { negative: genInput.negative } : {}),
           ...(genInput.size ? { size: genInput.size } : {}),
           status: 'error',

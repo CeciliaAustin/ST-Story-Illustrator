@@ -36,6 +36,8 @@ export interface TaskQueueOptions {
   onError?: (task: VisualTask, error: Error) => void;
   /** 任务状态变化回调（用于刷新 UI） */
   onStatusChange?: (task: VisualTask, status: VisualTaskStatus) => void;
+  /** 任务进度回调（stage/page/totalPages…，画「第 2/3 格」用） */
+  onProgress?: (task: VisualTask, progress: NonNullable<VisualTask['progress']>) => void;
 }
 
 interface QueueEntry {
@@ -125,6 +127,7 @@ export class TaskQueue {
           report: progress => {
             task.progress = progress;
             task.updatedAt = Date.now();
+            this.options.onProgress?.(task, progress);
           },
           setStatus: status => this.setStatus(task, status),
         };

@@ -21,10 +21,18 @@ import { destroyLightbox } from './ui/lightbox';
 import { destroyConfigPanel, hideConfigPanel, showConfigPanel } from './ui/configPanel';
 import { remountAll, mountFloor } from './ui/floorCards';
 import { mountTheater, remountAllTheater } from './theater/mount';
-import { registerStudio } from './ui/studio';
+import { registerStudio, openStudio } from './ui/studio';
 import { injectWandMenu, destroyWandMenu } from './ui/wandMenu';
 import { mountFloatingBall, syncFloatingBall, unmountFloatingBall } from './ui/floatingBall';
+import {
+  clearRunStatus,
+  destroyRunStatus,
+  finishRunStatus,
+  setRunStatusLogOpener,
+  updateRunStatus,
+} from './ui/runStatus';
 import { hasStory } from './theater/store';
+import { getArtifacts } from './storage/repository';
 import { buildSingleSegment } from './selection/storySegment';
 import {
   DEFAULT_SETTINGS,
@@ -44,6 +52,8 @@ let initialized = false;
 let settings: StoryIllustratorSettings = { ...DEFAULT_SETTINGS };
 const cleanupFunctions: Array<() => void> = [];
 let queue: TaskQueue | null = null;
+/** 状态条跟踪的是哪一条任务（换任务时重新计时的依据） */
+let runTaskId = '';
 
 // ============================================================
 // 扩展入口
@@ -63,8 +73,10 @@ export async function onActivate(): Promise<void> {
     applySettings();
     registerStudio({
       generate: (options) => { hideConfigPanel(); openGeneratePanel(options); },
-      settings: () => { hideSelectionPanel(); showConfigPanel(); },
+      settings: () => { hideSelectionPanel(); showConfigPanel('settings'); },
+      log: () => { hideSelectionPanel(); hideConfigPanel(); showConfigPanel('log'); },
     });
+    setRunStatusLogOpener(() => openStudio('log'));
     registerEvents();
     setupSelectionListener();
     cleanupFunctions.push(injectWandMenu());
@@ -98,6 +110,37 @@ function initQueue(): void {
     taskTimeoutMs: 12 * 60 * 1000,
     onStatusChange: (task, status) => {
       console.log(`[ST-Story-Illustrator] 任务 ${task.id} → ${status}`);
+      // 状态条：排队/读剧情/出图 都显示；完成与失败各自收尾。
+      // 一次多选会连着跑几个任务，换任务时从零计时（否则显示的是上一个任务的时长）。
+      if (status === 'queued' || status === 'reading' || status === 'review' || status === 'generating') {
+        if (runTaskId !== task.id) {
+          runTaskId = task.id;
+          clearRunStatus();
+        }
+        updateRunStatus({
+          mode: task.mode,
+          stage: status,
+          ...(task.progress?.page ? { page: task.progress.page } : {}),
+          ...(task.progress?.totalPages ? { totalPages: task.progress.totalPages } : {}),
+        });
+      } else if (status === 'completed') {
+        finishRunStatus('ok');
+        runTaskId = '';
+      } else if (status === 'failed') {
+        finishRunStatus('error', task.error ?? '未知错误');
+        runTaskId = '';
+      } else if (status === 'cancelled') {
+        finishRunStatus('error', '已取消');
+        runTaskId = '';
+      }
+    },
+    onProgress: (task, progress) => {
+      updateRunStatus({
+        mode: task.mode,
+        stage: progress.stage,
+        ...(progress.page ? { page: progress.page } : {}),
+        ...(progress.totalPages ? { totalPages: progress.totalPages } : {}),
+      });
     },
     onError: (task, error) => {
       console.error(`[ST-Story-Illustrator] 任务 ${task.id} 失败:`, error);
@@ -284,10 +327,16 @@ function openGeneratePanel(options?: { floor?: number; text?: string }): void {
 
 const autoRunning = new Set<string>();
 
-/** 按设置决定这一层要不要自动出小剧场；只出一次，失败不重试。 */
+/** 按设置决定这一层要不要自动出图；只出一次，失败不重试。 */
 function maybeAutoTrigger(floor: number): void {
   if (!isAvailable()) return;
-  const orders: Array<{ mode: CreationMode; kind: 'status' | 'bonus' | 'manga' }> = [
+  if (settings.enabled === false) return;
+
+  const orders: Array<{ mode: CreationMode; kind?: 'status' | 'bonus' | 'manga' }> = [
+    // 正文两套排前面：它们是「正文的图」，出完正文就完整了；
+    // 小剧场是附加物，后出不影响阅读。
+    { mode: 'illustration' },
+    { mode: 'comic' },
     { mode: 'chibi-status', kind: 'status' },
     { mode: 'chibi-bonus', kind: 'bonus' },
     { mode: 'bw-manga', kind: 'manga' },
@@ -297,7 +346,9 @@ function maybeAutoTrigger(floor: number): void {
   for (const { mode, kind } of orders) {
     const conf = resolveModeSettings(settings, mode);
     if (!conf.autoTrigger) continue;
-    if (hasStory(floor, kind)) continue;
+    if (kind && hasStory(floor, kind)) continue;
+    // 正文两套：本楼已经有作品就不再自动插（刷新/重渲会重复触发）
+    if (!kind && getArtifacts(floor).some(a => a.mode === mode)) continue;
     if (kind === 'bonus') {
       const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);
       if (chance <= 0) continue;
@@ -318,7 +369,7 @@ function maybeAutoTrigger(floor: number): void {
     task.status = 'queued';
     queue?.enqueue(task);
   }
-  showToast(`本楼自动生成 ${picks.length} 份小剧场，排队中。`, 'info');
+  showToast(`本楼自动生成 ${picks.length} 份，排队中。`, 'info');
 }
 
 function handleSegmentConfirmed(segment: StorySegment, modes: CreationMode[]): void {
@@ -368,6 +419,7 @@ export function onDisable(): void {
   destroyConfigPanel();
   destroyWandMenu();
   unmountFloatingBall();
+  destroyRunStatus();
   for (const cleanup of cleanupFunctions) {
     try { cleanup(); } catch { /* ignore */ }
   }

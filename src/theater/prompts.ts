@@ -22,6 +22,8 @@ export function clampBody(body: string, many: boolean): string {
 const JSON_FIELDS =
   '{"title":"中文，14 字以内，这一楼发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}';
 
+const LINES_SCHEMA = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
+
 const COMMON_RULES = [
   '画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。',
   'characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other\'s sleeve, leaning against the door, holding a broken cup）。',
@@ -72,15 +74,19 @@ function bonusSystem(count: number): string {
   ].join('\n');
 }
 
-function mangaSingleSystem(safe: boolean): string {
+function mangaSingleSystem(safe: boolean, dialogue = false): string {
   const rules = [
     '读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。',
-    `格式：${JSON_FIELDS}`,
+    `格式：{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ''}}`,
     ...COMMON_RULES,
     'tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。',
+    '**这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。',
     '禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。',
     '禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。',
   ];
+  if (dialogue) {
+    rules.push('每格给 1~3 条 lines：台词用中文短句、符合角色口吻，必须是正文里真的说过、或那一刻自然会说的话；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。');
+  }
   if (safe) {
     rules.push('这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。');
   }
@@ -88,15 +94,19 @@ function mangaSingleSystem(safe: boolean): string {
   return rules.join('\n');
 }
 
-function mangaManySystem(count: number, safe: boolean): string {
+function mangaManySystem(count: number, safe: boolean, dialogue = false): string {
   const rules = [
     `读一段角色扮演正文，把这一楼发生的事挑成最多 ${count} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内","panels":[${JSON_FIELDS}]}`,
+    `格式：{"title":"中文，14 字以内","panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ''}}]}`,
     'panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。',
     ...COMMON_RULES,
     'tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。',
+    '**每一格都要画出正文里那一刻的场面**：谁、在哪里、正在做什么。除景别与表情外，每格至少一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall）和一条地点 tag。只写外貌与人数的图会变成一页与剧情无关的头像。',
     '禁止写：黑白、网点、screentone、画风、角色外貌、chibi 比例词；禁止 speech bubble / text / dialogue / caption / comic panel border。',
   ];
+  if (dialogue) {
+    rules.push('每格给 1~3 条 lines：中文短句、符合角色口吻，按时间顺序连起来要能读懂这一楼发生了什么；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。');
+  }
   if (safe) rules.push('每格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写；用表情、留白、构图表达张力，tags 与 act 里不许出现 NSFW 词。');
   rules.push('没有角色出场时输出 {"title":"","panels":[]}。');
   return rules.join('\n');
@@ -108,6 +118,8 @@ export interface TheaterPromptInput {
   body: string;
   shots: number;
   mangaSafe?: boolean;
+  /** 黑白漫是否要台词（可关；关掉就完全不问模型要 lines） */
+  dialogue?: boolean;
 }
 
 /** 构建读剧情的 system + user 文本（合成一条给 generateQuietPrompt）。 */
@@ -125,7 +137,9 @@ export function buildTheaterPrompt(input: TheaterPromptInput): { system: string;
       bodyLabel = '正文（只用来认人，不用来取材）：';
       break;
     case 'manga':
-      system = many ? mangaManySystem(count, input.mangaSafe !== false) : mangaSingleSystem(input.mangaSafe !== false);
+      system = many
+        ? mangaManySystem(count, input.mangaSafe !== false, input.dialogue === true)
+        : mangaSingleSystem(input.mangaSafe !== false, input.dialogue === true);
       break;
     case 'status':
     default:
@@ -169,6 +183,20 @@ export function buildMangaPrompt(appearances: string[], tags: string): string {
   const body = tags.trim();
   const framing = body && !MANGA_FRAMING_RE.test(body) ? 'cowboy shot' : '';
   return [looks, body, framing].filter(Boolean).join(', ');
+}
+
+/**
+ * 黑白漫的 nl 前置一句「单格」。
+ *
+ * 每张卡片只画**一格**，但很多黑白漫方案的画师串是照「一页多格」写的
+ * （multiple views / 4koma / comic page），公共接口又只能整套方案照用，
+ * 结果一张卡片出一页四格、四张卡片全是重复的大头。nl 是我们能改的那一段，
+ * 用自然语言把它压回单格。
+ */
+export function buildMangaNl(nl: string): string {
+  const text = String(nl ?? '').trim();
+  if (!text) return '';
+  return `One single comic panel filling the whole frame, no panel borders. ${text}`;
 }
 
 /** 按 kind 分派出图 prompt。 */

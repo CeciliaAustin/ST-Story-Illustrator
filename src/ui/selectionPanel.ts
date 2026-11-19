@@ -657,7 +657,15 @@ function renderOutPlanSelector(): HTMLElement {
   const list = document.createElement('div');
   list.className = 'sti-api-channel-list';
 
+  // 正文插画不列：它固定用柏宝绘当前方案（用户自己选的那套），插件不切。
+  // 小剧场切走方案后会自己切回来，所以也不影响正文。
+  const note = document.createElement('div');
+  note.className = 'sti-api-hint';
+  note.textContent = '正文插画固定用柏宝绘当前方案，这里不参与切换；下面几套出完图会自动切回原方案。';
+  list.appendChild(note);
+
   for (const mode of Object.keys(MODE_LABELS) as CreationMode[]) {
+    if (mode === 'illustration') continue;
     const row = document.createElement('label');
     row.className = 'sti-api-channel-row';
 
@@ -678,7 +686,8 @@ function renderOutPlanSelector(): HTMLElement {
       const opt = document.createElement('option');
       opt.value = plan.id;
       const family = plan.modelFamily !== 'unknown' ? ` · NAI${plan.modelFamily}` : '';
-      opt.textContent = `${plan.name}${family} · ${plan.endpointName}`;
+      opt.textContent = `${plan.name}${family} · ${plan.endpointName}`
+        + (plan.layoutWords.length ? ' · ⚠整页' : '');
       select.appendChild(opt);
     }
 

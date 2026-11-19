@@ -20,10 +20,16 @@ import {
   type SharedChannelInfo,
 } from '../baibai/secondaryLlm';
 import { getSettings, saveSettings } from '../host/sillytavern';
-import { DEFAULT_SETTINGS, type CreationMode, type StoryIllustratorSettings } from '../types';
-import { buildStudioTabs } from './studio';
+import {
+  DEFAULT_SETTINGS,
+  resolveModeSettings,
+  type CreationMode,
+  type StoryIllustratorSettings,
+} from '../types';
+import { buildStudioTabs, type StudioTab } from './studio';
 import { destroyWandMenu, injectWandMenu } from './wandMenu';
 import { clearImageLog, getImageLog, type ImageLogEntry } from '../log/imageLog';
+import { getRunStatus, runStatusText } from './runStatus';
 
 const PANEL_ID = 'sti-config-panel';
 const OVERLAY_ID = 'sti-config-overlay';
@@ -35,6 +41,7 @@ const MODE_LABEL: Record<string, string> = {
   'chibi-status': 'QQ 人状态栏',
   'chibi-bonus': 'QQ 人彩蛋',
   'bw-manga': '黑白漫小剧场',
+  'restore': '还原方案',
 };
 
 let panelEl: HTMLElement | null = null;
@@ -61,9 +68,9 @@ function ensurePanel(): { panel: HTMLElement; overlay: HTMLElement } {
   return { panel, overlay };
 }
 
-export function showConfigPanel(): void {
+export function showConfigPanel(tab: StudioTab = 'settings'): void {
   const { panel, overlay } = ensurePanel();
-  render(panel);
+  render(panel, tab);
   panel.style.display = 'flex';
   overlay.style.display = 'block';
 }
@@ -89,14 +96,14 @@ function section(title: string, subtitle?: string): HTMLElement {
   return wrap;
 }
 
-function render(panel: HTMLElement): void {
+function render(panel: HTMLElement, tab: StudioTab = 'settings'): void {
   panel.innerHTML = '';
   const snap = readOutConfig();
 
   const head = document.createElement('div');
   head.className = 'sti-config-head';
   const title = document.createElement('h2');
-  title.textContent = '配图设置';
+  title.textContent = tab === 'log' ? '出图日志' : '配图设置';
   head.appendChild(title);
   const close = document.createElement('button');
   close.type = 'button';
@@ -105,13 +112,24 @@ function render(panel: HTMLElement): void {
   close.addEventListener('click', () => hideConfigPanel());
   head.appendChild(close);
   panel.appendChild(head);
-  panel.appendChild(buildStudioTabs('settings'));
+  panel.appendChild(buildStudioTabs(tab));
+
+  if (tab === 'log') {
+    const logBody = document.createElement('div');
+    logBody.className = 'sti-config-body';
+    logBody.appendChild(renderLogSection());
+    panel.appendChild(logBody);
+    return;
+  }
 
   const body = document.createElement('div');
   body.className = 'sti-config-body';
 
   // ── 当前状态 ──
-  const cur = section('当前出图方案', '以下是柏宝绘此刻实际用于出图的配置，本面板实时同步。');
+  const cur = section(
+    '当前出图方案',
+    '以下是柏宝绘此刻实际用于出图的配置，本面板实时同步。正文插图固定用这套——插件不会替你改。',
+  );
   const curBox = document.createElement('div');
   curBox.className = 'sti-config-current';
   curBox.innerHTML =
@@ -126,24 +144,39 @@ function render(panel: HTMLElement): void {
     hintEl.textContent = hint;
     cur.appendChild(hintEl);
   }
+  // 画师串里带分格词：单格图会被画成一整页。这是「图跟卡片对不上」的常见原因，
+  // 但它在成图上完全看不出来（只能看出「怎么四格全是大头」），所以在这里点明。
+  const activePlan = snap.plans.find(p => p.id === snap.activePlanId);
+  if (activePlan && activePlan.layoutWords.length > 0) {
+    const warn = document.createElement('div');
+    warn.className = 'sti-config-money-hint';
+    warn.textContent =
+      `这套方案的画师串里有「${activePlan.layoutWords.join(' / ')}」：`
+      + '它会让每张图都画成一整页多格，而本插件的每张卡片只放一格。'
+      + '想让卡片是单格，请换一条不带分格词的画师串（柏宝绘 → 画师串）。';
+    cur.appendChild(warn);
+  }
   body.appendChild(cur);
 
+  // ── 自动出图：五个模式各自一个开关 ──
+  body.appendChild(renderAutomationSettings());
   // ── 小剧场三套 ──
   body.appendChild(renderTheaterSettings());
   // ── 正文漫画分镜 ──
   body.appendChild(renderComicSettings());
   // ── 显示与入口 ──
   body.appendChild(renderUiSettings());
-  // ── 出图日志 ──
-  body.appendChild(renderLogSection());
 
   // ── 各模式指定方案（只读，改在选段弹窗）──
+  // 正文插画不参与：它固定用柏宝绘当前方案，插件不切（小剧场切走也会自动切回）。
   const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
-  const assigned = Object.entries(modePlans).filter(([, id]) => !!id) as Array<[string, string]>;
+  const assigned = Object.entries(modePlans)
+    .filter(([mode, id]) => !!id && mode !== 'illustration') as Array<[string, string]>;
   if (assigned.length > 0) {
     const perMode = section(
       '各创作模式指定的方案',
-      '出图前会自动把柏宝绘切到对应方案（串行执行，不会互相打断）。要改请到选段弹窗底部「出图方案」。',
+      '出图前把柏宝绘临时切到对应方案，出完自动切回原样（正文插图不受影响）。'
+      + '要改请到选段弹窗底部「出图方案」。',
     );
     const box = document.createElement('div');
     box.className = 'sti-config-eplist';
@@ -154,6 +187,7 @@ function render(panel: HTMLElement): void {
       const label = MODE_LABEL[mode] ?? mode;
       row.textContent = plan
         ? `${label} → ${plan.name} · ${plan.endpointName}`
+          + (plan.layoutWords.length ? '（⚠ 画师串含分格词，单格会被画成整页）' : '')
         : `${label} → 方案已失效（${planId.slice(0, 8)}…）`;
       box.appendChild(row);
     }
@@ -181,7 +215,9 @@ function render(panel: HTMLElement): void {
     name.textContent = p.name + (p.id === snap.activePlanId ? ' · 当前' : '');
     const meta = document.createElement('div');
     meta.className = 'sti-config-item-meta';
-    meta.textContent = `${p.model || '(未填模型)'} · ${p.endpointName}${p.portraitSize ? ` · ${p.portraitSize}` : ''}`;
+    meta.textContent = `${p.model || '(未填模型)'} · ${p.endpointName}${p.portraitSize ? ` · ${p.portraitSize}` : ''}`
+      + (p.artistName ? ` · 画师串 ${p.artistName}` : '')
+      + (p.layoutWords.length ? ' · ⚠ 画师串含分格词，会画成整页' : '');
     info.appendChild(name);
     info.appendChild(meta);
     row.appendChild(info);
@@ -348,6 +384,58 @@ function selectRow(
   return el;
 }
 
+/**
+ * 自动出图总开关（每个模式一个）。
+ *
+ * 为什么要摆在一处：以前只有三套小剧场有「新楼层自动出图」，正文插画与正文漫画
+ * 想自动也开不了；反过来只想开一套的时候，找开关得翻三段。五个放一起，
+ * 勾哪个就是哪个，互相不影响。
+ */
+function renderAutomationSettings(): HTMLElement {
+  const s = getSettings(DEFAULT_SETTINGS);
+  const group = document.createElement('div');
+  group.className = 'sti-config-group';
+
+  const head = document.createElement('div');
+  head.className = 'sti-config-group-h';
+  head.textContent = '自动出图（每层 AI 回复后）';
+  group.appendChild(head);
+
+  const tip = document.createElement('div');
+  tip.className = 'sti-config-sub';
+  tip.textContent =
+    '五个模式各自独立：勾上哪个就自动跑哪个，没勾的只能手动生成。'
+    + '自动出图会持续消耗额度——先只开你想要的那一两套。';
+  group.appendChild(tip);
+
+  const rows: Array<[CreationMode, string, string]> = [
+    ['illustration', '正文插图（柏宝绘卡片）', '往正文插 <bbi_image> tag 再点卡片出图：与柏宝绘自己的图一模一样（能重绘、改词、进请求历史），刷新不丢。'],
+    ['comic', '正文漫画分镜', '按一页一张图出多格版面，还要先跑一次读剧情。每页都算一次出图，最贵，默认关。'],
+    ['chibi-status', 'QQ 人状态栏', '楼层底部一张卡片，按剧情时间顺序排出几格。'],
+    ['chibi-bonus', 'QQ 人彩蛋', '与正文无关的平行小片段；勾上后按下面的概率触发。'],
+    ['bw-manga', '黑白漫小剧场', '正常比例、黑白画风；每格一张图，可带对白气泡。'],
+  ];
+  for (const [mode, label, hint] of rows) {
+    const conf = resolveModeSettings(s, mode);
+    group.appendChild(toggleRow(
+      label,
+      !!conf.autoTrigger,
+      v => patchSettings(st => { st.modes[mode].autoTrigger = v; }),
+      hint,
+    ));
+  }
+
+  group.appendChild(toggleRow(
+    '出图后把柏宝绘方案切回原样',
+    s.restorePlanAfterTask !== false,
+    v => patchSettings(st => { st.restorePlanAfterTask = v; }),
+    '柏宝绘的「当前方案」是全局的。小剧场按模式切走之后，如果不切回来，'
+    + '接下来正文插图就会用 QQ 人/黑白漫那套模型与画师串出图。默认开着——正文永远用你自己选的那套。',
+  ));
+
+  return group;
+}
+
 /** 小剧场三套的开关与格数（真的会改变出图行为，不是摆设）。 */
 function renderTheaterSettings(): HTMLElement {
   const s = getSettings(DEFAULT_SETTINGS);
@@ -386,12 +474,6 @@ function renderTheaterSettings(): HTMLElement {
     }),
   ));
   a.appendChild(planSelectRow('chibi-status'));
-  a.appendChild(toggleRow(
-    '新楼层自动出图',
-    !!status?.autoTrigger,
-    v => patchSettings(st => { st.modes['chibi-status'].autoTrigger = v; }),
-    '开启后每一层 AI 回复完自动生成，不再需要划线。注意会持续消耗出图额度。',
-  ));
   group.appendChild(a);
 
   // ② 彩蛋
@@ -413,11 +495,6 @@ function renderTheaterSettings(): HTMLElement {
     '只在「新楼层自动出图」开着时生效；手动点彩蛋不受概率限制。',
   ));
   b.appendChild(planSelectRow('chibi-bonus'));
-  b.appendChild(toggleRow(
-    '新楼层自动出彩蛋',
-    !!bonus?.autoTrigger,
-    v => patchSettings(st => { st.modes['chibi-bonus'].autoTrigger = v; }),
-  ));
   group.appendChild(b);
 
   // ③ 黑白漫
@@ -436,9 +513,25 @@ function renderTheaterSettings(): HTMLElement {
   ));
   c.appendChild(planSelectRow('bw-manga'));
   c.appendChild(toggleRow(
-    '新楼层自动出黑白漫',
-    !!manga?.autoTrigger,
-    v => patchSettings(st => { st.modes['bw-manga'].autoTrigger = v; }),
+    '气泡对白',
+    manga?.bwMangaDialogue !== false,
+    v => patchSettings(st => { st.modes['bw-manga'].bwMangaDialogue = v; }),
+    '读剧情时顺便让模型写 1~3 句中文台词，出图后由本地 canvas 画成气泡叠上去。'
+    + '（原文档的黑白漫没有台词，这里做成可关。）',
+  ));
+  c.appendChild(selectRow(
+    '气泡样式',
+    manga?.bwMangaBubbleStyle ?? 'classic',
+    [
+      ['classic', '描边气泡'],
+      ['bubble-vertical', '竖排气泡'],
+      ['blend', '融入式（无框）'],
+      ['blend-ink', '融入式 · 墨字'],
+      ['blend-subtitle', '字幕条'],
+    ],
+    v => patchSettings(st => {
+      st.modes['bw-manga'].bwMangaBubbleStyle = v as StoryIllustratorSettings['bubbleStyle'];
+    }),
   ));
   group.appendChild(c);
 
@@ -454,7 +547,10 @@ function planSelectRow(mode: CreationMode): HTMLElement {
   const current = getSettings(DEFAULT_SETTINGS).modeOutPlans?.[mode] ?? '';
   const options: Array<[string, string]> = [['', '跟随当前方案']];
   for (const plan of snap.plans) {
-    options.push([plan.id, `${plan.name} · ${plan.endpointName} / ${plan.model || '未填模型'}`]);
+    options.push([
+      plan.id,
+      `${plan.name} · ${plan.endpointName} / ${plan.model || '未填模型'}${plan.layoutWords.length ? ' · ⚠整页' : ''}`,
+    ]);
   }
   return selectRow(
     '出图方案',
@@ -469,7 +565,7 @@ function planSelectRow(mode: CreationMode): HTMLElement {
       ? '柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。'
       : snap.backend !== 'nai'
         ? `柏宝绘当前出图渠道是「${snap.backend}」，按模式分配方案只对 NAI 生效——这样选会在生成时直接报错，不会白花钱。`
-        : '出图前会自动切到这套方案；切不过去就停下报错（不会偷偷用旧方案烧钱）。',
+        : '出图前自动切到这套方案，出完切回原样；切不过去就停下报错（不会偷偷用旧方案烧钱）。',
   );
 }
 
@@ -548,23 +644,41 @@ function renderUiSettings(): HTMLElement {
 }
 
 /**
- * 出图日志
+ * 出图日志（独立标签页）
  *
  * 柏宝绘的「请求历史」是它模块内的内存 store，刻意不持久化、也没有写入接口；
- * 小剧场三套走公开出图接口，天生不在它那条链路上。所以这里自己记一份，
- * 重点是**失败时的错误原文**，那是排查时唯一有用的东西。
+ * 而且**只有楼层卡片那条链路会写**（Card.vue 里调 beginImage/finishImage）。
+ * 小剧场三套走的是公开出图接口，天生进不去那里——不是不想接，是没有口子。
+ *
+ * 所以这里自己记一份，重点是**失败时的错误原文**与**实际发出去的提示词**：
+ * 那是判断「图为什么跟剧情无关」的唯一依据。
  */
 function renderLogSection(): HTMLElement {
   const entries = getImageLog();
+  const live = getRunStatus();
+
   const box = section(
-    '出图日志',
-    '本插件自己记的调用记录（内存级，刷新即清）。柏宝绘的「请求历史」不对外开放写入，小剧场进不去那里，看这里。',
+    '调用记录',
+    '本插件自己记的（内存级，刷新即清）。正文插图/漫画走柏宝绘卡片，也会进它的「请求历史」；'
+    + '小剧场走公开出图接口，只在这里。',
   );
+
+  // ── 现在在干什么 ──
+  const liveRow = document.createElement('div');
+  liveRow.className = `sti-log-live ${live ? `is-${live.level}` : 'is-idle'}`;
+  const liveDot = document.createElement('span');
+  liveDot.className = 'sti-run-dot';
+  liveRow.appendChild(liveDot);
+  const liveText = document.createElement('span');
+  liveText.textContent = live ? runStatusText(live) : '当前没有任务在跑。';
+  liveRow.appendChild(liveText);
+  box.appendChild(liveRow);
 
   const bar = document.createElement('div');
   bar.className = 'sti-log-bar';
   const count = document.createElement('span');
-  count.textContent = `最近 ${entries.length} 条（上限 80）`;
+  const failed = entries.filter(e => e.status === 'error').length;
+  count.textContent = `最近 ${entries.length} 条（上限 80）${failed ? ` · 失败 ${failed} 条` : ''}`;
   bar.appendChild(count);
   const clear = document.createElement('button');
   clear.type = 'button';
@@ -572,8 +686,15 @@ function renderLogSection(): HTMLElement {
   clear.textContent = '清空';
   clear.addEventListener('click', () => {
     clearImageLog();
-    showConfigPanel();
+    showConfigPanel('log');
   });
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.className = 'sti-cs-link';
+  refresh.textContent = '刷新';
+  refresh.style.marginLeft = '8px';
+  refresh.addEventListener('click', () => showConfigPanel('log'));
+  bar.appendChild(refresh);
   bar.appendChild(clear);
   box.appendChild(bar);
 
@@ -585,7 +706,7 @@ function renderLogSection(): HTMLElement {
     return box;
   }
 
-  for (const entry of entries.slice(0, 30)) {
+  for (const entry of entries.slice(0, 40)) {
     box.appendChild(buildLogRow(entry));
   }
   return box;

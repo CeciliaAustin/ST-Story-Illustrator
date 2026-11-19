@@ -8,7 +8,7 @@
  */
 
 import type { StoryKind, StatusReading, StatusFrame, BbiStatusInfo, VisualProfile } from '../types';
-import { buildTheaterPrompt, buildTheaterImagePrompt } from './prompts';
+import { buildTheaterPrompt, buildTheaterImagePrompt, buildMangaNl } from './prompts';
 import { parseStatusReply, clampMangaShots } from './parseReply';
 import { scrubMangaReading, MANGA_SAFE_NEGATIVE } from './safeFilter';
 import { statusSeedFor, decideSeed } from './seed';
@@ -22,6 +22,8 @@ export type TheaterLlmCaller = (prompt: string) => Promise<string>;
 
 export interface TheaterImageInput {
   prompt: string;
+  /** 自然语言描述：柏宝绘的 nl 通道，剧情细节主要靠它落到画面上 */
+  nl?: string;
   negative?: string;
   seed: number;
   size?: 'portrait' | 'landscape';
@@ -53,12 +55,16 @@ export interface RunOneInput {
   shots: number;
   chibi: boolean;
   mangaSafe: boolean;
+  /** 黑白漫：要不要台词（要了才在 system 里问模型，并叠气泡） */
+  dialogue?: boolean;
   backend: 'nai' | 'comfyui' | 'webui';
   profile?: VisualProfile;
   /** 依赖注入 */
   llm: TheaterLlmCaller;
   generate: TheaterImageGenerator;
   readLooks: LookReader;
+  /** 逐格进度（画「生成中 2/3」用） */
+  onPanel?: (index: number, total: number) => void;
 }
 
 export interface RunOneResult {
@@ -155,10 +161,11 @@ export async function readTheater(
     body: input.body,
     shots: clampMangaShots(input.shots),
     mangaSafe: input.mangaSafe,
+    dialogue: input.dialogue === true,
   });
   const finalSystem = extraInstruction ? `${system}\n\n【追加要求】${extraInstruction}` : system;
   const raw = await input.llm(`${finalSystem}\n\n---\n\n${user}`);
-  let reading = parseStatusReply(raw);
+  let reading = parseStatusReply(raw, input.kind);
 
   const hits: string[] = [];
   if (input.kind === 'manga' && input.mangaSafe) {
@@ -208,13 +215,20 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
       for (const n of panel.characters) if (n) names.add(n);
       for (const l of panel.lines ?? []) if (l.speaker && l.speaker !== '旁白') names.add(l.speaker);
     }
-    const looks = input.readLooks([...names]);
-    const appearances = looks.map(l => l.tag).filter(Boolean);
     const fixedSeed = statusSeedFor([...names]);
 
     const stories: BbiStatusInfo[] = [];
     for (let i = 0; i < reading.panels.length; i += 1) {
       const panel = reading.panels[i];
+      input.onPanel?.(i, reading.panels.length);
+      // 外貌**按格取**：以前是把整段剧情里所有角色的外貌串拼一次、套给每一格，
+      // 于是只有一个人在的格子里也塞进了另一个人的「1boy / 1girl + 全身外貌」，
+      // 模型只能把两个人都画进来或折中成一张头像。这一格没写角色时才回落到全体。
+      const panelNames = panel.characters.length
+        ? panel.characters
+        : [...names].filter(n => String(panel.nl ?? '').includes(n));
+      const looks = input.readLooks(panelNames.length ? panelNames : [...names]);
+      const appearances = looks.map(l => l.tag).filter(Boolean);
       // tags + characters[].act 一起拼：act 才是「这个人在做什么」，上一版丢掉了它
       const prompt = buildTheaterImagePrompt(
         input.kind,
@@ -222,11 +236,15 @@ export async function runTheaterOne(input: RunOneInput): Promise<RunOneResult> {
         combinedPanelTags(panel),
         input.chibi,
       );
+      // nl 以前**整段丢掉**了：模型写的那句「谁在哪里做了什么」只有 nl 里有，
+      // 而柏宝绘的公开接口本来支持 nl 通道。不带它，画面只能靠十几个 tag 猜。
+      const nl = input.kind === 'manga' ? buildMangaNl(panel.nl) : panel.nl;
       const negative = input.kind === 'manga' && input.mangaSafe ? MANGA_SAFE_NEGATIVE : undefined;
       const seed = decideSeed(input.backend, undefined, fixedSeed);
       const result = await input.generate(
         {
           prompt,
+          ...(nl ? { nl } : {}),
           ...(negative ? { negative } : {}),
           seed,
           size: 'portrait',

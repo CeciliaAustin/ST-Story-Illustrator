@@ -433,7 +433,7 @@ function buildAnchor(selectedText, floorText, paragraphIndex) {
 }
 function extractPlainText(mesText) {
   const clone = mesText.cloneNode(true);
-  clone.querySelectorAll("bbi_image").forEach((el) => el.remove());
+  clone.querySelectorAll("bbi_image").forEach((el2) => el2.remove());
   return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 const TOOLBAR_ID = "sti-selection-toolbar";
@@ -520,7 +520,13 @@ function defaultModeSettings(mode) {
     case "chibi-bonus":
       return { ...base, chibiBonusChance: 25 };
     case "bw-manga":
-      return { ...base, bwMangaSafeMode: true, bwMangaArtistId: "" };
+      return {
+        ...base,
+        bwMangaSafeMode: true,
+        bwMangaArtistId: "",
+        bwMangaDialogue: true,
+        bwMangaBubbleStyle: "classic"
+      };
     default:
       return base;
   }
@@ -550,6 +556,7 @@ const DEFAULT_SETTINGS = {
   modeChannels: {},
   // 默认不指定，跟随柏宝绘当前出图方案；用户在弹窗里可为每个模式分别指派
   modeOutPlans: {},
+  restorePlanAfterTask: true,
   showFloatingBall: true,
   showSelectionToolbar: true,
   modes: {
@@ -1106,7 +1113,7 @@ async function generateViaChannelStrict(channelId, system, user, signal) {
   const headers = typeof ctx.getRequestHeaders === "function" ? ctx.getRequestHeaders() : {};
   const controller = new AbortController();
   const timeoutMs = Math.max(5, channel.timeoutSec) * 1e3;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer2 = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(CHAT_COMPLETIONS_URL, {
       method: "POST",
@@ -1131,10 +1138,27 @@ async function generateViaChannelStrict(channelId, system, user, signal) {
     if (err instanceof Error && err.message.startsWith("副 API")) throw err;
     throw new Error(`副 API「${channel.name}」不可用：${err instanceof Error ? err.message : String(err)}`);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer2);
   }
 }
 const IMAGE_SETTINGS_KEY = "baibai_image";
+const PAGE_LAYOUT_WORDS = [
+  "multiple views",
+  "split screen",
+  "2koma",
+  "3koma",
+  "4koma",
+  "comic page",
+  "manga page",
+  "paneled",
+  "panels",
+  "panel layout"
+];
+function layoutWordsIn(text) {
+  const lower = String(text ?? "").toLowerCase();
+  if (!lower) return [];
+  return PAGE_LAYOUT_WORDS.filter((word) => lower.includes(word));
+}
 function asRecord(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : null;
 }
@@ -1166,10 +1190,27 @@ function parseEndpoints(raw) {
   }
   return out;
 }
-function parsePlans(raw, endpoints) {
+function parseArtists(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    const a = asRecord(item);
+    if (!a) continue;
+    const id = str(a.id).trim();
+    if (!id) continue;
+    out.push({
+      id,
+      name: str(a.name).trim() || id,
+      prompt: str(a.prompt).trim()
+    });
+  }
+  return out;
+}
+function parsePlans(raw, endpoints, artists = []) {
   var _a;
   if (!Array.isArray(raw)) return [];
   const byId = new Map(endpoints.map((e) => [e.id, e]));
+  const artistById = new Map(artists.map((a) => [a.id, a]));
   const out = [];
   for (const item of raw) {
     const p = asRecord(item);
@@ -1177,6 +1218,8 @@ function parsePlans(raw, endpoints) {
     const id = str(p.id).trim();
     if (!id) continue;
     const endpointId = str(p.endpointId).trim();
+    const artistId = str(p.artistId).trim();
+    const artist = artistById.get(artistId);
     out.push({
       id,
       name: str(p.name).trim() || "未命名方案",
@@ -1186,7 +1229,10 @@ function parsePlans(raw, endpoints) {
       // 柏宝绘里尺寸直接存成形如 "832×1216" 的字符串
       portraitSize: str(p.portraitSize).trim(),
       landscapeSize: str(p.landscapeSize).trim(),
-      modelFamily: detectModelFamily(str(p.model))
+      modelFamily: detectModelFamily(str(p.model)),
+      artistId,
+      artistName: (artist == null ? void 0 : artist.name) ?? "",
+      layoutWords: artist ? layoutWordsIn(artist.prompt) : []
     });
   }
   return out;
@@ -1195,7 +1241,8 @@ function parseOutConfig(raw) {
   const settings2 = asRecord(raw) ?? {};
   const nai = asRecord(settings2.nai) ?? {};
   const endpoints = parseEndpoints(nai.endpoints);
-  const plans = parsePlans(nai.plans, endpoints);
+  const artists = parseArtists(nai.artistPresets);
+  const plans = parsePlans(nai.plans, endpoints, artists);
   const activePlanId = str(nai.activePlanId).trim();
   const active = plans.find((p) => p.id === activePlanId) ?? plans[0];
   const activeEndpoint = endpoints.find((e) => e.id === (active == null ? void 0 : active.endpointId));
@@ -1238,11 +1285,13 @@ function openStudio(tab, options) {
     return;
   }
   if (tab === "settings") handlers.settings();
+  else if (tab === "log") handlers.log();
   else handlers.generate(options);
 }
 const TAB_LABELS = [
   { tab: "generate", label: "生成配图", icon: "fa-wand-magic-sparkles" },
-  { tab: "settings", label: "配图设置", icon: "fa-sliders" }
+  { tab: "settings", label: "配图设置", icon: "fa-sliders" },
+  { tab: "log", label: "出图日志", icon: "fa-list-ul" }
 ];
 function buildStudioTabs(active) {
   const bar = document.createElement("div");
@@ -1730,7 +1779,12 @@ function renderOutPlanSelector() {
   }
   const list = document.createElement("div");
   list.className = "sti-api-channel-list";
+  const note = document.createElement("div");
+  note.className = "sti-api-hint";
+  note.textContent = "正文插画固定用柏宝绘当前方案，这里不参与切换；下面几套出完图会自动切回原方案。";
+  list.appendChild(note);
   for (const mode of Object.keys(MODE_LABELS$1)) {
+    if (mode === "illustration") continue;
     const row = document.createElement("label");
     row.className = "sti-api-channel-row";
     const name = document.createElement("span");
@@ -1747,7 +1801,7 @@ function renderOutPlanSelector() {
       const opt = document.createElement("option");
       opt.value = plan.id;
       const family = plan.modelFamily !== "unknown" ? ` · NAI${plan.modelFamily}` : "";
-      opt.textContent = `${plan.name}${family} · ${plan.endpointName}`;
+      opt.textContent = `${plan.name}${family} · ${plan.endpointName}` + (plan.layoutWords.length ? " · ⚠整页" : "");
       select.appendChild(opt);
     }
     const current = modePlans[mode] ?? "current";
@@ -1946,12 +2000,12 @@ function openGallery(items, startIndex = 0) {
 }
 function ensureGallery() {
   if (gallery) return;
-  const el = document.createElement("div");
-  el.id = "sti-gallery";
-  el.className = "sti-lightbox sti-gallery";
-  el.style.display = "none";
-  el.addEventListener("click", (e) => {
-    if (e.target === el) closeGallery();
+  const el2 = document.createElement("div");
+  el2.id = "sti-gallery";
+  el2.className = "sti-lightbox sti-gallery";
+  el2.style.display = "none";
+  el2.addEventListener("click", (e) => {
+    if (e.target === el2) closeGallery();
   });
   const prev = document.createElement("button");
   prev.type = "button";
@@ -1961,10 +2015,10 @@ function ensureGallery() {
     e.stopPropagation();
     stepGallery(-1);
   });
-  el.appendChild(prev);
+  el2.appendChild(prev);
   const stage = document.createElement("div");
   stage.className = "sti-gallery-stage";
-  el.appendChild(stage);
+  el2.appendChild(stage);
   const next = document.createElement("button");
   next.type = "button";
   next.className = "sti-gallery-nav next";
@@ -1973,22 +2027,22 @@ function ensureGallery() {
     e.stopPropagation();
     stepGallery(1);
   });
-  el.appendChild(next);
+  el2.appendChild(next);
   const close = document.createElement("button");
   close.type = "button";
   close.className = "sti-lightbox-close";
   close.textContent = "×";
   close.setAttribute("aria-label", "关闭");
   close.addEventListener("click", closeGallery);
-  el.appendChild(close);
-  document.body.appendChild(el);
-  gallery = el;
-  el.addEventListener("keydown", (e) => {
+  el2.appendChild(close);
+  document.body.appendChild(el2);
+  gallery = el2;
+  el2.addEventListener("keydown", (e) => {
     if (e.key === "ArrowLeft") stepGallery(-1);
     if (e.key === "ArrowRight") stepGallery(1);
     if (e.key === "Escape") closeGallery();
   });
-  el.tabIndex = 0;
+  el2.tabIndex = 0;
 }
 function renderGallery() {
   if (!gallery) return;
@@ -2320,7 +2374,7 @@ function buildItem(spec) {
   return wrap;
 }
 function injectWandMenu() {
-  let timer = 0;
+  let timer2 = 0;
   const tryInject = () => {
     const menu = document.getElementById("extensionsMenu");
     if (!menu) return;
@@ -2329,12 +2383,12 @@ function injectWandMenu() {
       menu.appendChild(buildItem(spec));
     }
     if (ITEMS.every((spec) => !!document.getElementById(spec.id))) {
-      window.clearInterval(timer);
+      window.clearInterval(timer2);
     }
   };
   tryInject();
-  timer = window.setInterval(tryInject, 800);
-  return () => window.clearInterval(timer);
+  timer2 = window.setInterval(tryInject, 800);
+  return () => window.clearInterval(timer2);
 }
 function destroyWandMenu() {
   var _a, _b, _c;
@@ -2395,6 +2449,134 @@ function getImageLog() {
 function clearImageLog() {
   entries.length = 0;
 }
+let el = null;
+let labelEl = null;
+let dotEl = null;
+let timer = null;
+let hideTimer = null;
+let state = null;
+let onOpenLog = null;
+const STAGE_TEXT = {
+  queued: "排队中",
+  reading: "读剧情中",
+  review: "整理提示词",
+  generating: "出图中",
+  completed: "完成"
+};
+function ensure() {
+  if (el && labelEl && dotEl && document.body.contains(el)) {
+    return { root: el, label: labelEl, dot: dotEl };
+  }
+  const root = document.createElement("div");
+  root.className = "sti-run";
+  root.style.display = "none";
+  root.setAttribute("role", "status");
+  root.setAttribute("aria-live", "polite");
+  const dot = document.createElement("span");
+  dot.className = "sti-run-dot";
+  root.appendChild(dot);
+  const label = document.createElement("span");
+  label.className = "sti-run-label";
+  root.appendChild(label);
+  root.addEventListener("click", () => {
+    onOpenLog == null ? void 0 : onOpenLog();
+  });
+  document.body.appendChild(root);
+  el = root;
+  labelEl = label;
+  dotEl = dot;
+  return { root, label, dot };
+}
+function setRunStatusLogOpener(fn) {
+  onOpenLog = fn;
+}
+function elapsedSecondsOf(snapshot) {
+  const end = snapshot.endedAt ?? Date.now();
+  return Math.max(0, Math.round((end - snapshot.startedAt) / 1e3));
+}
+function formatElapsed(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m${String(s).padStart(2, "0")}s`;
+}
+function runStatusText(snapshot) {
+  const mode = MODE_LABEL$1[snapshot.mode] ?? snapshot.mode;
+  const stage = STAGE_TEXT[snapshot.stage] ?? snapshot.stage;
+  const parts = [mode, stage];
+  if (snapshot.page && snapshot.totalPages) parts.push(`第 ${snapshot.page}/${snapshot.totalPages} 格`);
+  if (snapshot.level !== "error") parts.push(formatElapsed(elapsedSecondsOf(snapshot)));
+  const head = parts.join(" · ");
+  return snapshot.message ? `${head}：${snapshot.message}` : head;
+}
+function paint() {
+  if (!state) {
+    if (el) el.style.display = "none";
+    return;
+  }
+  const { root, label, dot } = ensure();
+  root.style.display = "flex";
+  root.className = `sti-run is-${state.level}`;
+  dot.className = `sti-run-dot is-${state.level}`;
+  label.textContent = runStatusText(state);
+  root.title = state.level === "error" ? "出错了，点开看日志" : "点开看这次出图的日志";
+}
+function startTimer() {
+  if (timer) return;
+  timer = setInterval(paint, 1e3);
+}
+function stopTimer() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+function updateRunStatus(patch) {
+  if (hideTimer) {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+  }
+  const sameTask = state && state.level === "running" && state.mode === patch.mode;
+  state = {
+    level: "running",
+    mode: patch.mode,
+    stage: patch.stage,
+    ...patch.page ? { page: patch.page } : {},
+    ...patch.totalPages ? { totalPages: patch.totalPages } : {},
+    startedAt: sameTask ? state.startedAt : Date.now(),
+    ...sameTask && (state == null ? void 0 : state.message) ? { message: state.message } : {}
+  };
+  paint();
+  startTimer();
+}
+function finishRunStatus(level, message = "") {
+  stopTimer();
+  if (!state) return;
+  state = { ...state, level, endedAt: Date.now(), message, stage: "completed" };
+  paint();
+  if (hideTimer) clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    state = null;
+    paint();
+  }, level === "error" ? 1e4 : 4e3);
+}
+function getRunStatus() {
+  return state;
+}
+function clearRunStatus() {
+  stopTimer();
+  if (hideTimer) {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+  }
+  state = null;
+  paint();
+}
+function destroyRunStatus() {
+  clearRunStatus();
+  el == null ? void 0 : el.remove();
+  el = null;
+  labelEl = null;
+  dotEl = null;
+}
 const PANEL_ID = "sti-config-panel";
 const OVERLAY_ID = "sti-config-overlay";
 const MODE_LABEL = {
@@ -2402,7 +2584,8 @@ const MODE_LABEL = {
   "comic": "正文漫画分镜",
   "chibi-status": "QQ 人状态栏",
   "chibi-bonus": "QQ 人彩蛋",
-  "bw-manga": "黑白漫小剧场"
+  "bw-manga": "黑白漫小剧场",
+  "restore": "还原方案"
 };
 let panelEl = null;
 let overlayEl = null;
@@ -2423,9 +2606,9 @@ function ensurePanel() {
   overlayEl = overlay2;
   return { panel, overlay: overlay2 };
 }
-function showConfigPanel() {
+function showConfigPanel(tab = "settings") {
   const { panel, overlay: overlay2 } = ensurePanel();
-  render(panel);
+  render(panel, tab);
   panel.style.display = "flex";
   overlay2.style.display = "block";
 }
@@ -2448,13 +2631,13 @@ function section(title, subtitle) {
   }
   return wrap;
 }
-function render(panel) {
+function render(panel, tab = "settings") {
   panel.innerHTML = "";
   const snap = readOutConfig();
   const head = document.createElement("div");
   head.className = "sti-config-head";
   const title = document.createElement("h2");
-  title.textContent = "配图设置";
+  title.textContent = tab === "log" ? "出图日志" : "配图设置";
   head.appendChild(title);
   const close = document.createElement("button");
   close.type = "button";
@@ -2463,10 +2646,20 @@ function render(panel) {
   close.addEventListener("click", () => hideConfigPanel());
   head.appendChild(close);
   panel.appendChild(head);
-  panel.appendChild(buildStudioTabs("settings"));
+  panel.appendChild(buildStudioTabs(tab));
+  if (tab === "log") {
+    const logBody = document.createElement("div");
+    logBody.className = "sti-config-body";
+    logBody.appendChild(renderLogSection());
+    panel.appendChild(logBody);
+    return;
+  }
   const body = document.createElement("div");
   body.className = "sti-config-body";
-  const cur = section("当前出图方案", "以下是柏宝绘此刻实际用于出图的配置，本面板实时同步。");
+  const cur = section(
+    "当前出图方案",
+    "以下是柏宝绘此刻实际用于出图的配置，本面板实时同步。正文插图固定用这套——插件不会替你改。"
+  );
   const curBox = document.createElement("div");
   curBox.className = "sti-config-current";
   curBox.innerHTML = `<div class="sti-config-cur-row"><span>方案</span><b>${esc(snap.activePlanName || "（未配置）")}</b></div><div class="sti-config-cur-row"><span>模型</span><b>${esc(activeModel(snap))}</b></div><div class="sti-config-cur-row"><span>接入点</span><b>${esc(activeEndpointName(snap))}</b></div>`;
@@ -2478,17 +2671,24 @@ function render(panel) {
     hintEl.textContent = hint;
     cur.appendChild(hintEl);
   }
+  const activePlan = snap.plans.find((p) => p.id === snap.activePlanId);
+  if (activePlan && activePlan.layoutWords.length > 0) {
+    const warn = document.createElement("div");
+    warn.className = "sti-config-money-hint";
+    warn.textContent = `这套方案的画师串里有「${activePlan.layoutWords.join(" / ")}」：它会让每张图都画成一整页多格，而本插件的每张卡片只放一格。想让卡片是单格，请换一条不带分格词的画师串（柏宝绘 → 画师串）。`;
+    cur.appendChild(warn);
+  }
   body.appendChild(cur);
+  body.appendChild(renderAutomationSettings());
   body.appendChild(renderTheaterSettings());
   body.appendChild(renderComicSettings());
   body.appendChild(renderUiSettings());
-  body.appendChild(renderLogSection());
   const modePlans = getSettings(DEFAULT_SETTINGS).modeOutPlans ?? {};
-  const assigned = Object.entries(modePlans).filter(([, id]) => !!id);
+  const assigned = Object.entries(modePlans).filter(([mode, id]) => !!id && mode !== "illustration");
   if (assigned.length > 0) {
     const perMode = section(
       "各创作模式指定的方案",
-      "出图前会自动把柏宝绘切到对应方案（串行执行，不会互相打断）。要改请到选段弹窗底部「出图方案」。"
+      "出图前把柏宝绘临时切到对应方案，出完自动切回原样（正文插图不受影响）。要改请到选段弹窗底部「出图方案」。"
     );
     const box = document.createElement("div");
     box.className = "sti-config-eplist";
@@ -2497,7 +2697,7 @@ function render(panel) {
       const row = document.createElement("div");
       row.className = "sti-config-ep";
       const label = MODE_LABEL[mode] ?? mode;
-      row.textContent = plan ? `${label} → ${plan.name} · ${plan.endpointName}` : `${label} → 方案已失效（${planId.slice(0, 8)}…）`;
+      row.textContent = plan ? `${label} → ${plan.name} · ${plan.endpointName}` + (plan.layoutWords.length ? "（⚠ 画师串含分格词，单格会被画成整页）" : "") : `${label} → 方案已失效（${planId.slice(0, 8)}…）`;
       box.appendChild(row);
     }
     perMode.appendChild(box);
@@ -2522,7 +2722,7 @@ function render(panel) {
     name.textContent = p.name + (p.id === snap.activePlanId ? " · 当前" : "");
     const meta = document.createElement("div");
     meta.className = "sti-config-item-meta";
-    meta.textContent = `${p.model || "(未填模型)"} · ${p.endpointName}${p.portraitSize ? ` · ${p.portraitSize}` : ""}`;
+    meta.textContent = `${p.model || "(未填模型)"} · ${p.endpointName}${p.portraitSize ? ` · ${p.portraitSize}` : ""}` + (p.artistName ? ` · 画师串 ${p.artistName}` : "") + (p.layoutWords.length ? " · ⚠ 画师串含分格词，会画成整页" : "");
     info.appendChild(name);
     info.appendChild(meta);
     row.appendChild(info);
@@ -2618,8 +2818,8 @@ function patchSettings(mutate) {
   window.dispatchEvent(new CustomEvent("sti-settings-changed"));
 }
 function settingRow(label, hint) {
-  const el = document.createElement("div");
-  el.className = "sti-set-row";
+  const el2 = document.createElement("div");
+  el2.className = "sti-set-row";
   const left = document.createElement("div");
   left.className = "sti-set-label";
   left.textContent = label;
@@ -2630,21 +2830,21 @@ function settingRow(label, hint) {
   }
   const control = document.createElement("div");
   control.className = "sti-set-control";
-  el.appendChild(left);
-  el.appendChild(control);
-  return { el, control };
+  el2.appendChild(left);
+  el2.appendChild(control);
+  return { el: el2, control };
 }
 function toggleRow(label, checked, onChange, hint) {
-  const { el, control } = settingRow(label, hint);
+  const { el: el2, control } = settingRow(label, hint);
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = checked;
   cb.addEventListener("change", () => onChange(cb.checked));
   control.appendChild(cb);
-  return el;
+  return el2;
 }
 function selectRow(label, value, options, onChange, hint) {
-  const { el, control } = settingRow(label, hint);
+  const { el: el2, control } = settingRow(label, hint);
   const select = document.createElement("select");
   for (const [val, text] of options) {
     const opt = document.createElement("option");
@@ -2655,7 +2855,47 @@ function selectRow(label, value, options, onChange, hint) {
   }
   select.addEventListener("change", () => onChange(select.value));
   control.appendChild(select);
-  return el;
+  return el2;
+}
+function renderAutomationSettings() {
+  const s = getSettings(DEFAULT_SETTINGS);
+  const group = document.createElement("div");
+  group.className = "sti-config-group";
+  const head = document.createElement("div");
+  head.className = "sti-config-group-h";
+  head.textContent = "自动出图（每层 AI 回复后）";
+  group.appendChild(head);
+  const tip = document.createElement("div");
+  tip.className = "sti-config-sub";
+  tip.textContent = "五个模式各自独立：勾上哪个就自动跑哪个，没勾的只能手动生成。自动出图会持续消耗额度——先只开你想要的那一两套。";
+  group.appendChild(tip);
+  const rows = [
+    ["illustration", "正文插图（柏宝绘卡片）", "往正文插 <bbi_image> tag 再点卡片出图：与柏宝绘自己的图一模一样（能重绘、改词、进请求历史），刷新不丢。"],
+    ["comic", "正文漫画分镜", "按一页一张图出多格版面，还要先跑一次读剧情。每页都算一次出图，最贵，默认关。"],
+    ["chibi-status", "QQ 人状态栏", "楼层底部一张卡片，按剧情时间顺序排出几格。"],
+    ["chibi-bonus", "QQ 人彩蛋", "与正文无关的平行小片段；勾上后按下面的概率触发。"],
+    ["bw-manga", "黑白漫小剧场", "正常比例、黑白画风；每格一张图，可带对白气泡。"]
+  ];
+  for (const [mode, label, hint] of rows) {
+    const conf = resolveModeSettings(s, mode);
+    group.appendChild(toggleRow(
+      label,
+      !!conf.autoTrigger,
+      (v) => patchSettings((st) => {
+        st.modes[mode].autoTrigger = v;
+      }),
+      hint
+    ));
+  }
+  group.appendChild(toggleRow(
+    "出图后把柏宝绘方案切回原样",
+    s.restorePlanAfterTask !== false,
+    (v) => patchSettings((st) => {
+      st.restorePlanAfterTask = v;
+    }),
+    "柏宝绘的「当前方案」是全局的。小剧场按模式切走之后，如果不切回来，接下来正文插图就会用 QQ 人/黑白漫那套模型与画师串出图。默认开着——正文永远用你自己选的那套。"
+  ));
+  return group;
 }
 function renderTheaterSettings() {
   var _a, _b, _c;
@@ -2693,14 +2933,6 @@ function renderTheaterSettings() {
     })
   ));
   a.appendChild(planSelectRow("chibi-status"));
-  a.appendChild(toggleRow(
-    "新楼层自动出图",
-    !!(status == null ? void 0 : status.autoTrigger),
-    (v) => patchSettings((st) => {
-      st.modes["chibi-status"].autoTrigger = v;
-    }),
-    "开启后每一层 AI 回复完自动生成，不再需要划线。注意会持续消耗出图额度。"
-  ));
   group.appendChild(a);
   const b = section("② 彩蛋小剧场", "与正文剧情无关的平行小片段，题材放开，每次换花样。");
   b.appendChild(selectRow(
@@ -2723,13 +2955,6 @@ function renderTheaterSettings() {
     "只在「新楼层自动出图」开着时生效；手动点彩蛋不受概率限制。"
   ));
   b.appendChild(planSelectRow("chibi-bonus"));
-  b.appendChild(toggleRow(
-    "新楼层自动出彩蛋",
-    !!(bonus == null ? void 0 : bonus.autoTrigger),
-    (v) => patchSettings((st) => {
-      st.modes["chibi-bonus"].autoTrigger = v;
-    })
-  ));
   group.appendChild(b);
   const c = section("③ 黑白漫小剧场", "正常比例、黑白画风；画风由出图方案里的画师串决定。");
   c.appendChild(selectRow(
@@ -2752,10 +2977,25 @@ function renderTheaterSettings() {
   ));
   c.appendChild(planSelectRow("bw-manga"));
   c.appendChild(toggleRow(
-    "新楼层自动出黑白漫",
-    !!(manga == null ? void 0 : manga.autoTrigger),
+    "气泡对白",
+    (manga == null ? void 0 : manga.bwMangaDialogue) !== false,
     (v) => patchSettings((st) => {
-      st.modes["bw-manga"].autoTrigger = v;
+      st.modes["bw-manga"].bwMangaDialogue = v;
+    }),
+    "读剧情时顺便让模型写 1~3 句中文台词，出图后由本地 canvas 画成气泡叠上去。（原文档的黑白漫没有台词，这里做成可关。）"
+  ));
+  c.appendChild(selectRow(
+    "气泡样式",
+    (manga == null ? void 0 : manga.bwMangaBubbleStyle) ?? "classic",
+    [
+      ["classic", "描边气泡"],
+      ["bubble-vertical", "竖排气泡"],
+      ["blend", "融入式（无框）"],
+      ["blend-ink", "融入式 · 墨字"],
+      ["blend-subtitle", "字幕条"]
+    ],
+    (v) => patchSettings((st) => {
+      st.modes["bw-manga"].bwMangaBubbleStyle = v;
     })
   ));
   group.appendChild(c);
@@ -2767,7 +3007,10 @@ function planSelectRow(mode) {
   const current = ((_a = getSettings(DEFAULT_SETTINGS).modeOutPlans) == null ? void 0 : _a[mode]) ?? "";
   const options = [["", "跟随当前方案"]];
   for (const plan of snap.plans) {
-    options.push([plan.id, `${plan.name} · ${plan.endpointName} / ${plan.model || "未填模型"}`]);
+    options.push([
+      plan.id,
+      `${plan.name} · ${plan.endpointName} / ${plan.model || "未填模型"}${plan.layoutWords.length ? " · ⚠整页" : ""}`
+    ]);
   }
   return selectRow(
     "出图方案",
@@ -2778,7 +3021,7 @@ function planSelectRow(mode) {
       if (v) st.modeOutPlans[mode] = v;
       else delete st.modeOutPlans[mode];
     }),
-    snap.plans.length === 0 ? "柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。" : snap.backend !== "nai" ? `柏宝绘当前出图渠道是「${snap.backend}」，按模式分配方案只对 NAI 生效——这样选会在生成时直接报错，不会白花钱。` : "出图前会自动切到这套方案；切不过去就停下报错（不会偷偷用旧方案烧钱）。"
+    snap.plans.length === 0 ? "柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。" : snap.backend !== "nai" ? `柏宝绘当前出图渠道是「${snap.backend}」，按模式分配方案只对 NAI 生效——这样选会在生成时直接报错，不会白花钱。` : "出图前自动切到这套方案，出完切回原样；切不过去就停下报错（不会偷偷用旧方案烧钱）。"
   );
 }
 function renderComicSettings() {
@@ -2857,14 +3100,25 @@ function renderUiSettings() {
 }
 function renderLogSection() {
   const entries2 = getImageLog();
+  const live = getRunStatus();
   const box = section(
-    "出图日志",
-    "本插件自己记的调用记录（内存级，刷新即清）。柏宝绘的「请求历史」不对外开放写入，小剧场进不去那里，看这里。"
+    "调用记录",
+    "本插件自己记的（内存级，刷新即清）。正文插图/漫画走柏宝绘卡片，也会进它的「请求历史」；小剧场走公开出图接口，只在这里。"
   );
+  const liveRow = document.createElement("div");
+  liveRow.className = `sti-log-live ${live ? `is-${live.level}` : "is-idle"}`;
+  const liveDot = document.createElement("span");
+  liveDot.className = "sti-run-dot";
+  liveRow.appendChild(liveDot);
+  const liveText = document.createElement("span");
+  liveText.textContent = live ? runStatusText(live) : "当前没有任务在跑。";
+  liveRow.appendChild(liveText);
+  box.appendChild(liveRow);
   const bar = document.createElement("div");
   bar.className = "sti-log-bar";
   const count = document.createElement("span");
-  count.textContent = `最近 ${entries2.length} 条（上限 80）`;
+  const failed = entries2.filter((e) => e.status === "error").length;
+  count.textContent = `最近 ${entries2.length} 条（上限 80）${failed ? ` · 失败 ${failed} 条` : ""}`;
   bar.appendChild(count);
   const clear = document.createElement("button");
   clear.type = "button";
@@ -2872,8 +3126,15 @@ function renderLogSection() {
   clear.textContent = "清空";
   clear.addEventListener("click", () => {
     clearImageLog();
-    showConfigPanel();
+    showConfigPanel("log");
   });
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "sti-cs-link";
+  refresh.textContent = "刷新";
+  refresh.style.marginLeft = "8px";
+  refresh.addEventListener("click", () => showConfigPanel("log"));
+  bar.appendChild(refresh);
   bar.appendChild(clear);
   box.appendChild(bar);
   if (entries2.length === 0) {
@@ -2883,7 +3144,7 @@ function renderLogSection() {
     box.appendChild(empty);
     return box;
   }
-  for (const entry of entries2.slice(0, 30)) {
+  for (const entry of entries2.slice(0, 40)) {
     box.appendChild(buildLogRow(entry));
   }
   return box;
@@ -3289,6 +3550,8 @@ const baiBaiAdapter = {
     };
   }
 };
+let savedPlanId = null;
+let savedPlanName = "";
 async function ensureModeOutPlan(mode, settings2) {
   var _a;
   const planId = (_a = settings2.modeOutPlans) == null ? void 0 : _a[mode];
@@ -3301,6 +3564,10 @@ async function ensureModeOutPlan(mode, settings2) {
     throw new Error(message);
   }
   if (snap.activePlanId === planId) return;
+  if (savedPlanId === null) {
+    savedPlanId = snap.activePlanId || "";
+    savedPlanName = snap.activePlanName || "";
+  }
   let result;
   try {
     result = await switchBaiBaiPlan(planId);
@@ -3315,6 +3582,31 @@ async function ensureModeOutPlan(mode, settings2) {
     throw new Error(detail);
   }
   recordPlanSwitch({ mode, plan: target.name, status: "ok", detail: result.message });
+}
+async function restoreOutPlan(settings2) {
+  const target = savedPlanId;
+  const targetName = savedPlanName;
+  savedPlanId = null;
+  savedPlanName = "";
+  if (!target) return { ok: true };
+  if (settings2.restorePlanAfterTask === false) {
+    recordPlanSwitch({ mode: "restore", plan: targetName, status: "ok", detail: "已关闭「出图后还原方案」，保留当前方案。" });
+    return { ok: true };
+  }
+  try {
+    const result = await switchBaiBaiPlan(target);
+    if (!result.ok) {
+      const message = `出图已完成，但没能把柏宝绘的方案切回「${targetName || target}」：${result.message}`;
+      recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "error", detail: message });
+      return { ok: false, message };
+    }
+    recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "ok", detail: result.message });
+    return { ok: true };
+  } catch (e) {
+    const message = `出图已完成，但还原方案时出错：${e instanceof Error ? e.message : String(e)}`;
+    recordPlanSwitch({ mode: "restore", plan: targetName || target, status: "error", detail: message });
+    return { ok: false, message };
+  }
 }
 const PANEL_BUBBLE_AREAS = [
   "tl",
@@ -3807,7 +4099,7 @@ function buildComicSystemPrompt(options) {
   const rule = buildPanelRule(options.panelMode, ruleOptions);
   const parts = [COMIC_SYSTEM_HEAD];
   if (rule) parts.push("【分镜规则（必须遵守）】\n" + rule);
-  parts.push(`【输出约束】最多 ${Math.max(1, Math.min(8, options.maxPages))} 页；${options.dialogue ? "台词字段按规则写，可省略。" : "本次不要输出 dialogue 字段。"}`);
+  parts.push(`【输出约束】最多 ${Math.max(1, Math.min(8, options.maxPages))} 页；${options.dialogue ? "dialogue 必须写：每页 2~3 条中文台词，取自这一段里真的说过的话；实在没有对白才用一句旁白式台词顶上。" : "本次不要输出 dialogue 字段。"}`);
   if (!options.includeChinese) parts.push("除台词外的辅助中文一律不要输出。");
   return parts.join("\n\n");
 }
@@ -3906,30 +4198,71 @@ const STYLE_BLOCKLIST = [
   "from below",
   "foreshortening"
 ];
+const FRAMING_TAGS = [
+  "extreme close-up",
+  "close-up",
+  "closeup",
+  "upper body",
+  "cowboy shot",
+  "full body",
+  "wide shot",
+  "medium shot",
+  "from above",
+  "from below",
+  "from side",
+  "dutch angle"
+];
+const MANGA_STYLE_BLOCKLIST = [
+  "screentone",
+  "greyscale",
+  "grayscale",
+  "monochrome",
+  "black and white",
+  "speech bubble",
+  "caption",
+  "comic panel",
+  "panel layout",
+  "thought bubble"
+];
 const HAS_CJK = /[\u3400-\u9fff\uf900-\ufaff]/;
 const MAX_TAGS = 14;
-function sanitizeStatusTags(raw) {
+const MAX_TAGS_MANGA = 20;
+function framingOf(tag) {
+  const hit = FRAMING_TAGS.find((word) => tag === word || tag.includes(word));
+  return hit ?? "";
+}
+function sanitizeStatusTags(raw, options = {}) {
   const out = [];
   const seen = /* @__PURE__ */ new Set();
+  const maxTags = options.maxTags ?? MAX_TAGS;
+  let keptFraming = "";
   for (const piece of String(raw ?? "").split(/[,，、\n]/)) {
     let tag = piece.trim().toLowerCase();
     if (!tag) continue;
     tag = tag.replace(/^\(?\s*[\d.]+::/, "").replace(/::$/, "").replace(/^\(|\)$/g, "");
     tag = tag.replace(/:\s*[\d.]+$/, "").trim();
     if (!tag || HAS_CJK.test(tag)) continue;
-    if (STYLE_BLOCKLIST.some((word) => tag === word || tag.includes(word))) continue;
+    const framing = framingOf(tag);
+    if (options.allowFraming && framing) {
+      if (keptFraming) continue;
+      keptFraming = framing;
+    } else if (STYLE_BLOCKLIST.some((word) => tag === word || tag.includes(word)) || options.allowFraming && MANGA_STYLE_BLOCKLIST.some((word) => tag === word || tag.includes(word))) {
+      continue;
+    }
     if (seen.has(tag)) continue;
     seen.add(tag);
     out.push(tag);
-    if (out.length >= MAX_TAGS) break;
+    if (out.length >= maxTags) break;
   }
   return out;
 }
 function emptyFrame() {
   return { title: "", characters: [], roles: [], mood: "", tags: "", nl: "" };
 }
-function parseStatusReply(raw) {
+function parseStatusReply(raw, kind = "status") {
   const empty = { ...emptyFrame(), panels: [] };
+  const manga = kind === "manga";
+  const sanitize = manga ? { allowFraming: true, maxTags: MAX_TAGS_MANGA } : {};
   const text = String(raw ?? "");
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
@@ -3970,7 +4303,7 @@ function parseStatusReply(raw) {
     else push2(frame.characters);
     push2(frame.character);
     const tagsRaw = Array.isArray(frame.tags) ? frame.tags.join(", ") : pick(frame.tags);
-    const tags = sanitizeStatusTags(tagsRaw);
+    const tags = sanitizeStatusTags(tagsRaw, sanitize);
     const lines = [];
     if (Array.isArray(frame.lines)) {
       for (const lineRaw of frame.lines) {
@@ -4032,6 +4365,7 @@ function clampBody(body, many) {
   return text.length > limit ? text.slice(-limit) : text;
 }
 const JSON_FIELDS = '{"title":"中文，14 字以内，这一楼发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"}';
+const LINES_SCHEMA = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
 const COMMON_RULES = [
   "画面必须是正文里真的发生的那件事，不要编造没写过的动作，也不要画成「站着摆姿势」。",
   "characters 里每一项的 act 是这张图的**主要信息**：用英文写这个角色在这一刻具体在做什么、和谁互动、手里拿着什么（例如 pulling the other's sleeve, leaning against the door, holding a broken cup）。",
@@ -4076,30 +4410,38 @@ function bonusSystem(count) {
     ...COMMON_RULES
   ].join("\n");
 }
-function mangaSingleSystem(safe) {
+function mangaSingleSystem(safe, dialogue = false) {
   const rules = [
     "读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。",
-    `格式：${JSON_FIELDS}`,
+    `格式：{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}`,
     ...COMMON_RULES,
     "tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。",
+    "**这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。",
     "禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。",
     "禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。"
   ];
+  if (dialogue) {
+    rules.push("每格给 1~3 条 lines：台词用中文短句、符合角色口吻，必须是正文里真的说过、或那一刻自然会说的话；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。");
+  }
   if (safe) {
     rules.push("这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。");
   }
   rules.push('没有角色出场时输出 {"title":"","characters":[],"mood":"","tags":"","nl":""}。');
   return rules.join("\n");
 }
-function mangaManySystem(count, safe) {
+function mangaManySystem(count, safe, dialogue = false) {
   const rules = [
     `读一段角色扮演正文，把这一楼发生的事挑成最多 ${count} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。`,
-    `格式：{"title":"中文，14 字以内","panels":[${JSON_FIELDS}]}`,
+    `格式：{"title":"中文，14 字以内","panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔","nl":"English, 1-2 sentences describing this frame"${dialogue ? `,${LINES_SCHEMA}` : ""}}]}`,
     "panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。",
     ...COMMON_RULES,
     "tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。",
+    "**每一格都要画出正文里那一刻的场面**：谁、在哪里、正在做什么。除景别与表情外，每格至少一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall）和一条地点 tag。只写外貌与人数的图会变成一页与剧情无关的头像。",
     "禁止写：黑白、网点、screentone、画风、角色外貌、chibi 比例词；禁止 speech bubble / text / dialogue / caption / comic panel border。"
   ];
+  if (dialogue) {
+    rules.push("每格给 1~3 条 lines：中文短句、符合角色口吻，按时间顺序连起来要能读懂这一楼发生了什么；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。");
+  }
   if (safe) rules.push("每格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写；用表情、留白、构图表达张力，tags 与 act 里不许出现 NSFW 词。");
   rules.push('没有角色出场时输出 {"title":"","panels":[]}。');
   return rules.join("\n");
@@ -4117,7 +4459,7 @@ function buildTheaterPrompt(input) {
       bodyLabel = "正文（只用来认人，不用来取材）：";
       break;
     case "manga":
-      system = many ? mangaManySystem(count, input.mangaSafe !== false) : mangaSingleSystem(input.mangaSafe !== false);
+      system = many ? mangaManySystem(count, input.mangaSafe !== false, input.dialogue === true) : mangaSingleSystem(input.mangaSafe !== false, input.dialogue === true);
       break;
     case "status":
     default:
@@ -4160,6 +4502,11 @@ function buildMangaPrompt(appearances, tags) {
   const body = tags.trim();
   const framing = body && !MANGA_FRAMING_RE.test(body) ? "cowboy shot" : "";
   return [looks, body, framing].filter(Boolean).join(", ");
+}
+function buildMangaNl(nl) {
+  const text = String(nl ?? "").trim();
+  if (!text) return "";
+  return `One single comic panel filling the whole frame, no panel borders. ${text}`;
 }
 function buildTheaterImagePrompt(kind, appearances, tags, chibi) {
   return kind === "manga" ? buildMangaPrompt(appearances, tags) : buildStatusPrompt(appearances, tags, chibi);
@@ -4313,7 +4660,8 @@ async function readTheater(input, extraInstruction = "") {
     characterName: input.characterName,
     body: input.body,
     shots: clampMangaShots(input.shots),
-    mangaSafe: input.mangaSafe
+    mangaSafe: input.mangaSafe,
+    dialogue: input.dialogue === true
   });
   const finalSystem = extraInstruction ? `${system}
 
@@ -4323,7 +4671,7 @@ async function readTheater(input, extraInstruction = "") {
 ---
 
 ${user}`);
-  let reading = parseStatusReply(raw);
+  let reading = parseStatusReply(raw, input.kind);
   const hits = [];
   if (input.kind === "manga" && input.mangaSafe) {
     const scrubbed = scrubMangaReading(reading);
@@ -4333,7 +4681,7 @@ ${user}`);
   return { reading, hits };
 }
 async function runTheaterOne(input) {
-  var _a;
+  var _a, _b;
   try {
     let { reading, hits } = await readTheater(input);
     let check = checkReading(reading, input.body, input.kind);
@@ -4363,23 +4711,27 @@ async function runTheaterOne(input) {
       for (const n of panel.characters) if (n) names.add(n);
       for (const l of panel.lines ?? []) if (l.speaker && l.speaker !== "旁白") names.add(l.speaker);
     }
-    const looks = input.readLooks([...names]);
-    const appearances = looks.map((l) => l.tag).filter(Boolean);
     const fixedSeed = statusSeedFor([...names]);
     const stories = [];
     for (let i = 0; i < reading.panels.length; i += 1) {
       const panel = reading.panels[i];
+      (_a = input.onPanel) == null ? void 0 : _a.call(input, i, reading.panels.length);
+      const panelNames = panel.characters.length ? panel.characters : [...names].filter((n) => String(panel.nl ?? "").includes(n));
+      const looks = input.readLooks(panelNames.length ? panelNames : [...names]);
+      const appearances = looks.map((l) => l.tag).filter(Boolean);
       const prompt = buildTheaterImagePrompt(
         input.kind,
         appearances,
         combinedPanelTags(panel),
         input.chibi
       );
+      const nl = input.kind === "manga" ? buildMangaNl(panel.nl) : panel.nl;
       const negative = input.kind === "manga" && input.mangaSafe ? MANGA_SAFE_NEGATIVE : void 0;
       const seed = decideSeed(input.backend, void 0, fixedSeed);
       const result = await input.generate(
         {
           prompt,
+          ...nl ? { nl } : {},
           ...negative ? { negative } : {},
           seed,
           size: "portrait"
@@ -4405,7 +4757,7 @@ async function runTheaterOne(input) {
         prompt,
         ...negative ? { negative } : {},
         seed: result.seed ?? seed,
-        ...((_a = input.profile) == null ? void 0 : _a.id) ? { profileId: input.profile.id } : {}
+        ...((_b = input.profile) == null ? void 0 : _b.id) ? { profileId: input.profile.id } : {}
       });
     }
     if (stories.length === 0) {
@@ -4420,1072 +4772,6 @@ async function runTheaterOne(input) {
       hits: []
     };
   }
-}
-function kindOfMode(mode) {
-  if (mode === "chibi-status") return "status";
-  if (mode === "chibi-bonus") return "bonus";
-  return "manga";
-}
-function modeOfKind(kind) {
-  if (kind === "status") return "chibi-status";
-  if (kind === "bonus") return "chibi-bonus";
-  return "bw-manga";
-}
-function pickProfile$1(profiles, mode) {
-  return profiles.find((p) => p.mode === mode);
-}
-function fallbackProfile$1(mode) {
-  return {
-    id: `default-${mode}`,
-    name: "默认",
-    mode,
-    backend: "nai",
-    promptTemplateId: "default",
-    options: {}
-  };
-}
-function normalizeName(name) {
-  return String(name ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, "").toLowerCase();
-}
-function makeLookReader(characters, primaryName = "") {
-  const byNorm = /* @__PURE__ */ new Map();
-  for (const c of characters) {
-    byNorm.set(normalizeName(c.name), c);
-    const base = normalizeName(String(c.name ?? "").split(/[（(【\[]/)[0]);
-    if (base && !byNorm.has(base)) byNorm.set(base, c);
-  }
-  const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : void 0;
-  const onlyOne = characters.length === 1 ? characters[0] : void 0;
-  return (names) => names.map((name) => {
-    const key = normalizeName(name);
-    const base = normalizeName(String(name ?? "").split(/[（(【\[]/)[0]);
-    const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0) ?? primary ?? onlyOne;
-    return hit ? { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} } : { name, tag: "" };
-  });
-}
-async function runTheaterTask(input) {
-  const { mode, settings: settings2, floor } = input;
-  const kind = kindOfMode(mode);
-  const modeSettings = resolveModeSettings(settings2, mode);
-  const characters = await getCharacters(floor);
-  const profile = pickProfile$1(settings2.profiles ?? [], mode);
-  const result = await runTheaterOne({
-    kind,
-    chatId: input.chatId,
-    floor,
-    swipe: input.swipe,
-    characterName: input.characterName,
-    body: input.body,
-    shots: modeSettings.shots,
-    chibi: kind !== "manga" && modeSettings.chibiStyle !== "thumb",
-    mangaSafe: modeSettings.bwMangaSafeMode ?? true,
-    backend: "nai",
-    ...profile ? { profile } : {},
-    // 副 API 报错即停，不回退主 API（并把原文记进日志）
-    llm: async (prompt) => {
-      try {
-        return await makeModeLlmCaller(settings2, mode)("", prompt);
-      } catch (err) {
-        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
-        throw err;
-      }
-    },
-    generate: async (genInput, genProfile) => {
-      const startedAt = Date.now();
-      try {
-        const r = await baiBaiAdapter.generate({
-          prompt: genInput.prompt,
-          ...genInput.negative ? { negative: genInput.negative } : {},
-          seed: genInput.seed,
-          size: genInput.size,
-          save: true
-        }, genProfile ?? fallbackProfile$1(mode));
-        recordImageLog({
-          mode,
-          floor,
-          source: "api",
-          plan: readOutConfig().activePlanName,
-          prompt: genInput.prompt,
-          ...genInput.negative ? { negative: genInput.negative } : {},
-          ...genInput.size ? { size: genInput.size } : {},
-          ...typeof r.seed === "number" ? { seed: r.seed } : typeof genInput.seed === "number" ? { seed: genInput.seed } : {},
-          status: "ok",
-          durationMs: Date.now() - startedAt
-        });
-        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
-      } catch (err) {
-        recordImageLog({
-          mode,
-          floor,
-          source: "api",
-          plan: readOutConfig().activePlanName,
-          prompt: genInput.prompt,
-          ...genInput.negative ? { negative: genInput.negative } : {},
-          ...genInput.size ? { size: genInput.size } : {},
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-          durationMs: Date.now() - startedAt
-        });
-        throw err;
-      }
-    },
-    readLooks: makeLookReader(characters.characters, input.characterName)
-  });
-  return { ok: result.ok, stories: result.stories, ...result.error ? { error: result.error } : {} };
-}
-function randomSeed() {
-  return Math.floor(Math.random() * 4294967295);
-}
-async function rerollPanel(floor, kind, setId, index2) {
-  const settings2 = getSettings(DEFAULT_SETTINGS);
-  const set = getSets(floor, kind).find((s) => s.setId === setId);
-  const panel = set == null ? void 0 : set.panels.find((p) => p.index === index2);
-  if (!panel) return { ok: false, message: "找不到这一格。" };
-  if (!panel.prompt) {
-    return { ok: false, message: "这一格没存下当时的出图词，请用「整条重出」。" };
-  }
-  const mode = modeOfKind(kind);
-  await ensureModeOutPlan(mode, settings2);
-  const seed = randomSeed();
-  const startedAt = Date.now();
-  try {
-    const result = await baiBaiAdapter.generate(
-      {
-        prompt: panel.prompt,
-        ...panel.negative ? { negative: panel.negative } : {},
-        seed,
-        size: "portrait",
-        save: true
-      },
-      pickProfile$1(settings2.profiles ?? [], mode) ?? fallbackProfile$1(mode)
-    );
-    const path = result.path ?? result.dataUrl;
-    if (!path) return { ok: false, message: "出图没有返回图片。" };
-    recordImageLog({
-      mode,
-      floor,
-      source: "api",
-      plan: readOutConfig().activePlanName,
-      prompt: panel.prompt,
-      ...panel.negative ? { negative: panel.negative } : {},
-      size: "portrait",
-      ...typeof result.seed === "number" ? { seed: result.seed } : { seed },
-      status: "ok",
-      durationMs: Date.now() - startedAt
-    });
-    updatePanel(floor, kind, setId, index2, {
-      imagePath: path,
-      seed: result.seed ?? seed,
-      storyAt: Date.now()
-    });
-    await saveChatSafe();
-    return { ok: true };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    recordImageLog({
-      mode,
-      floor,
-      source: "api",
-      prompt: panel.prompt ?? "",
-      size: "portrait",
-      status: "error",
-      error: message,
-      durationMs: Date.now() - startedAt
-    });
-    return { ok: false, message };
-  }
-}
-async function rerollSet(floor, kind, setId) {
-  const settings2 = getSettings(DEFAULT_SETTINGS);
-  const set = getSets(floor, kind).find((s) => s.setId === setId);
-  if (!set) return { ok: false, message: "找不到这张卡片。" };
-  const body = (set.sourceText ?? "").trim();
-  if (!body) {
-    return { ok: false, message: "这张卡片没存下当时的选段，请重新选段生成。" };
-  }
-  const mode = modeOfKind(kind);
-  await ensureModeOutPlan(mode, settings2);
-  const result = await runTheaterTask({
-    mode,
-    settings: settings2,
-    floor,
-    chatId: getCurrentChatId(),
-    swipe: getSwipeId(floor),
-    body,
-    characterName: set.characterName
-  });
-  if (!result.ok) return { ok: false, message: result.error ?? "整条重出失败。" };
-  const total = result.stories.length;
-  const stories = result.stories.map((story) => ({
-    ...story,
-    setId,
-    setTitle: story.title ?? set.title,
-    setSize: total,
-    sourceText: body,
-    characterName: set.characterName
-  }));
-  replaceSet(floor, kind, setId, stories);
-  await saveChatSafe();
-  return { ok: true };
-}
-const AREA_ID = "sti-theater-area-";
-const AREA_CLASS = "sti-cs-bar";
-const MOUNTED_ATTR = "data-sti-theater-mounted";
-const BUCKET_LABELS = {
-  status: "Q 版小剧场",
-  bonus: "彩蛋时刻",
-  manga: "黑白漫"
-};
-const KIND_ORDER = ["status", "bonus", "manga"];
-function mountTheater(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  unmountTheater(floor);
-  const groups = [];
-  for (const kind of KIND_ORDER) {
-    for (const set of getSets(floor, kind)) groups.push({ kind, set });
-  }
-  if (groups.length === 0) return;
-  const mesBlock = mes.querySelector(".mes_block") ?? mes;
-  const area = document.createElement("div");
-  area.id = `${AREA_ID}${floor}`;
-  area.className = AREA_CLASS;
-  area.setAttribute(MOUNTED_ATTR, String(floor));
-  for (const { kind, set } of groups) {
-    area.appendChild(buildCard(floor, kind, set));
-  }
-  mesBlock.appendChild(area);
-}
-function unmountTheater(floor) {
-  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
-  if (!mes) return;
-  const areas = mes.querySelectorAll(`[${MOUNTED_ATTR}="${floor}"]`);
-  for (const area of Array.from(areas)) area.remove();
-}
-function remountAllTheater() {
-  const nodes = document.querySelectorAll(".mes[mesid]");
-  for (const node of Array.from(nodes)) {
-    const floor = parseInt(node.getAttribute("mesid") ?? "", 10);
-    if (Number.isFinite(floor)) {
-      try {
-        mountTheater(floor);
-      } catch {
-      }
-    }
-  }
-}
-function buildCard(floor, kind, set) {
-  var _a;
-  const card = document.createElement("details");
-  card.className = "sti-cs-card";
-  card.open = true;
-  card.setAttribute("data-sti-set", `${kind}:${set.setId}`);
-  const total = set.panels.length;
-  const cover = firstImage(set.panels);
-  const summary = document.createElement("summary");
-  summary.className = "sti-cs-summary";
-  if (cover) {
-    const thumb = document.createElement("img");
-    thumb.className = "sti-cs-thumb";
-    thumb.src = cover;
-    thumb.alt = "";
-    thumb.loading = "lazy";
-    summary.appendChild(thumb);
-  }
-  const kicker = document.createElement("span");
-  kicker.className = "sti-cs-kicker";
-  kicker.textContent = kind === "bonus" ? BUCKET_LABELS.bonus : `${BUCKET_LABELS[kind]} · ${total} 格`;
-  summary.appendChild(kicker);
-  const headline = document.createElement("span");
-  headline.className = "sti-cs-headline";
-  headline.textContent = set.title || "小剧场";
-  summary.appendChild(headline);
-  const chevron = document.createElement("i");
-  chevron.className = "fa-solid fa-chevron-down sti-cs-chevron";
-  summary.appendChild(chevron);
-  card.appendChild(summary);
-  const single = total === 1 && (((_a = set.panels[0].lines) == null ? void 0 : _a.length) ?? 0) > 0;
-  const body = document.createElement("div");
-  body.className = single ? "sti-cs-body is-story" : "sti-cs-body";
-  if (single) {
-    body.appendChild(buildSinglePanel(floor, kind, set, set.panels[0]));
-  } else {
-    const strip = document.createElement("div");
-    strip.className = "sti-cs-strip";
-    for (const panel of set.panels) {
-      strip.appendChild(buildStripPanel(floor, kind, set, panel, total));
-    }
-    body.appendChild(strip);
-  }
-  body.appendChild(buildFoot(floor, kind, set));
-  card.appendChild(body);
-  return card;
-}
-function buildStripPanel(floor, kind, set, panel, total) {
-  const figure = document.createElement("figure");
-  figure.className = "sti-cs-panel";
-  const shot = document.createElement("div");
-  shot.className = "sti-cs-shot";
-  const cell = document.createElement("div");
-  cell.className = "sti-cs-cell";
-  cell.tabIndex = 0;
-  cell.setAttribute("role", "button");
-  if (panel.imagePath) {
-    const img = document.createElement("img");
-    img.className = "sti-cs-cell-img";
-    img.src = panel.imagePath;
-    img.alt = panel.title ?? `第 ${panel.index + 1} 格`;
-    img.loading = "lazy";
-    cell.appendChild(img);
-    cell.addEventListener("click", () => openPanel(set, panel));
-    cell.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openPanel(set, panel);
-      }
-    });
-  } else {
-    const ph = document.createElement("div");
-    ph.className = "sti-cs-placeholder";
-    ph.textContent = "未出图";
-    cell.appendChild(ph);
-  }
-  const num = document.createElement("span");
-  num.className = "sti-cs-num";
-  num.textContent = `${panel.index + 1}/${total}`;
-  cell.appendChild(num);
-  shot.appendChild(cell);
-  shot.appendChild(buildRerollButton(floor, kind, set, panel));
-  figure.appendChild(shot);
-  const cap = document.createElement("figcaption");
-  cap.className = "sti-cs-panel-cap";
-  cap.textContent = panel.title ?? "";
-  figure.appendChild(cap);
-  return figure;
-}
-function buildSinglePanel(floor, kind, set, panel) {
-  const row = document.createElement("div");
-  row.className = "sti-cs-single";
-  const shot = document.createElement("div");
-  shot.className = "sti-cs-shot is-figure";
-  const figure = document.createElement("div");
-  figure.className = "sti-cs-cell";
-  figure.tabIndex = 0;
-  figure.setAttribute("role", "button");
-  if (panel.imagePath) {
-    const img = document.createElement("img");
-    img.className = "sti-cs-photo";
-    img.src = panel.imagePath;
-    img.alt = panel.title ?? "小剧场";
-    img.loading = "lazy";
-    figure.appendChild(img);
-    figure.addEventListener("click", () => openPanel(set, panel));
-  }
-  shot.appendChild(figure);
-  shot.appendChild(buildRerollButton(floor, kind, set, panel));
-  row.appendChild(shot);
-  const meta = document.createElement("div");
-  meta.className = "sti-cs-meta";
-  const title = document.createElement("div");
-  title.className = "sti-cs-caption";
-  title.textContent = panel.title || set.title || "小剧场";
-  meta.appendChild(title);
-  const sub = document.createElement("div");
-  sub.className = "sti-cs-cast";
-  sub.textContent = (panel.cast ?? []).join(" · ");
-  if (panel.mood) {
-    const chip = document.createElement("span");
-    chip.className = "sti-cs-chip";
-    chip.textContent = panel.mood;
-    sub.appendChild(chip);
-  }
-  if (sub.textContent) meta.appendChild(sub);
-  const lines = document.createElement("div");
-  lines.className = "sti-cs-lines";
-  for (const line of panel.lines ?? []) {
-    const rowEl = document.createElement("div");
-    rowEl.className = line.speaker === "旁白" || !line.speaker ? "sti-cs-line is-narr" : "sti-cs-line";
-    if (line.speaker && line.speaker !== "旁白") {
-      const b = document.createElement("b");
-      b.textContent = `${line.speaker}：`;
-      rowEl.appendChild(b);
-    }
-    rowEl.appendChild(document.createTextNode(line.text));
-    lines.appendChild(rowEl);
-  }
-  if (lines.childElementCount > 0) meta.appendChild(lines);
-  row.appendChild(meta);
-  return row;
-}
-function buildFoot(floor, kind, set, total) {
-  const foot = document.createElement("div");
-  foot.className = "sti-cs-foot";
-  if (set.cast.length > 0) {
-    const cast = document.createElement("span");
-    cast.className = "sti-cs-cast";
-    cast.textContent = set.cast.join(" · ");
-    foot.appendChild(cast);
-  }
-  if (set.mood) {
-    const chip = document.createElement("span");
-    chip.className = "sti-cs-chip";
-    chip.textContent = set.mood;
-    foot.appendChild(chip);
-  }
-  const spacer = document.createElement("span");
-  spacer.className = "sti-cs-spacer";
-  foot.appendChild(spacer);
-  const reroll = document.createElement("button");
-  reroll.type = "button";
-  reroll.className = "sti-cs-regen";
-  reroll.textContent = "整条重出";
-  reroll.addEventListener("click", async () => {
-    await runBusy(reroll, "重出中…", async () => {
-      const result = await rerollSet(floor, kind, set.setId);
-      if (!result.ok) throw new Error(result.message ?? "整条重出失败。");
-      mountTheater(floor);
-    });
-  });
-  foot.appendChild(reroll);
-  if (set.panels.some((p) => !!p.imagePath)) {
-    const gallery2 = document.createElement("button");
-    gallery2.type = "button";
-    gallery2.className = "sti-cs-link";
-    gallery2.textContent = "逐格看大图";
-    gallery2.addEventListener("click", () => {
-      openGallery(
-        set.panels.filter((p) => !!p.imagePath).map((p) => ({ src: p.imagePath, caption: p.title ?? "" }))
-      );
-    });
-    foot.appendChild(gallery2);
-  }
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "sti-cs-link danger";
-  del.textContent = "删除";
-  del.addEventListener("click", async () => {
-    removeSet(floor, kind, set.setId);
-    await saveChatSafe();
-    mountTheater(floor);
-  });
-  foot.appendChild(del);
-  return foot;
-}
-function buildRerollButton(floor, kind, set, panel) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "sti-cs-reroll";
-  btn.title = "重画这张";
-  btn.setAttribute("aria-label", "重画这张");
-  btn.textContent = "↻";
-  btn.addEventListener("click", async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    await runBusy(btn, "…", async () => {
-      const result = await rerollPanel(floor, kind, set.setId, panel.index);
-      if (!result.ok) throw new Error(result.message ?? "重画失败。");
-      mountTheater(floor);
-    });
-  });
-  return btn;
-}
-function openPanel(set, panel) {
-  const images = set.panels.filter((p) => !!p.imagePath).map((p) => ({ src: p.imagePath, caption: p.title ?? "" }));
-  if (images.length <= 1) {
-    if (panel.imagePath) openLightbox(panel.imagePath, panel.title);
-    return;
-  }
-  const at = images.findIndex((i) => i.src === panel.imagePath);
-  openGallery(images, at < 0 ? 0 : at);
-}
-async function runBusy(btn, busyText, task) {
-  const label = btn.textContent ?? "";
-  btn.disabled = true;
-  btn.textContent = busyText;
-  btn.classList.add("is-busy");
-  try {
-    await task();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    notify(message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
-    btn.classList.remove("is-busy");
-  }
-}
-function notify(message, level) {
-  var _a;
-  const toastr = window.toastr;
-  if (toastr) {
-    (_a = toastr.error) == null ? void 0 : _a.call(toastr, message);
-  } else {
-    console.error("[ST-Story-Illustrator]", message);
-  }
-}
-function firstImage(panels) {
-  var _a;
-  return (_a = panels.find((p) => !!p.imagePath)) == null ? void 0 : _a.imagePath;
-}
-const BALL_ID = "sti-fab";
-const HIDE_ID = "sti-fab-hide";
-const DRAG_THRESHOLD = 4;
-let ball = null;
-let startX = 0;
-let startY = 0;
-let originLeft = 0;
-let originTop = 0;
-let moved = false;
-let dragging = false;
-function currentSettings() {
-  return getSettings(DEFAULT_SETTINGS);
-}
-function defaultPosition() {
-  const size = 46;
-  const left = Math.max(8, window.innerWidth - size - 18);
-  const top = Math.max(8, window.innerHeight - size - 110);
-  return { left, top };
-}
-function mountFloatingBall() {
-  const settings2 = currentSettings();
-  if (settings2.showFloatingBall === false) {
-    unmountFloatingBall();
-    return;
-  }
-  if (ball && document.body.contains(ball)) return;
-  const pos = settings2.floatingBallPos ?? defaultPosition();
-  const el = document.createElement("div");
-  el.id = BALL_ID;
-  el.className = "sti-fab";
-  el.title = "ST 故事插画 · 点一下打开配图面板，可拖动";
-  el.textContent = "🎨";
-  el.style.left = `${clamp(pos.left, 0, window.innerWidth - 46)}px`;
-  el.style.top = `${clamp(pos.top, 0, window.innerHeight - 46)}px`;
-  el.tabIndex = 0;
-  const hide = document.createElement("button");
-  hide.type = "button";
-  hide.id = HIDE_ID;
-  hide.className = "sti-fab-hide";
-  hide.title = "隐藏悬浮球（可在配图设置里重新打开）";
-  hide.textContent = "×";
-  hide.addEventListener("pointerdown", (e) => e.stopPropagation());
-  hide.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    hideFloatingBall();
-  });
-  el.appendChild(hide);
-  el.addEventListener("pointerdown", onPointerDown);
-  el.addEventListener("click", (e) => {
-    e.preventDefault();
-    if (moved) {
-      moved = false;
-      return;
-    }
-    openStudio("generate");
-  });
-  el.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      openStudio("generate");
-    }
-  });
-  document.body.appendChild(el);
-  ball = el;
-  window.addEventListener("resize", keepInside);
-}
-function onPointerDown(e) {
-  var _a, _b;
-  if (!ball) return;
-  if (((_a = e.target) == null ? void 0 : _a.id) === HIDE_ID) return;
-  dragging = true;
-  moved = false;
-  startX = e.clientX;
-  startY = e.clientY;
-  originLeft = ball.offsetLeft;
-  originTop = ball.offsetTop;
-  ball.classList.add("dragging");
-  (_b = ball.setPointerCapture) == null ? void 0 : _b.call(ball, e.pointerId);
-  window.addEventListener("pointermove", onPointerMove);
-  window.addEventListener("pointerup", onPointerUp);
-}
-function onPointerMove(e) {
-  if (!dragging || !ball) return;
-  const dx = e.clientX - startX;
-  const dy = e.clientY - startY;
-  if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
-  moved = true;
-  const left = clamp(originLeft + dx, 0, window.innerWidth - ball.offsetWidth);
-  const top = clamp(originTop + dy, 0, window.innerHeight - ball.offsetHeight);
-  ball.style.left = `${left}px`;
-  ball.style.top = `${top}px`;
-}
-function onPointerUp() {
-  window.removeEventListener("pointermove", onPointerMove);
-  window.removeEventListener("pointerup", onPointerUp);
-  if (!dragging || !ball) return;
-  dragging = false;
-  ball.classList.remove("dragging");
-  if (moved) {
-    const settings2 = currentSettings();
-    settings2.floatingBallPos = { left: ball.offsetLeft, top: ball.offsetTop };
-    saveSettings(settings2);
-  }
-}
-function keepInside() {
-  if (!ball) return;
-  const left = clamp(ball.offsetLeft, 0, window.innerWidth - ball.offsetWidth);
-  const top = clamp(ball.offsetTop, 0, window.innerHeight - ball.offsetHeight);
-  ball.style.left = `${left}px`;
-  ball.style.top = `${top}px`;
-}
-function hideFloatingBall() {
-  const settings2 = currentSettings();
-  settings2.showFloatingBall = false;
-  saveSettings(settings2);
-  unmountFloatingBall();
-  window.dispatchEvent(new CustomEvent("sti-settings-changed"));
-}
-function unmountFloatingBall() {
-  if (ball) {
-    ball.remove();
-    ball = null;
-  }
-  window.removeEventListener("resize", keepInside);
-  window.removeEventListener("pointermove", onPointerMove);
-  window.removeEventListener("pointerup", onPointerUp);
-  dragging = false;
-}
-function syncFloatingBall() {
-  unmountFloatingBall();
-  mountFloatingBall();
-}
-function clamp(value, min, max) {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(Math.max(value, min), Math.max(min, max));
-}
-class TaskQueue {
-  constructor(runner, options = {}) {
-    this.pending = [];
-    this.current = null;
-    this.running = false;
-    this.runner = runner;
-    this.options = options;
-    this.timeoutMs = options.taskTimeoutMs ?? 5 * 60 * 1e3;
-  }
-  /** 入队。重复 task.id 会被去重（忽略后入的）。 */
-  enqueue(task) {
-    var _a;
-    if (this.pending.some((t) => t.id === task.id)) return;
-    if (((_a = this.current) == null ? void 0 : _a.task.id) === task.id) return;
-    this.pending.push(task);
-    this.setStatus(task, "queued");
-    void this.drain();
-  }
-  /** 取消指定任务：排队中的直接移除；运行中的发出 abort。 */
-  cancel(taskId) {
-    var _a;
-    const idx = this.pending.findIndex((t) => t.id === taskId);
-    if (idx >= 0) {
-      const [task] = this.pending.splice(idx, 1);
-      this.setStatus(task, "cancelled");
-      return;
-    }
-    if (((_a = this.current) == null ? void 0 : _a.task.id) === taskId) {
-      this.current.controller.abort();
-    }
-  }
-  /** 取消全部（排队中 + 运行中）。 */
-  cancelAll() {
-    for (const task of this.pending.splice(0)) this.setStatus(task, "cancelled");
-    if (this.current) this.current.controller.abort();
-  }
-  /** 等待当前队列排空（测试用）。 */
-  async idle() {
-    while (this.running || this.pending.length > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  get size() {
-    return this.pending.length + (this.current ? 1 : 0);
-  }
-  // ----------------------------------------------------------
-  // 内部调度
-  // ----------------------------------------------------------
-  async drain() {
-    var _a, _b, _c, _d;
-    if (this.running) return;
-    this.running = true;
-    try {
-      while (this.pending.length > 0) {
-        const task = this.pending.shift();
-        const controller = new AbortController();
-        const entry = { task, controller, timer: null };
-        this.current = entry;
-        if (this.timeoutMs > 0) {
-          entry.timer = setTimeout(() => controller.abort(), this.timeoutMs);
-        }
-        const ctx = {
-          signal: controller.signal,
-          report: (progress) => {
-            task.progress = progress;
-            task.updatedAt = Date.now();
-          },
-          setStatus: (status) => this.setStatus(task, status)
-        };
-        try {
-          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
-          this.setStatus(task, "reading");
-          await this.runner(task, ctx);
-          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
-          this.setStatus(task, "completed");
-          (_b = (_a = this.options).onComplete) == null ? void 0 : _b.call(_a, task);
-        } catch (err) {
-          const error = err instanceof Error ? err : new Error(String(err));
-          const cancelled = error.name === "AbortError" || controller.signal.aborted;
-          this.setStatus(task, cancelled ? "cancelled" : "failed");
-          if (!cancelled) {
-            task.error = error.message;
-            (_d = (_c = this.options).onError) == null ? void 0 : _d.call(_c, task, error);
-          }
-        } finally {
-          if (entry.timer) clearTimeout(entry.timer);
-          this.current = null;
-        }
-      }
-    } finally {
-      this.running = false;
-    }
-  }
-  setStatus(task, status) {
-    var _a, _b;
-    task.status = status;
-    task.updatedAt = Date.now();
-    (_b = (_a = this.options).onStatusChange) == null ? void 0 : _b.call(_a, task, status);
-  }
-}
-function composeEnglishPrompt(segments) {
-  const enabled = segments.filter((s) => s.enabled);
-  const sorted = [...enabled].sort((a, b) => a.order - b.order);
-  const allTags = [];
-  const seenBareTags = /* @__PURE__ */ new Set();
-  for (const segment of sorted) {
-    for (const tag of segment.english) {
-      const trimmed = tag.trim();
-      if (!trimmed) continue;
-      const bare = bareTagOf$1(trimmed);
-      if (bare && seenBareTags.has(bare) && !trimmed.includes("::")) {
-        continue;
-      }
-      if (bare) seenBareTags.add(bare);
-      allTags.push(trimmed);
-    }
-  }
-  return allTags.join(", ");
-}
-function bareTagOf$1(tag) {
-  let text = tag.trim();
-  text = text.replace(/^\s*[\d.]+\s*::/, "");
-  text = text.replace(/^\s*::/, "");
-  text = text.replace(/::\s*$/, "");
-  return text.trim().toLowerCase();
-}
-function bareTagOf(segment) {
-  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
-}
-function isPlainSegment(segment) {
-  const text = segment.trim();
-  if (!text) return false;
-  if (!text.includes("::")) return true;
-  return /^[\d.]+\s*::.*::\s*$/.test(text);
-}
-const PANEL_FAMILY$1 = [
-  "multiple views",
-  "2koma",
-  "3koma",
-  "4koma",
-  "split screen",
-  "3格漫画",
-  "三场景漫画构图",
-  "非对称漫画页面布局",
-  "开放分镜漫画构图",
-  "无边框中央插画",
-  "第二场景周围没有长方形画框",
-  "主场景周围没有长方形包围",
-  "人物自然融入白色空间"
-];
-const PANEL_FORBIDDEN_BY_LAYOUT = {
-  regular: ["3koma", "4koma"],
-  irregular: ["2koma", "3koma", "4koma"],
-  inset: ["2koma", "3koma", "4koma", "split screen"],
-  unframed: ["multiple views", "2koma", "3koma", "4koma", "split screen"]
-};
-const SCENE_ANCHOR_TAGS = ["indoors", "outdoors", "interior", "exterior"];
-const SCENE_LOCATION_TAGS = [
-  "dorm room",
-  "bedroom",
-  "classroom",
-  "street",
-  "city",
-  "bathroom",
-  "kitchen",
-  "office",
-  "living room",
-  "study",
-  "corridor",
-  "rooftop"
-];
-const INSET_SCENE_TAGS = [
-  "indoors",
-  "outdoors",
-  "dorm room",
-  "bedroom",
-  "classroom",
-  "street",
-  "city",
-  "scenery",
-  "bed",
-  "single bed",
-  "bedsheets",
-  "rumpled bedsheets",
-  "blanket",
-  "pillow",
-  "desk",
-  "wooden desk",
-  "table",
-  "bookshelf",
-  "shelf",
-  "window",
-  "curtain",
-  "glass jar",
-  "paper cranes",
-  "wooden floor",
-  "floor",
-  "sunlight from window",
-  "side lighting",
-  "warm colors",
-  "backlighting",
-  "afternoon",
-  "morning",
-  "evening",
-  "night",
-  "sunset",
-  "sunrise",
-  "depth of field",
-  "shallow depth of field"
-];
-function enforcePanelPrompt(prompt, layout) {
-  const kind = normalizePanelLayout(layout);
-  const source = String(prompt ?? "").trim();
-  if (!source) return { prompt: source, removed: [], added: [] };
-  const forbidden = new Set(PANEL_FORBIDDEN_BY_LAYOUT[kind]);
-  const stripScene = kind === "inset" || kind === "unframed";
-  const sceneLimit = kind === "unframed";
-  let locationKept = 0;
-  const kept = [];
-  const removed = [];
-  const present = /* @__PURE__ */ new Set();
-  for (const segment of source.split(",")) {
-    const text = segment.trim();
-    if (!text) continue;
-    const bare = bareTagOf(text);
-    present.add(bare);
-    if (!PANEL_FAMILY$1.includes(bare)) {
-      if (sceneLimit && isPlainSegment(text)) {
-        if (SCENE_ANCHOR_TAGS.includes(bare)) {
-          kept.push(text);
-          continue;
-        }
-        if (SCENE_LOCATION_TAGS.includes(bare)) {
-          if (locationKept < 2) {
-            locationKept += 1;
-            kept.push(text);
-            continue;
-          }
-          removed.push(text);
-          continue;
-        }
-        if (INSET_SCENE_TAGS.includes(bare)) {
-          removed.push(text);
-          continue;
-        }
-        kept.push(text);
-        continue;
-      }
-      if (stripScene && isPlainSegment(text) && INSET_SCENE_TAGS.includes(bare)) {
-        removed.push(text);
-        continue;
-      }
-      kept.push(text);
-      continue;
-    }
-    if (isPlainSegment(text) && forbidden.has(bare)) {
-      removed.push(text);
-      continue;
-    }
-    kept.push(text);
-  }
-  const missing = PANEL_TAGS_BY_LAYOUT[kind].filter((tag) => !present.has(bareTagOf(tag)));
-  return { prompt: [...missing, ...kept].join(", "), removed, added: missing };
-}
-function decidePanelInjection(input) {
-  const layout = input.chibiOn ? "regular" : normalizePanelLayout(input.panelLayout);
-  return { enabled: true, layout };
-}
-function isMostlyChinese(text) {
-  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff]/g) ?? []).length;
-  if (!cjk) return false;
-  return cjk > (text.match(/[a-zA-Z]/g) ?? []).length;
-}
-const PANEL_NL_MARK = /\b(?:panels?|gutters?|inset|main image|main illustration|split screen|two-panel|comic page)\b/i;
-function applyPanelToNl(nl, layout, orientation = "portrait", pageType = "auto") {
-  const kind = normalizePanelLayout(layout);
-  const text = String(nl ?? "").trim();
-  if (!text) return text;
-  if (isMostlyChinese(text) || PANEL_NL_MARK.test(text)) return nl;
-  const sentence = kind === "unframed" ? unframedNlSentence(normalizePanelPageType(pageType)) : PANEL_NL_SENTENCE[kind][orientation === "landscape" ? "landscape" : "portrait"];
-  return `${sentence} ${text}`;
-}
-function enforceForGeneration(input) {
-  const decision = decidePanelInjection({
-    panelLayout: input.panelLayout,
-    chibiOn: input.chibiOn
-  });
-  const enforced = enforcePanelPrompt(input.prompt, decision.layout);
-  return {
-    prompt: enforced.prompt,
-    nl: applyPanelToNl(input.nl, decision.layout, input.orientation, input.pageType),
-    applied: true,
-    layout: decision.layout,
-    removed: enforced.removed,
-    added: enforced.added
-  };
-}
-const PANEL_FAMILY = /* @__PURE__ */ new Set([
-  "multiple views",
-  "2koma",
-  "3koma",
-  "4koma",
-  "split screen",
-  "white background",
-  "3格漫画",
-  "三场景漫画构图",
-  "非对称漫画页面布局",
-  "开放分镜漫画构图",
-  "无边框中央插画",
-  "第二场景周围没有长方形画框",
-  "主场景周围没有长方形包围",
-  "人物自然融入白色空间"
-]);
-function bareTag$1(segment) {
-  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
-}
-function contentTagCount(tags) {
-  return String(tags ?? "").split(",").map(bareTag$1).filter((tag) => tag && !PANEL_FAMILY.has(tag)).length;
-}
-function hasStoryContent(pages) {
-  for (const page of pages) {
-    if (page.tags && contentTagCount(page.tags) >= 2) return true;
-    if (page.tags && contentTagCount(page.tags) === 0) continue;
-    for (const panel of page.panels) {
-      if (contentTagCount(panel.tags) >= 2) return true;
-    }
-  }
-  return false;
-}
-function mergeCharacterTags(prompt, names, library) {
-  const present = new Set(prompt.split(",").map(bareTag$1).filter(Boolean));
-  const wanted = names.map((name) => library.find((c) => c.name === name)).filter((c) => !!c);
-  const sources = wanted.length ? wanted : library.length === 1 ? library : [];
-  const extra = [];
-  for (const character of sources.slice(0, 2)) {
-    for (const raw of String(character.tag ?? "").split(",")) {
-      const piece = raw.trim();
-      if (!piece) continue;
-      const key = bareTag$1(piece);
-      if (!key || present.has(key)) continue;
-      present.add(key);
-      extra.push(piece);
-    }
-  }
-  return extra.length ? `${prompt}, ${extra.join(", ")}` : prompt;
-}
-const LAYOUT_NL_HEAD = {
-  regular: "A two-panel comic page: one canvas split horizontally by a thin black border, read from top to bottom.",
-  irregular: "An irregular comic page: unequally sized panels separated by thin black gutters, read from top to bottom.",
-  inset: "A manga page on a white background: an unframed character illustration in the center with narrow white margins, plus one or two small close-up panels with thin black borders.",
-  unframed: "A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders."
-};
-const AREA_LEAD = {
-  regular: ["In the upper panel", "The lower panel shows", "In the third panel", "The bottom panel shows"],
-  irregular: ["In the large panel", "In the narrow panel", "In the small panel", "In the bottom strip"],
-  inset: ["In the main illustration", "In the top strip", "In the small framed panel", "In the side panel"],
-  unframed: ["In the main illustration", "In the top strip", "In the small framed panel", "In the side panel"]
-};
-function bareTag(segment) {
-  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
-}
-function mergePanelTags(page) {
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const panel of page.panels ?? []) {
-    for (const raw of String(panel.tags ?? "").split(",")) {
-      const piece = raw.trim();
-      if (!piece) continue;
-      const key = bareTag(piece);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(piece);
-    }
-  }
-  return out.join(", ");
-}
-function buildPageNl(page) {
-  var _a;
-  const head = LAYOUT_NL_HEAD[page.layout] ?? LAYOUT_NL_HEAD.regular;
-  const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
-  const parts = [head];
-  let wrote = false;
-  (_a = page.panels) == null ? void 0 : _a.forEach((panel, index2) => {
-    const body = String(panel.nl ?? "").trim();
-    if (!body) return;
-    const lead = leads[Math.min(index2, leads.length - 1)];
-    parts.push(lead.endsWith("shows") ? `${lead} ${body}` : `${lead}, ${body}`);
-    wrote = true;
-  });
-  if (!wrote) {
-    const titles = (page.panels ?? []).map((p) => p.title).filter(Boolean);
-    if (titles.length > 0) parts.push(`The panels in reading order: ${titles.join(" / ")}.`);
-  }
-  return parts.join(" ");
-}
-function collectPageDialogue(page) {
-  if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
-  const out = [];
-  for (const panel of page.panels ?? []) {
-    for (const item of panel.dialogue ?? []) {
-      if (out.length >= 4) return out;
-      out.push(item);
-    }
-  }
-  return out;
-}
-function composePagePrompt(page, characters = []) {
-  const base = String(page.tags ?? "").trim() || mergePanelTags(page);
-  const names = [];
-  for (const panel of page.panels ?? []) {
-    for (const c of panel.characters ?? []) {
-      if ((c == null ? void 0 : c.name) && !names.includes(c.name)) names.push(c.name);
-    }
-  }
-  const prompt = mergeCharacterTags(base, names, characters);
-  const nl = String(page.nl ?? "").trim() || buildPageNl(page);
-  return {
-    prompt,
-    nl,
-    dialogue: collectPageDialogue(page),
-    panelTitles: (page.panels ?? []).map((p) => p.title).filter(Boolean)
-  };
 }
 const ALL_BUBBLE_STYLES = [
   "classic",
@@ -6016,6 +5302,1130 @@ async function bakeDialogueIntoImage(input) {
     composite.revoke();
   }
 }
+function kindOfMode(mode) {
+  if (mode === "chibi-status") return "status";
+  if (mode === "chibi-bonus") return "bonus";
+  return "manga";
+}
+function modeOfKind(kind) {
+  if (kind === "status") return "chibi-status";
+  if (kind === "bonus") return "chibi-bonus";
+  return "bw-manga";
+}
+function pickProfile(profiles, mode) {
+  return profiles.find((p) => p.mode === mode);
+}
+function fallbackProfile(mode) {
+  return {
+    id: `default-${mode}`,
+    name: "默认",
+    mode,
+    backend: "nai",
+    promptTemplateId: "default",
+    options: {}
+  };
+}
+async function bakeTheaterLines(imagePath, lines, settings2, kind) {
+  if (!imagePath || !(lines == null ? void 0 : lines.length)) return { path: imagePath, baked: false };
+  const modeSettings = resolveModeSettings(settings2, modeOfKind(kind));
+  const baked = await bakeDialogueIntoImage({
+    imagePath,
+    dialogue: lines.map((line) => ({
+      text: line.text,
+      ...line.speaker && line.speaker !== "旁白" ? { speaker: line.speaker } : {}
+    })),
+    ...modeSettings.bwMangaBubbleStyle ? { style: modeSettings.bwMangaBubbleStyle } : {},
+    ...settings2.bubbleFont ? { font: settings2.bubbleFont } : {}
+  });
+  return baked ? { path: baked, baked: true } : { path: imagePath, baked: false };
+}
+function normalizeName(name) {
+  return String(name ?? "").replace(/[\s（）()「」『』【】·.,，。:：!！?？~～]/g, "").toLowerCase();
+}
+function makeLookReader(characters, primaryName = "") {
+  const byNorm = /* @__PURE__ */ new Map();
+  for (const c of characters) {
+    byNorm.set(normalizeName(c.name), c);
+    const base = normalizeName(String(c.name ?? "").split(/[（(【\[]/)[0]);
+    if (base && !byNorm.has(base)) byNorm.set(base, c);
+  }
+  const primary = primaryName ? byNorm.get(normalizeName(primaryName)) : void 0;
+  const onlyOne = characters.length === 1 ? characters[0] : void 0;
+  return (names) => names.map((name) => {
+    const key = normalizeName(name);
+    const base = normalizeName(String(name ?? "").split(/[（(【\[]/)[0]);
+    const hit = byNorm.get(key) ?? (base ? byNorm.get(base) : void 0) ?? primary ?? onlyOne;
+    return hit ? { name, tag: hit.tag, ...hit.nl ? { nl: hit.nl } : {} } : { name, tag: "" };
+  });
+}
+async function runTheaterTask(input) {
+  const { mode, settings: settings2, floor } = input;
+  const kind = kindOfMode(mode);
+  const modeSettings = resolveModeSettings(settings2, mode);
+  const characters = await getCharacters(floor);
+  const profile = pickProfile(settings2.profiles ?? [], mode);
+  const result = await runTheaterOne({
+    kind,
+    chatId: input.chatId,
+    floor,
+    swipe: input.swipe,
+    characterName: input.characterName,
+    body: input.body,
+    shots: modeSettings.shots,
+    chibi: kind !== "manga" && modeSettings.chibiStyle !== "thumb",
+    mangaSafe: modeSettings.bwMangaSafeMode ?? true,
+    dialogue: kind === "manga" && modeSettings.bwMangaDialogue !== false,
+    backend: "nai",
+    ...profile ? { profile } : {},
+    ...input.onPanel ? { onPanel: input.onPanel } : {},
+    // 副 API 报错即停，不回退主 API（并把原文记进日志）
+    llm: async (prompt) => {
+      try {
+        return await makeModeLlmCaller(settings2, mode)("", prompt);
+      } catch (err) {
+        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
+        throw err;
+      }
+    },
+    generate: async (genInput, genProfile) => {
+      const startedAt = Date.now();
+      try {
+        await ensureModeOutPlan(mode, settings2);
+        const r = await baiBaiAdapter.generate({
+          prompt: genInput.prompt,
+          ...genInput.nl ? { nl: genInput.nl } : {},
+          ...genInput.negative ? { negative: genInput.negative } : {},
+          seed: genInput.seed,
+          size: genInput.size,
+          save: true
+        }, genProfile ?? fallbackProfile(mode));
+        recordImageLog({
+          mode,
+          floor,
+          source: "api",
+          plan: readOutConfig().activePlanName,
+          prompt: genInput.prompt,
+          ...genInput.nl ? { nl: genInput.nl } : {},
+          ...genInput.negative ? { negative: genInput.negative } : {},
+          ...genInput.size ? { size: genInput.size } : {},
+          ...typeof r.seed === "number" ? { seed: r.seed } : typeof genInput.seed === "number" ? { seed: genInput.seed } : {},
+          status: "ok",
+          durationMs: Date.now() - startedAt
+        });
+        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
+      } catch (err) {
+        recordImageLog({
+          mode,
+          floor,
+          source: "api",
+          plan: readOutConfig().activePlanName,
+          prompt: genInput.prompt,
+          ...genInput.nl ? { nl: genInput.nl } : {},
+          ...genInput.negative ? { negative: genInput.negative } : {},
+          ...genInput.size ? { size: genInput.size } : {},
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - startedAt
+        });
+        throw err;
+      }
+    },
+    readLooks: makeLookReader(characters.characters, input.characterName)
+  });
+  return { ok: result.ok, stories: result.stories, ...result.error ? { error: result.error } : {} };
+}
+function randomSeed() {
+  return Math.floor(Math.random() * 4294967295);
+}
+async function rerollPanel(floor, kind, setId, index2) {
+  var _a;
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const set = getSets(floor, kind).find((s) => s.setId === setId);
+  const panel = set == null ? void 0 : set.panels.find((p) => p.index === index2);
+  if (!panel) return { ok: false, message: "找不到这一格。" };
+  if (!panel.prompt) {
+    return { ok: false, message: "这一格没存下当时的出图词，请用「整条重出」。" };
+  }
+  const mode = modeOfKind(kind);
+  await ensureModeOutPlan(mode, settings2);
+  const seed = randomSeed();
+  const startedAt = Date.now();
+  try {
+    const nl = kind === "manga" ? buildMangaNl(panel.story ?? "") : panel.story ?? "";
+    const result = await baiBaiAdapter.generate(
+      {
+        prompt: panel.prompt,
+        ...nl ? { nl } : {},
+        ...panel.negative ? { negative: panel.negative } : {},
+        seed,
+        size: "portrait",
+        save: true
+      },
+      pickProfile(settings2.profiles ?? [], mode) ?? fallbackProfile(mode)
+    );
+    const raw = result.path ?? result.dataUrl;
+    if (!raw) return { ok: false, message: "出图没有返回图片。" };
+    recordImageLog({
+      mode,
+      floor,
+      source: "api",
+      plan: readOutConfig().activePlanName,
+      prompt: panel.prompt,
+      ...nl ? { nl } : {},
+      ...panel.negative ? { negative: panel.negative } : {},
+      size: "portrait",
+      ...typeof result.seed === "number" ? { seed: result.seed } : { seed },
+      status: "ok",
+      durationMs: Date.now() - startedAt
+    });
+    let path = raw;
+    let originalPath;
+    if (kind === "manga" && ((_a = panel.lines) == null ? void 0 : _a.length)) {
+      const baked = await bakeTheaterLines(raw, panel.lines, settings2, kind);
+      if (baked.baked) {
+        originalPath = raw;
+        path = baked.path;
+      }
+    }
+    updatePanel(floor, kind, setId, index2, {
+      imagePath: path,
+      ...originalPath ? { originalPath } : {},
+      seed: result.seed ?? seed,
+      storyAt: Date.now()
+    });
+    await saveChatSafe();
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    recordImageLog({
+      mode,
+      floor,
+      source: "api",
+      prompt: panel.prompt ?? "",
+      size: "portrait",
+      status: "error",
+      error: message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: false, message };
+  } finally {
+    await restoreOutPlan(settings2);
+  }
+}
+async function rerollSet(floor, kind, setId) {
+  var _a;
+  const settings2 = getSettings(DEFAULT_SETTINGS);
+  const set = getSets(floor, kind).find((s) => s.setId === setId);
+  if (!set) return { ok: false, message: "找不到这张卡片。" };
+  const body = (set.sourceText ?? "").trim();
+  if (!body) {
+    return { ok: false, message: "这张卡片没存下当时的选段，请重新选段生成。" };
+  }
+  const mode = modeOfKind(kind);
+  await ensureModeOutPlan(mode, settings2);
+  let result;
+  try {
+    result = await runTheaterTask({
+      mode,
+      settings: settings2,
+      floor,
+      chatId: getCurrentChatId(),
+      swipe: getSwipeId(floor),
+      body,
+      characterName: set.characterName
+    });
+  } finally {
+    await restoreOutPlan(settings2);
+  }
+  if (!result.ok) return { ok: false, message: result.error ?? "整条重出失败。" };
+  const total = result.stories.length;
+  const stories = [];
+  for (const story of result.stories) {
+    let imagePath = story.imagePath;
+    let originalPath;
+    if (kind === "manga" && ((_a = story.lines) == null ? void 0 : _a.length) && imagePath) {
+      const baked = await bakeTheaterLines(imagePath, story.lines, settings2, kind);
+      if (baked.baked) {
+        originalPath = imagePath;
+        imagePath = baked.path;
+      }
+    }
+    stories.push({
+      ...story,
+      imagePath,
+      ...originalPath ? { originalPath } : {},
+      setId,
+      setTitle: story.title ?? set.title,
+      setSize: total,
+      sourceText: body,
+      characterName: set.characterName
+    });
+  }
+  replaceSet(floor, kind, setId, stories);
+  await saveChatSafe();
+  return { ok: true };
+}
+const AREA_ID = "sti-theater-area-";
+const AREA_CLASS = "sti-cs-bar";
+const MOUNTED_ATTR = "data-sti-theater-mounted";
+const BUCKET_LABELS = {
+  status: "Q 版小剧场",
+  bonus: "彩蛋时刻",
+  manga: "黑白漫"
+};
+const KIND_ORDER = ["status", "bonus", "manga"];
+function mountTheater(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  unmountTheater(floor);
+  const groups = [];
+  for (const kind of KIND_ORDER) {
+    for (const set of getSets(floor, kind)) groups.push({ kind, set });
+  }
+  if (groups.length === 0) return;
+  const mesBlock = mes.querySelector(".mes_block") ?? mes;
+  const area = document.createElement("div");
+  area.id = `${AREA_ID}${floor}`;
+  area.className = AREA_CLASS;
+  area.setAttribute(MOUNTED_ATTR, String(floor));
+  for (const { kind, set } of groups) {
+    area.appendChild(buildCard(floor, kind, set));
+  }
+  mesBlock.appendChild(area);
+}
+function unmountTheater(floor) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  const areas = mes.querySelectorAll(`[${MOUNTED_ATTR}="${floor}"]`);
+  for (const area of Array.from(areas)) area.remove();
+}
+function remountAllTheater() {
+  const nodes = document.querySelectorAll(".mes[mesid]");
+  for (const node of Array.from(nodes)) {
+    const floor = parseInt(node.getAttribute("mesid") ?? "", 10);
+    if (Number.isFinite(floor)) {
+      try {
+        mountTheater(floor);
+      } catch {
+      }
+    }
+  }
+}
+function buildCard(floor, kind, set) {
+  var _a;
+  const card = document.createElement("details");
+  card.className = "sti-cs-card";
+  card.open = true;
+  card.setAttribute("data-sti-set", `${kind}:${set.setId}`);
+  const total = set.panels.length;
+  const cover = firstImage(set.panels);
+  const summary = document.createElement("summary");
+  summary.className = "sti-cs-summary";
+  if (cover) {
+    const thumb = document.createElement("img");
+    thumb.className = "sti-cs-thumb";
+    thumb.src = cover;
+    thumb.alt = "";
+    thumb.loading = "lazy";
+    summary.appendChild(thumb);
+  }
+  const kicker = document.createElement("span");
+  kicker.className = "sti-cs-kicker";
+  kicker.textContent = kind === "bonus" ? BUCKET_LABELS.bonus : `${BUCKET_LABELS[kind]} · ${total} 格`;
+  summary.appendChild(kicker);
+  const headline = document.createElement("span");
+  headline.className = "sti-cs-headline";
+  headline.textContent = set.title || "小剧场";
+  summary.appendChild(headline);
+  const chevron = document.createElement("i");
+  chevron.className = "fa-solid fa-chevron-down sti-cs-chevron";
+  summary.appendChild(chevron);
+  card.appendChild(summary);
+  const single = total === 1 && (((_a = set.panels[0].lines) == null ? void 0 : _a.length) ?? 0) > 0;
+  const body = document.createElement("div");
+  body.className = single ? "sti-cs-body is-story" : "sti-cs-body";
+  if (single) {
+    body.appendChild(buildSinglePanel(floor, kind, set, set.panels[0]));
+  } else {
+    const strip = document.createElement("div");
+    strip.className = "sti-cs-strip";
+    for (const panel of set.panels) {
+      strip.appendChild(buildStripPanel(floor, kind, set, panel, total));
+    }
+    body.appendChild(strip);
+  }
+  body.appendChild(buildFoot(floor, kind, set));
+  card.appendChild(body);
+  return card;
+}
+function buildStripPanel(floor, kind, set, panel, total) {
+  const figure = document.createElement("figure");
+  figure.className = "sti-cs-panel";
+  const shot = document.createElement("div");
+  shot.className = "sti-cs-shot";
+  const cell = document.createElement("div");
+  cell.className = "sti-cs-cell";
+  cell.tabIndex = 0;
+  cell.setAttribute("role", "button");
+  if (panel.imagePath) {
+    const img = document.createElement("img");
+    img.className = "sti-cs-cell-img";
+    img.src = panel.imagePath;
+    img.alt = panel.title ?? `第 ${panel.index + 1} 格`;
+    img.loading = "lazy";
+    cell.appendChild(img);
+    cell.addEventListener("click", () => openPanel(set, panel));
+    cell.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openPanel(set, panel);
+      }
+    });
+  } else {
+    const ph = document.createElement("div");
+    ph.className = "sti-cs-placeholder";
+    ph.textContent = "未出图";
+    cell.appendChild(ph);
+  }
+  const num = document.createElement("span");
+  num.className = "sti-cs-num";
+  num.textContent = `${panel.index + 1}/${total}`;
+  cell.appendChild(num);
+  shot.appendChild(cell);
+  shot.appendChild(buildRerollButton(floor, kind, set, panel));
+  figure.appendChild(shot);
+  const cap = document.createElement("figcaption");
+  cap.className = "sti-cs-panel-cap";
+  cap.textContent = panel.title ?? "";
+  figure.appendChild(cap);
+  return figure;
+}
+function buildSinglePanel(floor, kind, set, panel) {
+  const row = document.createElement("div");
+  row.className = "sti-cs-single";
+  const shot = document.createElement("div");
+  shot.className = "sti-cs-shot is-figure";
+  const figure = document.createElement("div");
+  figure.className = "sti-cs-cell";
+  figure.tabIndex = 0;
+  figure.setAttribute("role", "button");
+  if (panel.imagePath) {
+    const img = document.createElement("img");
+    img.className = "sti-cs-photo";
+    img.src = panel.imagePath;
+    img.alt = panel.title ?? "小剧场";
+    img.loading = "lazy";
+    figure.appendChild(img);
+    figure.addEventListener("click", () => openPanel(set, panel));
+  }
+  shot.appendChild(figure);
+  shot.appendChild(buildRerollButton(floor, kind, set, panel));
+  row.appendChild(shot);
+  const meta = document.createElement("div");
+  meta.className = "sti-cs-meta";
+  const title = document.createElement("div");
+  title.className = "sti-cs-caption";
+  title.textContent = panel.title || set.title || "小剧场";
+  meta.appendChild(title);
+  const sub = document.createElement("div");
+  sub.className = "sti-cs-cast";
+  sub.textContent = (panel.cast ?? []).join(" · ");
+  if (panel.mood) {
+    const chip = document.createElement("span");
+    chip.className = "sti-cs-chip";
+    chip.textContent = panel.mood;
+    sub.appendChild(chip);
+  }
+  if (sub.textContent) meta.appendChild(sub);
+  const lines = document.createElement("div");
+  lines.className = "sti-cs-lines";
+  for (const line of panel.lines ?? []) {
+    const rowEl = document.createElement("div");
+    rowEl.className = line.speaker === "旁白" || !line.speaker ? "sti-cs-line is-narr" : "sti-cs-line";
+    if (line.speaker && line.speaker !== "旁白") {
+      const b = document.createElement("b");
+      b.textContent = `${line.speaker}：`;
+      rowEl.appendChild(b);
+    }
+    rowEl.appendChild(document.createTextNode(line.text));
+    lines.appendChild(rowEl);
+  }
+  if (lines.childElementCount > 0) meta.appendChild(lines);
+  row.appendChild(meta);
+  return row;
+}
+function buildFoot(floor, kind, set, total) {
+  const foot = document.createElement("div");
+  foot.className = "sti-cs-foot";
+  if (set.cast.length > 0) {
+    const cast = document.createElement("span");
+    cast.className = "sti-cs-cast";
+    cast.textContent = set.cast.join(" · ");
+    foot.appendChild(cast);
+  }
+  if (set.mood) {
+    const chip = document.createElement("span");
+    chip.className = "sti-cs-chip";
+    chip.textContent = set.mood;
+    foot.appendChild(chip);
+  }
+  const spacer = document.createElement("span");
+  spacer.className = "sti-cs-spacer";
+  foot.appendChild(spacer);
+  const reroll = document.createElement("button");
+  reroll.type = "button";
+  reroll.className = "sti-cs-regen";
+  reroll.textContent = "整条重出";
+  reroll.addEventListener("click", async () => {
+    await runBusy(reroll, "重出中…", async () => {
+      const result = await rerollSet(floor, kind, set.setId);
+      if (!result.ok) throw new Error(result.message ?? "整条重出失败。");
+      mountTheater(floor);
+    });
+  });
+  foot.appendChild(reroll);
+  if (set.panels.some((p) => !!p.imagePath)) {
+    const gallery2 = document.createElement("button");
+    gallery2.type = "button";
+    gallery2.className = "sti-cs-link";
+    gallery2.textContent = "逐格看大图";
+    gallery2.addEventListener("click", () => {
+      openGallery(
+        set.panels.filter((p) => !!p.imagePath).map((p) => ({ src: p.imagePath, caption: p.title ?? "" }))
+      );
+    });
+    foot.appendChild(gallery2);
+  }
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "sti-cs-link danger";
+  del.textContent = "删除";
+  del.addEventListener("click", async () => {
+    removeSet(floor, kind, set.setId);
+    await saveChatSafe();
+    mountTheater(floor);
+  });
+  foot.appendChild(del);
+  return foot;
+}
+function buildRerollButton(floor, kind, set, panel) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sti-cs-reroll";
+  btn.title = "重画这张";
+  btn.setAttribute("aria-label", "重画这张");
+  btn.textContent = "↻";
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await runBusy(btn, "…", async () => {
+      const result = await rerollPanel(floor, kind, set.setId, panel.index);
+      if (!result.ok) throw new Error(result.message ?? "重画失败。");
+      mountTheater(floor);
+    });
+  });
+  return btn;
+}
+function openPanel(set, panel) {
+  const images = set.panels.filter((p) => !!p.imagePath).map((p) => ({ src: p.imagePath, caption: p.title ?? "" }));
+  if (images.length <= 1) {
+    if (panel.imagePath) openLightbox(panel.imagePath, panel.title);
+    return;
+  }
+  const at = images.findIndex((i) => i.src === panel.imagePath);
+  openGallery(images, at < 0 ? 0 : at);
+}
+async function runBusy(btn, busyText, task) {
+  const label = btn.textContent ?? "";
+  btn.disabled = true;
+  btn.textContent = busyText;
+  btn.classList.add("is-busy");
+  try {
+    await task();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    notify(message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    btn.classList.remove("is-busy");
+  }
+}
+function notify(message, level) {
+  var _a;
+  const toastr = window.toastr;
+  if (toastr) {
+    (_a = toastr.error) == null ? void 0 : _a.call(toastr, message);
+  } else {
+    console.error("[ST-Story-Illustrator]", message);
+  }
+}
+function firstImage(panels) {
+  var _a;
+  return (_a = panels.find((p) => !!p.imagePath)) == null ? void 0 : _a.imagePath;
+}
+const BALL_ID = "sti-fab";
+const HIDE_ID = "sti-fab-hide";
+const DRAG_THRESHOLD = 4;
+let ball = null;
+let startX = 0;
+let startY = 0;
+let originLeft = 0;
+let originTop = 0;
+let moved = false;
+let dragging = false;
+function currentSettings() {
+  return getSettings(DEFAULT_SETTINGS);
+}
+function defaultPosition() {
+  const size = 46;
+  const left = Math.max(8, window.innerWidth - size - 18);
+  const top = Math.max(8, window.innerHeight - size - 110);
+  return { left, top };
+}
+function mountFloatingBall() {
+  const settings2 = currentSettings();
+  if (settings2.showFloatingBall === false) {
+    unmountFloatingBall();
+    return;
+  }
+  if (ball && document.body.contains(ball)) return;
+  const pos = settings2.floatingBallPos ?? defaultPosition();
+  const el2 = document.createElement("div");
+  el2.id = BALL_ID;
+  el2.className = "sti-fab";
+  el2.title = "ST 故事插画 · 点一下打开配图面板，可拖动";
+  el2.textContent = "🎨";
+  el2.style.left = `${clamp(pos.left, 0, window.innerWidth - 46)}px`;
+  el2.style.top = `${clamp(pos.top, 0, window.innerHeight - 46)}px`;
+  el2.tabIndex = 0;
+  const hide = document.createElement("button");
+  hide.type = "button";
+  hide.id = HIDE_ID;
+  hide.className = "sti-fab-hide";
+  hide.title = "隐藏悬浮球（可在配图设置里重新打开）";
+  hide.textContent = "×";
+  hide.addEventListener("pointerdown", (e) => e.stopPropagation());
+  hide.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideFloatingBall();
+  });
+  el2.appendChild(hide);
+  el2.addEventListener("pointerdown", onPointerDown);
+  el2.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (moved) {
+      moved = false;
+      return;
+    }
+    openStudio("generate");
+  });
+  el2.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openStudio("generate");
+    }
+  });
+  document.body.appendChild(el2);
+  ball = el2;
+  window.addEventListener("resize", keepInside);
+}
+function onPointerDown(e) {
+  var _a, _b;
+  if (!ball) return;
+  if (((_a = e.target) == null ? void 0 : _a.id) === HIDE_ID) return;
+  dragging = true;
+  moved = false;
+  startX = e.clientX;
+  startY = e.clientY;
+  originLeft = ball.offsetLeft;
+  originTop = ball.offsetTop;
+  ball.classList.add("dragging");
+  (_b = ball.setPointerCapture) == null ? void 0 : _b.call(ball, e.pointerId);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+}
+function onPointerMove(e) {
+  if (!dragging || !ball) return;
+  const dx = e.clientX - startX;
+  const dy = e.clientY - startY;
+  if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+  moved = true;
+  const left = clamp(originLeft + dx, 0, window.innerWidth - ball.offsetWidth);
+  const top = clamp(originTop + dy, 0, window.innerHeight - ball.offsetHeight);
+  ball.style.left = `${left}px`;
+  ball.style.top = `${top}px`;
+}
+function onPointerUp() {
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  if (!dragging || !ball) return;
+  dragging = false;
+  ball.classList.remove("dragging");
+  if (moved) {
+    const settings2 = currentSettings();
+    settings2.floatingBallPos = { left: ball.offsetLeft, top: ball.offsetTop };
+    saveSettings(settings2);
+  }
+}
+function keepInside() {
+  if (!ball) return;
+  const left = clamp(ball.offsetLeft, 0, window.innerWidth - ball.offsetWidth);
+  const top = clamp(ball.offsetTop, 0, window.innerHeight - ball.offsetHeight);
+  ball.style.left = `${left}px`;
+  ball.style.top = `${top}px`;
+}
+function hideFloatingBall() {
+  const settings2 = currentSettings();
+  settings2.showFloatingBall = false;
+  saveSettings(settings2);
+  unmountFloatingBall();
+  window.dispatchEvent(new CustomEvent("sti-settings-changed"));
+}
+function unmountFloatingBall() {
+  if (ball) {
+    ball.remove();
+    ball = null;
+  }
+  window.removeEventListener("resize", keepInside);
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  dragging = false;
+}
+function syncFloatingBall() {
+  unmountFloatingBall();
+  mountFloatingBall();
+}
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+class TaskQueue {
+  constructor(runner, options = {}) {
+    this.pending = [];
+    this.current = null;
+    this.running = false;
+    this.runner = runner;
+    this.options = options;
+    this.timeoutMs = options.taskTimeoutMs ?? 5 * 60 * 1e3;
+  }
+  /** 入队。重复 task.id 会被去重（忽略后入的）。 */
+  enqueue(task) {
+    var _a;
+    if (this.pending.some((t) => t.id === task.id)) return;
+    if (((_a = this.current) == null ? void 0 : _a.task.id) === task.id) return;
+    this.pending.push(task);
+    this.setStatus(task, "queued");
+    void this.drain();
+  }
+  /** 取消指定任务：排队中的直接移除；运行中的发出 abort。 */
+  cancel(taskId) {
+    var _a;
+    const idx = this.pending.findIndex((t) => t.id === taskId);
+    if (idx >= 0) {
+      const [task] = this.pending.splice(idx, 1);
+      this.setStatus(task, "cancelled");
+      return;
+    }
+    if (((_a = this.current) == null ? void 0 : _a.task.id) === taskId) {
+      this.current.controller.abort();
+    }
+  }
+  /** 取消全部（排队中 + 运行中）。 */
+  cancelAll() {
+    for (const task of this.pending.splice(0)) this.setStatus(task, "cancelled");
+    if (this.current) this.current.controller.abort();
+  }
+  /** 等待当前队列排空（测试用）。 */
+  async idle() {
+    while (this.running || this.pending.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  get size() {
+    return this.pending.length + (this.current ? 1 : 0);
+  }
+  // ----------------------------------------------------------
+  // 内部调度
+  // ----------------------------------------------------------
+  async drain() {
+    var _a, _b, _c, _d;
+    if (this.running) return;
+    this.running = true;
+    try {
+      while (this.pending.length > 0) {
+        const task = this.pending.shift();
+        const controller = new AbortController();
+        const entry = { task, controller, timer: null };
+        this.current = entry;
+        if (this.timeoutMs > 0) {
+          entry.timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        }
+        const ctx = {
+          signal: controller.signal,
+          report: (progress) => {
+            var _a2, _b2;
+            task.progress = progress;
+            task.updatedAt = Date.now();
+            (_b2 = (_a2 = this.options).onProgress) == null ? void 0 : _b2.call(_a2, task, progress);
+          },
+          setStatus: (status) => this.setStatus(task, status)
+        };
+        try {
+          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
+          this.setStatus(task, "reading");
+          await this.runner(task, ctx);
+          if (controller.signal.aborted) throw new DOMException("任务已取消", "AbortError");
+          this.setStatus(task, "completed");
+          (_b = (_a = this.options).onComplete) == null ? void 0 : _b.call(_a, task);
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          const cancelled = error.name === "AbortError" || controller.signal.aborted;
+          this.setStatus(task, cancelled ? "cancelled" : "failed");
+          if (!cancelled) {
+            task.error = error.message;
+            (_d = (_c = this.options).onError) == null ? void 0 : _d.call(_c, task, error);
+          }
+        } finally {
+          if (entry.timer) clearTimeout(entry.timer);
+          this.current = null;
+        }
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+  setStatus(task, status) {
+    var _a, _b;
+    task.status = status;
+    task.updatedAt = Date.now();
+    (_b = (_a = this.options).onStatusChange) == null ? void 0 : _b.call(_a, task, status);
+  }
+}
+function composeEnglishPrompt(segments) {
+  const enabled = segments.filter((s) => s.enabled);
+  const sorted = [...enabled].sort((a, b) => a.order - b.order);
+  const allTags = [];
+  const seenBareTags = /* @__PURE__ */ new Set();
+  for (const segment of sorted) {
+    for (const tag of segment.english) {
+      const trimmed = tag.trim();
+      if (!trimmed) continue;
+      const bare = bareTagOf$1(trimmed);
+      if (bare && seenBareTags.has(bare) && !trimmed.includes("::")) {
+        continue;
+      }
+      if (bare) seenBareTags.add(bare);
+      allTags.push(trimmed);
+    }
+  }
+  return allTags.join(", ");
+}
+function bareTagOf$1(tag) {
+  let text = tag.trim();
+  text = text.replace(/^\s*[\d.]+\s*::/, "");
+  text = text.replace(/^\s*::/, "");
+  text = text.replace(/::\s*$/, "");
+  return text.trim().toLowerCase();
+}
+function bareTagOf(segment) {
+  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+}
+function isPlainSegment(segment) {
+  const text = segment.trim();
+  if (!text) return false;
+  if (!text.includes("::")) return true;
+  return /^[\d.]+\s*::.*::\s*$/.test(text);
+}
+const PANEL_FAMILY$1 = [
+  "multiple views",
+  "2koma",
+  "3koma",
+  "4koma",
+  "split screen",
+  "3格漫画",
+  "三场景漫画构图",
+  "非对称漫画页面布局",
+  "开放分镜漫画构图",
+  "无边框中央插画",
+  "第二场景周围没有长方形画框",
+  "主场景周围没有长方形包围",
+  "人物自然融入白色空间"
+];
+const PANEL_FORBIDDEN_BY_LAYOUT = {
+  regular: ["3koma", "4koma"],
+  irregular: ["2koma", "3koma", "4koma"],
+  inset: ["2koma", "3koma", "4koma", "split screen"],
+  unframed: ["multiple views", "2koma", "3koma", "4koma", "split screen"]
+};
+const SCENE_ANCHOR_TAGS = ["indoors", "outdoors", "interior", "exterior"];
+const SCENE_LOCATION_TAGS = [
+  "dorm room",
+  "bedroom",
+  "classroom",
+  "street",
+  "city",
+  "bathroom",
+  "kitchen",
+  "office",
+  "living room",
+  "study",
+  "corridor",
+  "rooftop"
+];
+const INSET_SCENE_TAGS = [
+  "indoors",
+  "outdoors",
+  "dorm room",
+  "bedroom",
+  "classroom",
+  "street",
+  "city",
+  "scenery",
+  "bed",
+  "single bed",
+  "bedsheets",
+  "rumpled bedsheets",
+  "blanket",
+  "pillow",
+  "desk",
+  "wooden desk",
+  "table",
+  "bookshelf",
+  "shelf",
+  "window",
+  "curtain",
+  "glass jar",
+  "paper cranes",
+  "wooden floor",
+  "floor",
+  "sunlight from window",
+  "side lighting",
+  "warm colors",
+  "backlighting",
+  "afternoon",
+  "morning",
+  "evening",
+  "night",
+  "sunset",
+  "sunrise",
+  "depth of field",
+  "shallow depth of field"
+];
+function enforcePanelPrompt(prompt, layout) {
+  const kind = normalizePanelLayout(layout);
+  const source = String(prompt ?? "").trim();
+  if (!source) return { prompt: source, removed: [], added: [] };
+  const forbidden = new Set(PANEL_FORBIDDEN_BY_LAYOUT[kind]);
+  const stripScene = kind === "inset" || kind === "unframed";
+  const sceneLimit = kind === "unframed";
+  let locationKept = 0;
+  const kept = [];
+  const removed = [];
+  const present = /* @__PURE__ */ new Set();
+  for (const segment of source.split(",")) {
+    const text = segment.trim();
+    if (!text) continue;
+    const bare = bareTagOf(text);
+    present.add(bare);
+    if (!PANEL_FAMILY$1.includes(bare)) {
+      if (sceneLimit && isPlainSegment(text)) {
+        if (SCENE_ANCHOR_TAGS.includes(bare)) {
+          kept.push(text);
+          continue;
+        }
+        if (SCENE_LOCATION_TAGS.includes(bare)) {
+          if (locationKept < 2) {
+            locationKept += 1;
+            kept.push(text);
+            continue;
+          }
+          removed.push(text);
+          continue;
+        }
+        if (INSET_SCENE_TAGS.includes(bare)) {
+          removed.push(text);
+          continue;
+        }
+        kept.push(text);
+        continue;
+      }
+      if (stripScene && isPlainSegment(text) && INSET_SCENE_TAGS.includes(bare)) {
+        removed.push(text);
+        continue;
+      }
+      kept.push(text);
+      continue;
+    }
+    if (isPlainSegment(text) && forbidden.has(bare)) {
+      removed.push(text);
+      continue;
+    }
+    kept.push(text);
+  }
+  const missing = PANEL_TAGS_BY_LAYOUT[kind].filter((tag) => !present.has(bareTagOf(tag)));
+  return { prompt: [...missing, ...kept].join(", "), removed, added: missing };
+}
+function decidePanelInjection(input) {
+  const layout = input.chibiOn ? "regular" : normalizePanelLayout(input.panelLayout);
+  return { enabled: true, layout };
+}
+function isMostlyChinese(text) {
+  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff]/g) ?? []).length;
+  if (!cjk) return false;
+  return cjk > (text.match(/[a-zA-Z]/g) ?? []).length;
+}
+const PANEL_NL_MARK = /\b(?:panels?|gutters?|inset|main image|main illustration|split screen|two-panel|comic page)\b/i;
+function applyPanelToNl(nl, layout, orientation = "portrait", pageType = "auto") {
+  const kind = normalizePanelLayout(layout);
+  const text = String(nl ?? "").trim();
+  if (!text) return text;
+  if (isMostlyChinese(text) || PANEL_NL_MARK.test(text)) return nl;
+  const sentence = kind === "unframed" ? unframedNlSentence(normalizePanelPageType(pageType)) : PANEL_NL_SENTENCE[kind][orientation === "landscape" ? "landscape" : "portrait"];
+  return `${sentence} ${text}`;
+}
+function enforceForGeneration(input) {
+  const decision = decidePanelInjection({
+    panelLayout: input.panelLayout,
+    chibiOn: input.chibiOn
+  });
+  const enforced = enforcePanelPrompt(input.prompt, decision.layout);
+  return {
+    prompt: enforced.prompt,
+    nl: applyPanelToNl(input.nl, decision.layout, input.orientation, input.pageType),
+    applied: true,
+    layout: decision.layout,
+    removed: enforced.removed,
+    added: enforced.added
+  };
+}
+const PANEL_FAMILY = /* @__PURE__ */ new Set([
+  "multiple views",
+  "2koma",
+  "3koma",
+  "4koma",
+  "split screen",
+  "white background",
+  "3格漫画",
+  "三场景漫画构图",
+  "非对称漫画页面布局",
+  "开放分镜漫画构图",
+  "无边框中央插画",
+  "第二场景周围没有长方形画框",
+  "主场景周围没有长方形包围",
+  "人物自然融入白色空间"
+]);
+function bareTag$1(segment) {
+  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+}
+function contentTagCount(tags) {
+  return String(tags ?? "").split(",").map(bareTag$1).filter((tag) => tag && !PANEL_FAMILY.has(tag)).length;
+}
+function hasStoryContent(pages) {
+  for (const page of pages) {
+    if (page.tags && contentTagCount(page.tags) >= 2) return true;
+    if (page.tags && contentTagCount(page.tags) === 0) continue;
+    for (const panel of page.panels) {
+      if (contentTagCount(panel.tags) >= 2) return true;
+    }
+  }
+  return false;
+}
+function mergeCharacterTags(prompt, names, library) {
+  const present = new Set(prompt.split(",").map(bareTag$1).filter(Boolean));
+  const wanted = names.map((name) => library.find((c) => c.name === name)).filter((c) => !!c);
+  const sources = wanted.length ? wanted : library.length === 1 ? library : [];
+  const extra = [];
+  for (const character of sources.slice(0, 2)) {
+    for (const raw of String(character.tag ?? "").split(",")) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const key = bareTag$1(piece);
+      if (!key || present.has(key)) continue;
+      present.add(key);
+      extra.push(piece);
+    }
+  }
+  return extra.length ? `${prompt}, ${extra.join(", ")}` : prompt;
+}
+const LAYOUT_NL_HEAD = {
+  regular: "A two-panel comic page: one canvas split horizontally by a thin black border, read from top to bottom.",
+  irregular: "An irregular comic page: unequally sized panels separated by thin black gutters, read from top to bottom.",
+  inset: "A manga page on a white background: an unframed character illustration in the center with narrow white margins, plus one or two small close-up panels with thin black borders.",
+  unframed: "A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders."
+};
+const AREA_LEAD = {
+  regular: ["In the upper panel", "The lower panel shows", "In the third panel", "The bottom panel shows"],
+  irregular: ["In the large panel", "In the narrow panel", "In the small panel", "In the bottom strip"],
+  inset: ["In the main illustration", "In the top strip", "In the small framed panel", "In the side panel"],
+  unframed: ["In the main illustration", "In the top strip", "In the small framed panel", "In the side panel"]
+};
+function bareTag(segment) {
+  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+}
+function mergePanelTags(page) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const panel of page.panels ?? []) {
+    for (const raw of String(panel.tags ?? "").split(",")) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const key = bareTag(piece);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(piece);
+    }
+  }
+  return out.join(", ");
+}
+function buildPageNl(page) {
+  var _a;
+  const head = LAYOUT_NL_HEAD[page.layout] ?? LAYOUT_NL_HEAD.regular;
+  const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
+  const parts = [head];
+  let wrote = false;
+  (_a = page.panels) == null ? void 0 : _a.forEach((panel, index2) => {
+    const body = String(panel.nl ?? "").trim();
+    if (!body) return;
+    const lead = leads[Math.min(index2, leads.length - 1)];
+    parts.push(lead.endsWith("shows") ? `${lead} ${body}` : `${lead}, ${body}`);
+    wrote = true;
+  });
+  if (!wrote) {
+    const titles = (page.panels ?? []).map((p) => p.title).filter(Boolean);
+    if (titles.length > 0) parts.push(`The panels in reading order: ${titles.join(" / ")}.`);
+  }
+  return parts.join(" ");
+}
+function collectPageDialogue(page) {
+  if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
+  const out = [];
+  for (const panel of page.panels ?? []) {
+    for (const item of panel.dialogue ?? []) {
+      if (out.length >= 4) return out;
+      out.push(item);
+    }
+  }
+  return out;
+}
+function composePagePrompt(page, characters = []) {
+  const base = String(page.tags ?? "").trim() || mergePanelTags(page);
+  const names = [];
+  for (const panel of page.panels ?? []) {
+    for (const c of panel.characters ?? []) {
+      if ((c == null ? void 0 : c.name) && !names.includes(c.name)) names.push(c.name);
+    }
+  }
+  const prompt = mergeCharacterTags(base, names, characters);
+  const nl = String(page.nl ?? "").trim() || buildPageNl(page);
+  return {
+    prompt,
+    nl,
+    dialogue: collectPageDialogue(page),
+    panelTitles: (page.panels ?? []).map((p) => p.title).filter(Boolean)
+  };
+}
 const BBI_IMAGE_EXTRA_KEY = "bbiImage";
 const BBI_SLOT_SELECTOR = "div[data-bbi-slot]";
 const CARD_GENERATE_SELECTOR = ".bbi-figure__generate";
@@ -6216,9 +6626,6 @@ async function replaceEntryPath(floor, swipeId, hash, generationId, nextPath) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function pickProfile(profiles, mode) {
-  return profiles.find((p) => p.mode === mode);
-}
 function sceneFromSegment(segment) {
   const context = getSurroundingContext(segment, 1);
   return {
@@ -6256,7 +6663,6 @@ async function runIllustration(task, ctx, deps) {
   const prompt = composeEnglishPrompt(tagSegments);
   if (!prompt.trim()) throw new Error("组装后的英文 prompt 为空。");
   ctx.report({ stage: "generating" });
-  await ensureModeOutPlan("illustration", deps.fullSettings);
   const tag = buildBbiTag({
     prompt,
     ...plan.data.nl ? { nl: plan.data.nl } : {},
@@ -6345,16 +6751,6 @@ function cardFailureMessage(result) {
     return "正文已写入 tag，但楼层卡片没有出现。请确认柏宝绘已启用（它负责把 tag 显示成卡片）。";
   }
   return "正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。";
-}
-function fallbackProfile(mode) {
-  return {
-    id: `default-${mode}`,
-    name: "默认",
-    mode,
-    backend: "nai",
-    promptTemplateId: "default",
-    options: {}
-  };
 }
 async function runComic(task, ctx, deps) {
   var _a, _b;
@@ -6513,94 +6909,51 @@ async function runComic(task, ctx, deps) {
   ctx.report({ stage: "completed" });
 }
 async function runTheaterMode(task, ctx, deps) {
-  var _a, _b, _c;
+  var _a, _b, _c, _d;
   const segment = task.source;
   const mode = task.mode;
   const floor = getAnchorFloor(segment);
   if (floor === null) throw new Error("无法确定挂载楼层。");
   const kind = mode === "chibi-status" ? "status" : mode === "chibi-bonus" ? "bonus" : "manga";
-  const modeSettings = resolveModeSettings(deps.fullSettings, mode);
-  const characters = await getCharacters(floor);
   const characterName = ((_a = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _a.speaker) ?? "";
   ctx.report({ stage: "reading" });
   await ensureModeOutPlan(mode, deps.fullSettings);
-  const result = await runTheaterOne({
-    kind,
-    chatId: task.chatId,
+  const result = await runTheaterTask({
+    mode,
+    settings: deps.fullSettings,
     floor,
+    chatId: task.chatId,
     swipe: ((_b = segment.messages[0]) == null ? void 0 : _b.swipeId) ?? 0,
-    characterName,
     body: segment.text,
-    shots: modeSettings.shots,
-    chibi: kind !== "manga" && modeSettings.chibiStyle !== "thumb",
-    mangaSafe: modeSettings.bwMangaSafeMode ?? true,
-    backend: "nai",
-    profile: pickProfile(deps.settings, mode),
-    // 小剧场文本按该模式指派的渠道生成；副 API 报错就抛，**不回退主 API**
-    llm: async (prompt) => {
-      try {
-        return await makeModeLlmCaller(deps.fullSettings, mode)("", prompt);
-      } catch (err) {
-        recordLlmError({ mode, floor, error: err instanceof Error ? err.message : String(err), prompt });
-        throw err;
-      }
-    },
-    generate: async (input, profile) => {
-      const startedAt = Date.now();
-      try {
-        await ensureModeOutPlan(mode, deps.fullSettings);
-        const r = await baiBaiAdapter.generate({
-          prompt: input.prompt,
-          ...input.negative ? { negative: input.negative } : {},
-          seed: input.seed,
-          size: input.size,
-          save: true
-        }, profile ?? fallbackProfile(mode));
-        recordImageLog({
-          mode,
-          floor,
-          source: "api",
-          plan: readOutConfig().activePlanName,
-          model: activePlanModel(),
-          prompt: input.prompt,
-          ...input.negative ? { negative: input.negative } : {},
-          ...input.size ? { size: input.size } : {},
-          ...typeof r.seed === "number" ? { seed: r.seed } : typeof input.seed === "number" ? { seed: input.seed } : {},
-          status: "ok",
-          durationMs: Date.now() - startedAt
-        });
-        return { path: r.path, dataUrl: r.dataUrl, seed: r.seed };
-      } catch (err) {
-        recordImageLog({
-          mode,
-          floor,
-          source: "api",
-          plan: readOutConfig().activePlanName,
-          model: activePlanModel(),
-          prompt: input.prompt,
-          ...input.negative ? { negative: input.negative } : {},
-          ...input.size ? { size: input.size } : {},
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-          durationMs: Date.now() - startedAt
-        });
-        throw err;
-      }
-    },
-    readLooks: makeLookReader(characters.characters, characterName)
+    characterName,
+    onPanel: (index2, total2) => ctx.report({ stage: "generating", page: index2 + 1, totalPages: total2 })
   });
   if (!result.ok) throw new Error(result.error ?? "小剧场生成失败。");
   const setId = newSetId();
   const setTitle = ((_c = result.stories[0]) == null ? void 0 : _c.title) ?? "";
   const total = result.stories.length;
-  const stories = result.stories.map((story) => ({
-    ...story,
-    setId,
-    setTitle,
-    setSize: total,
-    sourceText: segment.text,
-    characterName
-  }));
+  const stories = [];
+  for (const story of result.stories) {
+    let imagePath = story.imagePath;
+    let originalPath;
+    if (kind === "manga" && ((_d = story.lines) == null ? void 0 : _d.length) && imagePath) {
+      const baked = await bakeTheaterLines(imagePath, story.lines, deps.fullSettings, kind);
+      if (baked.baked) {
+        originalPath = imagePath;
+        imagePath = baked.path;
+      }
+    }
+    stories.push({
+      ...story,
+      imagePath,
+      ...originalPath ? { originalPath } : {},
+      setId,
+      setTitle,
+      setSize: total,
+      sourceText: segment.text,
+      characterName
+    });
+  }
   if (!saveSet(floor, kind, stories)) throw new Error("小剧场已生成，但写不进本楼（聊天上下文不可用）。");
   await saveChatSafe();
   mountTheater(floor);
@@ -6608,17 +6961,24 @@ async function runTheaterMode(task, ctx, deps) {
 }
 function createTaskRunner(deps) {
   return async (task, ctx) => {
-    switch (task.mode) {
-      case "illustration":
-        return runIllustration(task, ctx, deps);
-      case "comic":
-        return runComic(task, ctx, deps);
-      case "chibi-status":
-      case "chibi-bonus":
-      case "bw-manga":
-        return runTheaterMode(task, ctx, deps);
-      default:
-        throw new Error(`未知创作模式: ${task.mode}`);
+    try {
+      switch (task.mode) {
+        case "illustration":
+          return await runIllustration(task, ctx, deps);
+        case "comic":
+          return await runComic(task, ctx, deps);
+        case "chibi-status":
+        case "chibi-bonus":
+        case "bw-manga":
+          return await runTheaterMode(task, ctx, deps);
+        default:
+          throw new Error(`未知创作模式: ${task.mode}`);
+      }
+    } finally {
+      const restored = await restoreOutPlan(deps.fullSettings);
+      if (!restored.ok && restored.message) {
+        console.warn("[ST-Story-Illustrator]", restored.message);
+      }
     }
   };
 }
@@ -6638,6 +6998,7 @@ let initialized = false;
 let settings = { ...DEFAULT_SETTINGS };
 const cleanupFunctions = [];
 let queue = null;
+let runTaskId = "";
 async function onActivate() {
   if (initialized) return;
   console.log("[ST-Story-Illustrator] 开始初始化...");
@@ -6655,9 +7016,15 @@ async function onActivate() {
       },
       settings: () => {
         hideSelectionPanel();
-        showConfigPanel();
+        showConfigPanel("settings");
+      },
+      log: () => {
+        hideSelectionPanel();
+        hideConfigPanel();
+        showConfigPanel("log");
       }
     });
+    setRunStatusLogOpener(() => openStudio("log"));
     registerEvents();
     setupSelectionListener();
     cleanupFunctions.push(injectWandMenu());
@@ -6687,7 +7054,37 @@ function initQueue() {
   queue = new TaskQueue(runner, {
     taskTimeoutMs: 12 * 60 * 1e3,
     onStatusChange: (task, status) => {
+      var _a, _b;
       console.log(`[ST-Story-Illustrator] 任务 ${task.id} → ${status}`);
+      if (status === "queued" || status === "reading" || status === "review" || status === "generating") {
+        if (runTaskId !== task.id) {
+          runTaskId = task.id;
+          clearRunStatus();
+        }
+        updateRunStatus({
+          mode: task.mode,
+          stage: status,
+          ...((_a = task.progress) == null ? void 0 : _a.page) ? { page: task.progress.page } : {},
+          ...((_b = task.progress) == null ? void 0 : _b.totalPages) ? { totalPages: task.progress.totalPages } : {}
+        });
+      } else if (status === "completed") {
+        finishRunStatus("ok");
+        runTaskId = "";
+      } else if (status === "failed") {
+        finishRunStatus("error", task.error ?? "未知错误");
+        runTaskId = "";
+      } else if (status === "cancelled") {
+        finishRunStatus("error", "已取消");
+        runTaskId = "";
+      }
+    },
+    onProgress: (task, progress) => {
+      updateRunStatus({
+        mode: task.mode,
+        stage: progress.stage,
+        ...progress.page ? { page: progress.page } : {},
+        ...progress.totalPages ? { totalPages: progress.totalPages } : {}
+      });
     },
     onError: (task, error) => {
       console.error(`[ST-Story-Illustrator] 任务 ${task.id} 失败:`, error);
@@ -6845,7 +7242,12 @@ function openGeneratePanel(options) {
 const autoRunning = /* @__PURE__ */ new Set();
 function maybeAutoTrigger(floor) {
   if (!isAvailable()) return;
+  if (settings.enabled === false) return;
   const orders = [
+    // 正文两套排前面：它们是「正文的图」，出完正文就完整了；
+    // 小剧场是附加物，后出不影响阅读。
+    { mode: "illustration" },
+    { mode: "comic" },
     { mode: "chibi-status", kind: "status" },
     { mode: "chibi-bonus", kind: "bonus" },
     { mode: "bw-manga", kind: "manga" }
@@ -6854,7 +7256,8 @@ function maybeAutoTrigger(floor) {
   for (const { mode, kind } of orders) {
     const conf = resolveModeSettings(settings, mode);
     if (!conf.autoTrigger) continue;
-    if (hasStory(floor, kind)) continue;
+    if (kind && hasStory(floor, kind)) continue;
+    if (!kind && getArtifacts(floor).some((a) => a.mode === mode)) continue;
     if (kind === "bonus") {
       const chance = Number(conf.chibiBonusChance ?? settings.chibiBonusChance ?? 25);
       if (chance <= 0) continue;
@@ -6873,7 +7276,7 @@ function maybeAutoTrigger(floor) {
     task.status = "queued";
     queue == null ? void 0 : queue.enqueue(task);
   }
-  showToast(`本楼自动生成 ${picks.length} 份小剧场，排队中。`, "info");
+  showToast(`本楼自动生成 ${picks.length} 份，排队中。`, "info");
 }
 function handleSegmentConfirmed(segment, modes) {
   console.log("[ST-Story-Illustrator] 选段已确认:", {
@@ -6917,6 +7320,7 @@ function onDisable() {
   destroyConfigPanel();
   destroyWandMenu();
   unmountFloatingBall();
+  destroyRunStatus();
   for (const cleanup of cleanupFunctions) {
     try {
       cleanup();

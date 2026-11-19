@@ -264,7 +264,12 @@ export function buildComicSystemPrompt(options: ComicPlanOptions): string {
   const rule = buildPanelRule(options.panelMode, ruleOptions);
   const parts = [COMIC_SYSTEM_HEAD];
   if (rule) parts.push('【分镜规则（必须遵守）】\n' + rule);
-  parts.push(`【输出约束】最多 ${Math.max(1, Math.min(8, options.maxPages))} 页；${options.dialogue ? '台词字段按规则写，可省略。' : '本次不要输出 dialogue 字段。'}`);
+  parts.push(`【输出约束】最多 ${Math.max(1, Math.min(8, options.maxPages))} 页；${
+    options.dialogue
+      // 「可省略」写出来，模型十次有八次真的省略——对白气泡就白配了
+      ? 'dialogue 必须写：每页 2~3 条中文台词，取自这一段里真的说过的话；实在没有对白才用一句旁白式台词顶上。'
+      : '本次不要输出 dialogue 字段。'
+  }`);
   if (!options.includeChinese) parts.push('除台词外的辅助中文一律不要输出。');
   return parts.join('\n\n');
 }
