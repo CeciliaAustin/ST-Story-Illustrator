@@ -12,7 +12,8 @@
 import type { VisualArtifact, CreationMode } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
 import { getArtifacts, updateArtifact } from '../storage/repository';
-import { getMessage, getSettings, saveChatSafe } from '../host/sillytavern';
+import { belongsToSwipe } from '../storage/swipeScope';
+import { getMessage, getSettings, getSwipeId, getSwipeCount, saveChatSafe } from '../host/sillytavern';
 import { manwaAnchors, parseManwaTags } from '../baibai/manwaTag';
 import { extractPlainText, findAnchorRange } from '../selection/anchor';
 import { comicOverlayPlan, comicBaseImageOf } from '../manga/bubbleOverlay';
@@ -65,10 +66,21 @@ export function mountFloor(floor: number): void {
   const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
   if (!mes) return;
 
-  const visible = getArtifacts(floor).filter(a => a.metadata?.embeddedInBody !== true);
-  const byId = new Map(visible.map(a => [a.id, a]));
+  // 楼层身份：`message.extra` 不随 swipe 重置，必须自己把作品和当前 swipe 对齐，
+  // 否则 swipe 出新正文后上一版画好的漫画仍然挂在新正文上（旧图残留）。
+  const currentSwipe = getSwipeId(floor);
   const refs = parseManwaTags(getMessage(floor)?.mes ?? '');
   const tagged = refs.length > 0;
+  const scope = {
+    currentSwipe,
+    taggedIds: new Set(refs.map(ref => ref.id)),
+    swipeCount: getSwipeCount(floor),
+  };
+
+  const visible = getArtifacts(floor)
+    .filter(a => a.metadata?.embeddedInBody !== true)
+    .filter(a => belongsToSwipe(a, scope));
+  const byId = new Map(visible.map(a => [a.id, a]));
 
   // 期望集合：与下方挂载规则一一对应，对账（ensureFloorMounted）也用它判断齐不齐
   const expected = new Set<string>();

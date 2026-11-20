@@ -30,7 +30,7 @@ import { getCharacters } from '../baibai/bridge';
 import { readBackendState, baiBaiAdapter } from '../baibai/imageAdapter';
 import { readBookRoles } from '../baibai/bookMemory';
 import { appendOutfit, buildOutfitBlock, outfitOf, resolveOutfits } from '../baibai/outfit';
-import { saveChatSafe, readPersonaName } from '../host/sillytavern';
+import { saveChatSafe, readPersonaName, getSwipeId } from '../host/sillytavern';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { buildLibraryBlock, buildCastBlock, readCastContext } from '../theater/library';
 import { splitSegments, characterPromptsFromLibrary } from '../manga/tagSplit';
@@ -263,6 +263,9 @@ async function runIllustration(
     chatId: task.chatId,
     sourceFloors: segment.floorIds,
     anchorFloor: floor,
+    // 记下这一版正文是第几条 swipe：换 swipe 后显示层据此隐藏属于别的 swipe 的作品，
+    // 而 message.extra 本身不会随 swipe 重置（否则旧漫画会挂在新正文上）。
+    swipeId: getSwipeId(floor),
     // 图片已经是正文内容（柏宝绘卡片），不再注入本插件卡片，避免重复与多余的说明文字
     mountMode: 'trailing',
     ...(anchor ? { textAnchor: anchor } : {}),
@@ -636,6 +639,8 @@ async function runComic(
       chatId: task.chatId,
       sourceFloors: segment.floorIds,
       anchorFloor: floor,
+      // 这一页属于哪条 swipe：swipe 出新正文后旧页必须消失（切回来还要在）
+      swipeId: getSwipeId(floor),
       // 插在划线处（本插件卡片），不再借柏宝绘的楼层卡片
       mountMode: 'inline',
       ...(inlineAnchor ? { textAnchor: inlineAnchor } : {}),

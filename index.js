@@ -217,6 +217,12 @@ function getSwipeId(floor) {
   const msg = getMessage(floor);
   return typeof (msg == null ? void 0 : msg.swipe_id) === "number" ? msg.swipe_id : 0;
 }
+function getSwipeCount(floor) {
+  const msg = getMessage(floor);
+  const swipes = msg == null ? void 0 : msg.swipes;
+  if (Array.isArray(swipes) && swipes.length > 0) return swipes.length;
+  return 1;
+}
 function stillCurrent(chatId, floor, swipe, sendDate) {
   if (getCurrentChatId() !== chatId) return false;
   const msg = getMessage(floor);
@@ -5863,6 +5869,22 @@ function createArtifactId() {
   seq += 1;
   return `sti-${Date.now().toString(36)}-${seq.toString(36)}`;
 }
+function artifactSwipeId(artifact) {
+  var _a;
+  const direct = artifact.swipeId;
+  if (typeof direct === "number" && Number.isFinite(direct) && direct >= 0) return direct;
+  const nested = (_a = artifact.metadata) == null ? void 0 : _a.swipeId;
+  if (typeof nested === "number" && Number.isFinite(nested) && nested >= 0) return nested;
+  return void 0;
+}
+function belongsToSwipe(artifact, scope) {
+  const owned = artifactSwipeId(artifact);
+  if (owned !== void 0) return owned === scope.currentSwipe;
+  if (scope.taggedIds.has(artifact.id)) return true;
+  if (scope.taggedIds.size > 0) return false;
+  if (scope.swipeCount <= 1) return true;
+  return scope.currentSwipe === 0;
+}
 const MANWA_TAG_NAME = "bbi_manwa";
 const MANWA_SLOT_SELECTOR = "div[data-sti-manwa-slot]";
 const MANWA_TAG_REGEX = /<bbi_manwa>[\s\S]+?<\/bbi_manwa>/gi;
@@ -9153,13 +9175,19 @@ function mountFloor(floor) {
   var _a, _b, _c;
   const mes = document.querySelector(`.mes[mesid="${floor}"]`);
   if (!mes) return;
+  const currentSwipe = getSwipeId(floor);
+  const refs = parseManwaTags(((_a = getMessage(floor)) == null ? void 0 : _a.mes) ?? "");
+  const tagged = refs.length > 0;
+  const scope = {
+    currentSwipe,
+    taggedIds: new Set(refs.map((ref) => ref.id)),
+    swipeCount: getSwipeCount(floor)
+  };
   const visible = getArtifacts(floor).filter((a) => {
     var _a2;
     return ((_a2 = a.metadata) == null ? void 0 : _a2.embeddedInBody) !== true;
-  });
+  }).filter((a) => belongsToSwipe(a, scope));
   const byId = new Map(visible.map((a) => [a.id, a]));
-  const refs = parseManwaTags(((_a = getMessage(floor)) == null ? void 0 : _a.mes) ?? "");
-  const tagged = refs.length > 0;
   const expected = /* @__PURE__ */ new Set();
   if (tagged) {
     for (const ref of refs) if (byId.has(ref.id)) expected.add(ref.id);
@@ -11086,6 +11114,9 @@ async function runIllustration(task, ctx, deps) {
     chatId: task.chatId,
     sourceFloors: segment.floorIds,
     anchorFloor: floor,
+    // 记下这一版正文是第几条 swipe：换 swipe 后显示层据此隐藏属于别的 swipe 的作品，
+    // 而 message.extra 本身不会随 swipe 重置（否则旧漫画会挂在新正文上）。
+    swipeId: getSwipeId(floor),
     // 图片已经是正文内容（柏宝绘卡片），不再注入本插件卡片，避免重复与多余的说明文字
     mountMode: "trailing",
     ...anchor ? { textAnchor: anchor } : {},
@@ -11365,6 +11396,8 @@ async function runComic(task, ctx, deps) {
       chatId: task.chatId,
       sourceFloors: segment.floorIds,
       anchorFloor: floor,
+      // 这一页属于哪条 swipe：swipe 出新正文后旧页必须消失（切回来还要在）
+      swipeId: getSwipeId(floor),
       // 插在划线处（本插件卡片），不再借柏宝绘的楼层卡片
       mountMode: "inline",
       ...inlineAnchor ? { textAnchor: inlineAnchor } : {},

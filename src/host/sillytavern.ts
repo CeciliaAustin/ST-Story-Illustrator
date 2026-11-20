@@ -427,6 +427,19 @@ export function getSwipeId(floor: number): number {
 }
 
 /**
+ * 这一楼一共有几条 swipe（1 = 还没分叉）。
+ *
+ * 显示层拿它判断「这楼到底有没有并列版本」：只有一条 swipe 时不存在旧图残留问题，
+ * 老数据（没有 swipeId 的作品）可以放心显示。
+ */
+export function getSwipeCount(floor: number): number {
+  const msg = getMessage(floor);
+  const swipes = msg?.swipes;
+  if (Array.isArray(swipes) && swipes.length > 0) return swipes.length;
+  return 1;
+}
+
+/**
  * 楼层身份复核：排队期间聊天可能切换、消息可能删除。
  */
 export function stillCurrent(chatId: string, floor: number, swipe: number, sendDate?: string): boolean {

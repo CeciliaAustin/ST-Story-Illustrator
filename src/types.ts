@@ -791,6 +791,14 @@ export interface VisualArtifact {
   chatId: string;
   sourceFloors: number[];
   anchorFloor?: number;
+  /**
+   * 这条作品属于哪一条 swipe。
+   *
+   * `message.extra` 是**楼层级**的，ST 换 swipe 时不会清空它——所以不记 swipeId 的话，
+   * 用户 swipe 出一条新正文，上一版画好的漫画还会挂在新正文上（旧图残留）。
+   * 显示层按它把作品和当前 swipe 对齐；老数据没有这个字段，走 swipeScope 的降级判定。
+   */
+  swipeId?: number;
   mountMode: ArtifactMountMode;
   /** inline 挂载时的选段锚点（用于在正文中定位插入位置） */
   textAnchor?: SelectionAnchor;
