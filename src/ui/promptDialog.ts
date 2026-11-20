@@ -37,6 +37,8 @@ export interface PromptDialogOptions {
     nl: string,
     characters: PromptCharacter[],
   ) => Promise<{ ok: boolean; message?: string }>;
+  /** 点「删除这一张」：由实现方确认并落盘；返回 true 时面板关闭。 */
+  onDelete?: () => Promise<boolean>;
 }
 
 let mask: HTMLElement | null = null;
@@ -160,7 +162,28 @@ export function openPromptDialog(options: PromptDialogOptions): void {
   apply.type = 'button';
   apply.className = 'sti-prompt-dlg__btn sti-prompt-dlg__btn--main';
   apply.textContent = '保存并重画';
-  foot.append(status, cancel, apply);
+  // 删除这一张：放在最左，删除是危险操作，别和「保存」挤在一起
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'sti-prompt-dlg__btn sti-prompt-dlg__btn--danger';
+  remove.textContent = '删除这一张';
+  if (!options.onDelete) remove.style.display = 'none';
+  remove.addEventListener('click', () => {
+    if (remove.disabled || busy) return;
+    remove.disabled = true;
+    status.textContent = '';
+    void (async () => {
+      try {
+        const done = await options.onDelete?.();
+        if (done) close();
+        else remove.disabled = false;
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+        remove.disabled = false;
+      }
+    })();
+  });
+  foot.append(remove, status, cancel, apply);
   panel.appendChild(foot);
 
   let busy = false;

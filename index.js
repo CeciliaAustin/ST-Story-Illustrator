@@ -3494,6 +3494,21 @@ function openComicLightbox(ctx) {
   const close2 = iconButton("close", "关闭 (Esc)");
   close2.addEventListener("click", closeLightbox);
   bar.appendChild(close2);
+  if (ctx.onDelete) {
+    const delBtn = iconButton("trash", "删除这一张（正文里的漫画标记一起清掉）");
+    delBtn.classList.add("sti-lb-btn--danger");
+    delBtn.addEventListener("click", () => {
+      if (delBtn.disabled) return;
+      delBtn.disabled = true;
+      void (async () => {
+        var _a;
+        const done = await ((_a = ctx.onDelete) == null ? void 0 : _a.call(ctx));
+        if (done) closeLightbox();
+        else delBtn.disabled = false;
+      })();
+    });
+    bar.appendChild(delBtn);
+  }
   function syncMoveTools() {
     const disabled = !state2.showBubbles;
     editBtn.disabled = disabled;
@@ -3646,7 +3661,8 @@ function iconButton(icon, title) {
     edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4"/>',
     prompt: '<path d="M4 6h16M4 12h10M4 18h7"/><path d="M18 12l2 2-5 5h-2v-2l5-5z"/>',
     move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
-    close: '<path d="M6 6l12 12M18 6 6 18"/>'
+    close: '<path d="M6 6l12 12M18 6 6 18"/>',
+    trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M10 11v5M14 11v5"/>'
   };
   const btn = document.createElement("button");
   btn.type = "button";
@@ -3788,18 +3804,18 @@ function destroyLightbox() {
   }
   galleryItems = [];
 }
-let mask = null;
-function ensureMask() {
-  if (mask) return mask;
+let mask$1 = null;
+function ensureMask$1() {
+  if (mask$1) return mask$1;
   const el2 = document.createElement("div");
   el2.className = "sti-dlg-mask";
   el2.style.display = "none";
   document.body.appendChild(el2);
-  mask = el2;
+  mask$1 = el2;
   return el2;
 }
 function openPromptDialog(options) {
-  const host = ensureMask();
+  const host = ensureMask$1();
   host.innerHTML = "";
   host.style.display = "flex";
   host.onclick = (event) => {
@@ -3896,7 +3912,28 @@ function openPromptDialog(options) {
   apply.type = "button";
   apply.className = "sti-prompt-dlg__btn sti-prompt-dlg__btn--main";
   apply.textContent = "保存并重画";
-  foot.append(status, cancel, apply);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "sti-prompt-dlg__btn sti-prompt-dlg__btn--danger";
+  remove.textContent = "删除这一张";
+  if (!options.onDelete) remove.style.display = "none";
+  remove.addEventListener("click", () => {
+    if (remove.disabled || busy) return;
+    remove.disabled = true;
+    status.textContent = "";
+    void (async () => {
+      var _a;
+      try {
+        const done = await ((_a = options.onDelete) == null ? void 0 : _a.call(options));
+        if (done) close();
+        else remove.disabled = false;
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+        remove.disabled = false;
+      }
+    })();
+  });
+  foot.append(remove, status, cancel, apply);
   panel.appendChild(foot);
   let busy = false;
   apply.addEventListener("click", () => {
@@ -3938,14 +3975,14 @@ function openPromptDialog(options) {
   promptArea.focus();
 }
 function close() {
-  if (!mask) return;
-  mask.style.display = "none";
-  mask.innerHTML = "";
+  if (!mask$1) return;
+  mask$1.style.display = "none";
+  mask$1.innerHTML = "";
 }
 function destroyPromptDialog() {
-  if (mask) {
-    mask.remove();
-    mask = null;
+  if (mask$1) {
+    mask$1.remove();
+    mask$1 = null;
   }
 }
 const SETTINGS_KEY = "baibai_image";
@@ -5894,6 +5931,18 @@ function appendArtifact(floor, artifact) {
   touchChatIndex();
   return true;
 }
+function removeArtifact(floor, artifactId) {
+  const msg = getMessage(floor);
+  if (!(msg == null ? void 0 : msg.extra)) return false;
+  const extra = msg.extra;
+  const store = readStore$2(extra[ARTIFACTS_KEY]);
+  const next = store.artifacts.filter((a) => a.id !== artifactId);
+  if (next.length === store.artifacts.length) return false;
+  store.artifacts = next;
+  extra[ARTIFACTS_KEY] = store;
+  touchChatIndex();
+  return true;
+}
 function updateArtifact(floor, artifactId, patch) {
   const msg = getMessage(floor);
   if (!(msg == null ? void 0 : msg.extra)) return false;
@@ -6089,6 +6138,59 @@ ${tag}
   }
   await refreshFloor$1(ctx, floor, msg);
   return { ok: true, position };
+}
+function stripManwaTag(mes, artifactId) {
+  var _a;
+  const id = sanitizeId(artifactId);
+  if (!id) return String(mes ?? "");
+  const text = String(mes ?? "");
+  const re = new RegExp(MANWA_TAG_REGEX.source, "gi");
+  let out = "";
+  let last = 0;
+  let removed = false;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const tagId = sanitizeId(((_a = /<id>([\s\S]*?)<\/id>/i.exec(match[0])) == null ? void 0 : _a[1]) ?? "");
+    if (tagId !== id) continue;
+    let start = match.index;
+    let end = start + match[0].length;
+    const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+    const lineEnd = text.indexOf("\n", end);
+    const beforeOnLine = text.slice(lineStart, start).trim();
+    const afterOnLine = (lineEnd >= 0 ? text.slice(end, lineEnd) : text.slice(end)).trim();
+    if (!beforeOnLine && !afterOnLine) {
+      if (lineStart > 0) start = lineStart - 1;
+      end = lineEnd >= 0 ? lineEnd + 1 : text.length;
+    }
+    out += text.slice(last, start);
+    last = end;
+    removed = true;
+  }
+  if (!removed) return text;
+  return out + text.slice(last);
+}
+async function removeManwaTag(input) {
+  const { floor, artifactId } = input;
+  const ctx = getContext();
+  if (!Array.isArray(ctx.chat) || typeof ctx.saveChat !== "function") return { ok: false, reason: "no-context" };
+  const msg = ctx.chat[floor];
+  if (!msg || typeof msg.mes !== "string") return { ok: false, reason: "floor-changed" };
+  const currentText = msg.mes;
+  const nextText = stripManwaTag(currentText, artifactId);
+  if (nextText === currentText) return { ok: true, removed: false };
+  msg.mes = nextText;
+  const swipeId = typeof msg.swipe_id === "number" ? msg.swipe_id : 0;
+  const swipes = msg.swipes;
+  if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) swipes[swipeId] = nextText;
+  try {
+    await ctx.saveChat();
+  } catch {
+    msg.mes = currentText;
+    if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) swipes[swipeId] = currentText;
+    return { ok: false, reason: "save-failed" };
+  }
+  await refreshFloor$1(ctx, floor, msg);
+  return { ok: true, removed: true };
 }
 async function refreshFloor$1(ctx, floor, msg) {
   var _a;
@@ -9591,6 +9693,61 @@ async function rerollComicPage(floor, artifactId, overrides = {}) {
     await releasePlanGuard(settings2);
   }
 }
+let mask = null;
+function ensureMask() {
+  if (mask && mask.isConnected) return mask;
+  const el2 = document.createElement("div");
+  el2.className = "sti-dlg-mask";
+  el2.style.display = "none";
+  document.body.appendChild(el2);
+  mask = el2;
+  return el2;
+}
+function confirmDialog(options) {
+  const host = ensureMask();
+  host.innerHTML = "";
+  host.style.display = "flex";
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      host.style.display = "none";
+      host.innerHTML = "";
+      resolve(value);
+    };
+    host.onclick = (event) => {
+      if (event.target === host) finish(false);
+    };
+    const panel = document.createElement("div");
+    panel.className = "sti-confirm";
+    panel.addEventListener("click", (event) => event.stopPropagation());
+    const title = document.createElement("div");
+    title.className = "sti-confirm__title";
+    title.textContent = options.title ?? "确认删除";
+    panel.appendChild(title);
+    const message = document.createElement("div");
+    message.className = "sti-confirm__msg";
+    message.textContent = options.message;
+    panel.appendChild(message);
+    const foot = document.createElement("div");
+    foot.className = "sti-confirm__foot";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "sti-prompt-dlg__btn";
+    cancel.textContent = options.cancelText ?? "取消";
+    cancel.addEventListener("click", () => finish(false));
+    const ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = `sti-prompt-dlg__btn ${options.danger === false ? "sti-prompt-dlg__btn--main" : "sti-confirm__btn--danger"}`;
+    ok.textContent = options.confirmText ?? "删除";
+    ok.addEventListener("click", () => finish(true));
+    foot.append(cancel, ok);
+    panel.appendChild(foot);
+    host.appendChild(panel);
+    ok.focus();
+  });
+}
 const INLINE_CLASS = "sti-inline-card";
 const TRAILING_AREA_CLASS = "sti-trailing-area";
 const TRAILING_AREA_ID = "sti-trailing-area-";
@@ -9608,8 +9765,16 @@ const MODE_LABELS = {
   "chibi-bonus": "QQ人彩蛋",
   "bw-manga": "黑白漫"
 };
+function isArtifactVisible(artifact, tagIds) {
+  var _a;
+  if (artifact.mountMode === "inline") {
+    if (tagIds.has(artifact.id)) return true;
+    return ((_a = artifact.metadata) == null ? void 0 : _a.inlineFallback) === true;
+  }
+  return true;
+}
 function mountFloor(floor) {
-  var _a, _b, _c;
+  var _a, _b;
   const mes = document.querySelector(`.mes[mesid="${floor}"]`);
   if (!mes) return;
   const currentSwipe = getSwipeId(floor);
@@ -9626,18 +9791,10 @@ function mountFloor(floor) {
   }).filter((a) => belongsToSwipe(a, scope));
   const byId = new Map(visible.map((a) => [a.id, a]));
   const expected = /* @__PURE__ */ new Set();
-  if (tagged) {
-    for (const ref of refs) if (byId.has(ref.id)) expected.add(ref.id);
-    for (const artifact of visible) {
-      if (artifact.mountMode === "inline" && ((_b = artifact.metadata) == null ? void 0 : _b.inlineFallback) === true) expected.add(artifact.id);
-    }
-  } else {
-    for (const artifact of visible) {
-      if (artifact.mountMode === "inline") expected.add(artifact.id);
-    }
-  }
+  const tagIds = new Set(refs.map((ref) => ref.id));
   for (const artifact of visible) {
-    if (artifact.mountMode !== "inline") expected.add(artifact.id);
+    if (!isArtifactVisible(artifact, tagIds)) continue;
+    expected.add(artifact.id);
   }
   for (const node of Array.from(mes.querySelectorAll(`[${MOUNTED_ATTR$1}="${floor}"]`))) {
     if (node.classList.contains(TRAILING_AREA_CLASS)) continue;
@@ -9665,7 +9822,7 @@ function mountFloor(floor) {
   }
   for (const artifact of visible) {
     if (artifact.mountMode !== "inline") continue;
-    if (tagged && ((_c = artifact.metadata) == null ? void 0 : _c.inlineFallback) !== true) continue;
+    if (((_b = artifact.metadata) == null ? void 0 : _b.inlineFallback) !== true) continue;
     if (!missing(artifact.id)) continue;
     mountInline(mes, floor, artifact);
   }
@@ -9808,7 +9965,9 @@ function svgIcon(name) {
     // 对话气泡（气泡 / 台词）
     dialog: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z" fill="none"/>',
     // 铅笔（改提示词）
-    edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4" fill="none"/>'
+    edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4" fill="none"/>',
+    // 垃圾桶（删除这一页）
+    trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M10 11v5M14 11v5" fill="none"/>'
   };
   return `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
@@ -9863,7 +10022,23 @@ function buildComicActions(artifact, floor) {
   const dialog = make("气泡与台词", "dialog");
   dialog.title = "打开大图：气泡开关、改台词、移动气泡位置";
   dialog.addEventListener("click", () => openComicCardLightbox(floor, artifact.id, imgAlt(artifact)));
-  wrap.append(edit, redraw, download, dialog, status);
+  const remove = make("删除这一页", "trash");
+  remove.title = "删除这一页（正文里的漫画标记一起清掉）";
+  remove.classList.add("sti-figure-fab--danger");
+  remove.addEventListener("click", () => {
+    if (remove.disabled) return;
+    remove.disabled = true;
+    void (async () => {
+      try {
+        const done = await requestDeleteComicPage(floor, artifact.id);
+        if (!done) remove.disabled = false;
+      } catch (err) {
+        remove.disabled = false;
+        status.textContent = err instanceof Error ? err.message : String(err);
+      }
+    })();
+  });
+  wrap.append(edit, redraw, download, dialog, remove, status);
   return wrap;
 }
 function editComicPrompt(floor, artifactId) {
@@ -9886,7 +10061,8 @@ function editComicPrompt(floor, artifactId) {
       });
       if (result.ok) mountFloor(floor);
       return result;
-    }
+    },
+    onDelete: () => requestDeleteComicPage(floor, artifactId)
   });
 }
 function imgAlt(artifact) {
@@ -9935,6 +10111,39 @@ function refreshComicCard(floor, artifactId) {
   img.src = comicBaseImageOf(artifact);
   attachBubbleOverlay(card, img, artifact);
 }
+async function deleteComicPage(floor, artifactId) {
+  var _a;
+  const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
+  if (!artifact) return false;
+  const mes = ((_a = getMessage(floor)) == null ? void 0 : _a.mes) ?? "";
+  if (mes.includes(buildManwaTag(artifactId))) {
+    const removed = await removeManwaTag({ floor, artifactId });
+    if (!removed.ok) return false;
+  }
+  const card = document.querySelector(
+    `.mes[mesid="${floor}"] [data-sti-artifact-id="${artifactId}"]`
+  );
+  if (card) {
+    revokeCardOverlay(card);
+    card.remove();
+  }
+  removeArtifact(floor, artifactId);
+  await saveChatSafe();
+  mountFloor(floor);
+  return true;
+}
+async function requestDeleteComicPage(floor, artifactId) {
+  var _a;
+  const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
+  const page = typeof ((_a = artifact == null ? void 0 : artifact.metadata) == null ? void 0 : _a.pageTitle) === "string" && artifact.metadata.pageTitle ? `「${artifact.metadata.pageTitle}」` : "这一页漫画";
+  const ok = await confirmDialog({
+    title: "删除这一页？",
+    message: `${page}会从正文和存档里一起删掉（正文里的漫画标记也会一并清掉）。酒馆图库里的图片文件不会被删。`,
+    confirmText: "删除这一页"
+  });
+  if (!ok) return false;
+  return deleteComicPage(floor, artifactId);
+}
 function openComicCardLightbox(floor, artifactId, alt) {
   const latest = getArtifacts(floor).find((a) => a.id === artifactId);
   if (!latest) return;
@@ -9951,6 +10160,7 @@ function openComicCardLightbox(floor, artifactId, alt) {
       closeLightbox();
       editComicPrompt(floor, artifactId);
     },
+    onDelete: () => requestDeleteComicPage(floor, artifactId),
     onSave: async (items) => {
       updateArtifact(floor, artifactId, { dialogue: items ?? [] });
       void saveChatSafe();

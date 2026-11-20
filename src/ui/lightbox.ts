@@ -78,6 +78,11 @@ export interface ComicLightboxContext {
   onSave: (items: ComicDialogue[] | undefined) => Promise<ComicLightboxPlan | null>;
   /** 点「改词」：实现方退出灯箱并打开改词面板（重画完成后卡片自己换图）。 */
   onEditPrompt?: () => void;
+  /**
+   * 点垃圾桶：「只删这一张」。
+   * 由实现方负责确认与落盘；成功返回 true 时这里关掉灯箱。
+   */
+  onDelete?: () => Promise<boolean>;
 }
 
 /** 单开一层的状态（每次 open 重建，闭包天然隔离）。 */
@@ -176,6 +181,22 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
   const close = iconButton('close', '关闭 (Esc)');
   close.addEventListener('click', closeLightbox);
   bar.appendChild(close);
+
+  // 删除这一张（只删当前页；正文里的漫画标记一起清掉）
+  if (ctx.onDelete) {
+    const delBtn = iconButton('trash', '删除这一张（正文里的漫画标记一起清掉）');
+    delBtn.classList.add('sti-lb-btn--danger');
+    delBtn.addEventListener('click', () => {
+      if (delBtn.disabled) return;
+      delBtn.disabled = true;
+      void (async () => {
+        const done = await ctx.onDelete?.();
+        if (done) closeLightbox();
+        else delBtn.disabled = false;
+      })();
+    });
+    bar.appendChild(delBtn);
+  }
 
   // 移动模式下，气泡关闭时移动没有意义：三个工具联动置灰
   function syncMoveTools(): void {
@@ -335,7 +356,7 @@ export function openComicLightbox(ctx: ComicLightboxContext): void {
 
 /** 细线 SVG 图标按钮（与柏宝绘 bbi-lb-btn 同款风格）。 */
 function iconButton(
-  icon: 'download' | 'bubble' | 'edit' | 'move' | 'close' | 'prompt',
+  icon: 'download' | 'bubble' | 'edit' | 'move' | 'close' | 'prompt' | 'trash',
   title: string,
 ): HTMLButtonElement {
   const paths: Record<string, string> = {
@@ -345,6 +366,7 @@ function iconButton(
     prompt: '<path d="M4 6h16M4 12h10M4 18h7"/><path d="M18 12l2 2-5 5h-2v-2l5-5z"/>',
     move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
+    trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M10 11v5M14 11v5"/>',
   };
   const btn = document.createElement('button');
   btn.type = 'button';

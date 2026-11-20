@@ -2601,3 +2601,76 @@
   .sti-style-card { padding: 8px 4px; }
   .sti-style-card .sti-layout-preview { width: 72px; height: 72px; }
 }
+
+/* ── 删除（危险操作）：卡片悬浮键 / 灯箱键 / 改词面板按钮 ── */
+.sti-figure-fab--danger:hover {
+  background: rgba(200, 60, 60, 0.82);
+  border-color: rgba(255, 140, 140, 0.9);
+  color: #fff;
+}
+.sti-lb-btn--danger:hover {
+  background: rgba(200, 60, 60, 0.82);
+  border-color: rgba(255, 140, 140, 0.9);
+  color: #fff;
+}
+.sti-prompt-dlg__btn--danger {
+  margin-right: auto;
+  border-color: rgba(255, 120, 120, 0.5);
+  background: rgba(180, 45, 45, 0.28);
+  color: #ffd7d7;
+}
+.sti-prompt-dlg__btn--danger:hover {
+  background: rgba(200, 55, 55, 0.5);
+  border-color: rgba(255, 140, 140, 0.82);
+  color: #fff;
+}
+
+/* ── 确认框（删除等危险操作，不用 window.confirm） ── */
+.sti-confirm {
+  width: min(92vw, 400px);
+  padding: 18px 20px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(28, 28, 32, 0.96);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  color: rgba(255, 255, 255, 0.92);
+}
+.sti-confirm__title {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.sti-confirm__msg {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.76);
+  overflow-wrap: anywhere;
+}
+.sti-confirm__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.sti-confirm__btn--danger {
+  border-color: rgba(255, 120, 120, 0.55);
+  background: rgba(196, 52, 52, 0.62);
+  color: #fff;
+}
+.sti-confirm__btn--danger:hover {
+  background: rgba(214, 62, 62, 0.8);
+}
+
+/* ── 触屏设备：漫画卡的操作键不能靠 hover（手机上根本没有 hover，
+      以前 opacity: 0 = 永远看不见，用户找不到删除键） ── */
+@media (hover: none), (pointer: coarse) {
+  .sti-inline-card.is-comic .sti-figure-actions {
+    opacity: 0.66;
+    gap: 8px;
+  }
+  .sti-inline-card.is-comic .sti-figure-fab {
+    width: 34px;
+    height: 34px;
+  }
+}

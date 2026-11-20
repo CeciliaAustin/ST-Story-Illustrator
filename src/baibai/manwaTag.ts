@@ -306,6 +306,88 @@ export async function insertManwaTag(input: InsertManwaInput): Promise<InsertMan
   return { ok: true, position };
 }
 
+/**
+ * 从正文里删掉某一条 `<bbi_manwa>` tag（纯函数，便于测试）。
+ *
+ * 插的时候是「独占一行」写的（`\n\n<tag>\n`），删的时候要把那整行连同一个换行一起收掉，
+ * 否则每删一页正文就多一行空行——用户看得见，而且会一直累积。
+ */
+export function stripManwaTag(mes: string, artifactId: string): string {
+  const id = sanitizeId(artifactId);
+  if (!id) return String(mes ?? '');
+  const text = String(mes ?? '');
+  const re = new RegExp(MANWA_TAG_REGEX.source, 'gi');
+  let out = '';
+  let last = 0;
+  let removed = false;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const tagId = sanitizeId(/<id>([\s\S]*?)<\/id>/i.exec(match[0])?.[1] ?? '');
+    if (tagId !== id) continue;
+    let start = match.index;
+    let end = start + match[0].length;
+    // 独占一行时把整行（含行首那个换行）一起删掉，不留空行
+    const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+    const lineEnd = text.indexOf('\n', end);
+    const beforeOnLine = text.slice(lineStart, start).trim();
+    const afterOnLine = (lineEnd >= 0 ? text.slice(end, lineEnd) : text.slice(end)).trim();
+    if (!beforeOnLine && !afterOnLine) {
+      // 连同行首换行 + 行尾换行一起删：插入时是 `\n\n<tag>\n`，
+      // 只删「行首换行 + tag」会留下 3 个连续换行（正文里越来越空）。
+      if (lineStart > 0) start = lineStart - 1;
+      end = lineEnd >= 0 ? lineEnd + 1 : text.length;
+    }
+    out += text.slice(last, start);
+    last = end;
+    removed = true;
+  }
+  if (!removed) return text;
+  return out + text.slice(last);
+}
+
+export interface RemoveManwaInput {
+  floor: number;
+  artifactId: string;
+}
+
+export type RemoveManwaResult =
+  | { ok: true; removed: boolean }
+  | { ok: false; reason: 'no-context' | 'floor-changed' | 'save-failed' };
+
+/**
+ * 把某条漫画 tag 从正文里摘掉（CAS：保存失败就回滚）。
+ *
+ * 删除一页时必须先摘锚点再删数据：否则刷新后托管正则会照着残留的 tag
+ * 重新造一个空锚点，而数据已经没了——那格空白会一直挂在那里。
+ */
+export async function removeManwaTag(input: RemoveManwaInput): Promise<RemoveManwaResult> {
+  const { floor, artifactId } = input;
+  const ctx = getContext() as Ctx;
+  if (!Array.isArray(ctx.chat) || typeof ctx.saveChat !== 'function') return { ok: false, reason: 'no-context' };
+  const msg = ctx.chat[floor] as Record<string, unknown> | undefined;
+  if (!msg || typeof msg.mes !== 'string') return { ok: false, reason: 'floor-changed' };
+
+  const currentText = msg.mes;
+  const nextText = stripManwaTag(currentText, artifactId);
+  if (nextText === currentText) return { ok: true, removed: false };
+
+  msg.mes = nextText;
+  const swipeId = typeof msg.swipe_id === 'number' ? msg.swipe_id : 0;
+  const swipes = msg.swipes;
+  if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) swipes[swipeId] = nextText;
+
+  try {
+    await (ctx.saveChat as () => Promise<void>)();
+  } catch {
+    msg.mes = currentText;
+    if (Array.isArray(swipes) && swipeId >= 0 && swipeId < swipes.length) swipes[swipeId] = currentText;
+    return { ok: false, reason: 'save-failed' };
+  }
+
+  await refreshFloor(ctx, floor, msg);
+  return { ok: true, removed: true };
+}
+
 /** 重绘楼层并主动发 MESSAGE_UPDATED（`updateMessageBlock` 自己不发事件）。 */
 async function refreshFloor(ctx: Ctx, floor: number, msg: unknown): Promise<void> {
   try {

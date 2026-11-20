@@ -11,10 +11,10 @@
 
 import type { VisualArtifact, CreationMode } from '../types';
 import { DEFAULT_SETTINGS } from '../types';
-import { getArtifacts, updateArtifact } from '../storage/repository';
+import { getArtifacts, removeArtifact, updateArtifact } from '../storage/repository';
 import { belongsToSwipe } from '../storage/swipeScope';
 import { getMessage, getSettings, getSwipeId, getSwipeCount, saveChatSafe } from '../host/sillytavern';
-import { manwaAnchors, parseManwaTags } from '../baibai/manwaTag';
+import { buildManwaTag, manwaAnchors, parseManwaTags, removeManwaTag } from '../baibai/manwaTag';
 import { extractPlainText, findAnchorRange } from '../selection/anchor';
 import { comicOverlayPlan, comicBaseImageOf } from '../manga/bubbleOverlay';
 import { compositeDialogue } from '../manga/bubbleComposite';
@@ -22,6 +22,7 @@ import { openLightbox, openComicLightbox, closeLightbox } from './lightbox';
 import { rerollComicPage } from '../manga/rerollPage';
 import { saveImageFile } from './saveImage';
 import { openPromptDialog } from './promptDialog';
+import { confirmDialog } from './confirm';
 
 const INLINE_CLASS = 'sti-inline-card';
 const TRAILING_AREA_CLASS = 'sti-trailing-area';
@@ -62,6 +63,25 @@ const MODE_LABELS: Record<CreationMode, string> = {
  * 补缺失的、换过期的，绝不把还正确的卡拆掉重建——以前的「先 unmountFloor 再全挂」
  * 会被对账循环放大成闪屏（对账每 250ms 发现凑不齐 → 全拆重建 → 图片重新加载 → 又触发对账）。
  */
+/**
+ * 一条作品在当前正文下该不该显示（纯函数，便于单测）。
+ *
+ * 行内漫画的「锚点」就是正文里那一条 `<bbi_manwa>`：
+ * tag 不在了 = 这一页已被移出正文（用户手动删掉，或走删除键），不该再显示。
+ * 只有显式标过 `inlineFallback` 的老数据（上线前没写 tag 的那批）才能无锚点行内插入。
+ * trailing 作品本来就不在正文里（挂在楼末），照常显示。
+ */
+export function isArtifactVisible(
+  artifact: Pick<VisualArtifact, 'id' | 'mountMode' | 'metadata'>,
+  tagIds: ReadonlySet<string>,
+): boolean {
+  if (artifact.mountMode === 'inline') {
+    if (tagIds.has(artifact.id)) return true;
+    return artifact.metadata?.inlineFallback === true;
+  }
+  return true;
+}
+
 export function mountFloor(floor: number): void {
   const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
   if (!mes) return;
@@ -83,20 +103,18 @@ export function mountFloor(floor: number): void {
   const byId = new Map(visible.map(a => [a.id, a]));
 
   // 期望集合：与下方挂载规则一一对应，对账（ensureFloorMounted）也用它判断齐不齐
+  //
+  // 关键判定（用户实测过）：**行内漫画的锚点就是正文里的 `<bbi_manwa>` tag**。
+  // 以前这里写成「没有 tag 时把所有 inline 作品都算进 expected」，等于只要
+  // `message.extra` 里还有数据就永远显示——于是把正文里的 tag 删掉后，
+  // 卡片照样挂着，刷新、重进聊天都还在（extra 不随正文编辑重置）。
+  // 现在：inline 作品必须能在正文里找到自己的 tag 才显示；只有显式标过
+  // `inlineFallback` 的老卡（上线前就没写过 tag 的那批）才允许无锚点行内插入。
   const expected = new Set<string>();
-  if (tagged) {
-    for (const ref of refs) if (byId.has(ref.id)) expected.add(ref.id);
-    // 有 tag 时默认不再行内挂；只有「当时就没写进正文」的那几页单独放行
-    for (const artifact of visible) {
-      if (artifact.mountMode === 'inline' && artifact.metadata?.inlineFallback === true) expected.add(artifact.id);
-    }
-  } else {
-    for (const artifact of visible) {
-      if (artifact.mountMode === 'inline') expected.add(artifact.id);
-    }
-  }
+  const tagIds = new Set(refs.map(ref => ref.id));
   for (const artifact of visible) {
-    if (artifact.mountMode !== 'inline') expected.add(artifact.id);
+    if (!isArtifactVisible(artifact, tagIds)) continue;
+    expected.add(artifact.id);
   }
 
   // ── 拆：不在期望集合里的（swipe 切换后残留的旧页等）──
@@ -134,10 +152,11 @@ export function mountFloor(floor: number): void {
     }
   }
 
-  // 正文里有漫画 tag = 这一条 swipe 的漫画已经各自归位。此时只放行 inlineFallback 的那几页。
+  // 正文里的 tag 已经各自归位；行内挂载只服务「当时就没写进正文」的老卡
+  // （新逻辑下 inline 作品没 tag 就不显示，所以这里只放行 inlineFallback。）
   for (const artifact of visible) {
     if (artifact.mountMode !== 'inline') continue;
-    if (tagged && artifact.metadata?.inlineFallback !== true) continue;
+    if (artifact.metadata?.inlineFallback !== true) continue;
     if (!missing(artifact.id)) continue;
     mountInline(mes, floor, artifact);
   }
@@ -353,7 +372,7 @@ function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HT
 // ============================================================
 
 /** 内联 SVG 图标（与柏宝绘的 icon 风格一致：细线、24 视窗）。 */
-function svgIcon(name: 'redraw' | 'download' | 'dialog' | 'edit'): string {
+function svgIcon(name: 'redraw' | 'download' | 'dialog' | 'edit' | 'trash'): string {
   const paths: Record<string, string> = {
     // 循环箭头（重绘）
     redraw: '<path d="M20 11a8 8 0 1 0-2.34 5.66M20 5v6h-6" fill="none"/>',
@@ -363,6 +382,8 @@ function svgIcon(name: 'redraw' | 'download' | 'dialog' | 'edit'): string {
     dialog: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 4V6z" fill="none"/>',
     // 铅笔（改提示词）
     edit: '<path d="M4 20h4L20 8l-4-4L4 16v4zM14 6l4 4" fill="none"/>',
+    // 垃圾桶（删除这一页）
+    trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M10 11v5M14 11v5" fill="none"/>',
   };
   return `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
@@ -375,7 +396,7 @@ function buildComicActions(artifact: VisualArtifact, floor: number): HTMLElement
   const wrap = document.createElement('div');
   wrap.className = 'sti-figure-actions';
 
-  const make = (label: string, icon: 'redraw' | 'download' | 'dialog' | 'edit'): HTMLButtonElement => {
+  const make = (label: string, icon: 'redraw' | 'download' | 'dialog' | 'edit' | 'trash'): HTMLButtonElement => {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'sti-figure-fab';
@@ -430,7 +451,26 @@ function buildComicActions(artifact: VisualArtifact, floor: number): HTMLElement
   dialog.title = '打开大图：气泡开关、改台词、移动气泡位置';
   dialog.addEventListener('click', () => openComicCardLightbox(floor, artifact.id, imgAlt(artifact)));
 
-  wrap.append(edit, redraw, download, dialog, status);
+  // 删除整页：正文里的 `<bbi_manwa>` 锚点、artifact 数据、卡片三样一起没
+  const remove = make('删除这一页', 'trash');
+  remove.title = '删除这一页（正文里的漫画标记一起清掉）';
+  remove.classList.add('sti-figure-fab--danger');
+  remove.addEventListener('click', () => {
+    if (remove.disabled) return;
+    remove.disabled = true;
+    void (async () => {
+      try {
+        const done = await requestDeleteComicPage(floor, artifact.id);
+        // 成功时卡片已经被摘掉；取消就把按钮还原
+        if (!done) remove.disabled = false;
+      } catch (err) {
+        remove.disabled = false;
+        status.textContent = err instanceof Error ? err.message : String(err);
+      }
+    })();
+  });
+
+  wrap.append(edit, redraw, download, dialog, remove, status);
   return wrap;
 }
 
@@ -464,6 +504,7 @@ function editComicPrompt(floor: number, artifactId: string): void {
       if (result.ok) mountFloor(floor);
       return result;
     },
+    onDelete: () => requestDeleteComicPage(floor, artifactId),
   });
 }
 
@@ -533,6 +574,57 @@ export function refreshComicCard(floor: number, artifactId: string): void {
   attachBubbleOverlay(card, img, artifact);
 }
 
+/**
+ * 删除一页漫画：摘正文锚点 → 撤卡片 → 删数据 → 落盘。
+ *
+ * 顺序不能换。先摘 tag，否则刷新后托管正则会照着残留的 tag 再建一个空锚点；
+ * 反过来先删数据再摘 tag，中间态会让对账把卡片误判成"数据丢了"。
+ */
+export async function deleteComicPage(floor: number, artifactId: string): Promise<boolean> {
+  const artifact = getArtifacts(floor).find(a => a.id === artifactId);
+  if (!artifact) return false;
+
+  // 1) 正文里那一行 `<bbi_manwa>`（漫画页才有；插画走柏宝绘的 bbi_image，不动它）
+  const mes = getMessage(floor)?.mes ?? '';
+  if (mes.includes(buildManwaTag(artifactId))) {
+    const removed = await removeManwaTag({ floor, artifactId });
+    // 正文没摘干净就别删数据：否则刷新后正则会照残留 tag 造一个空锚点，卡在那儿再也删不掉
+    if (!removed.ok) return false;
+  }
+
+  // 2) 这张卡的合成 blob 与节点
+  const card = document.querySelector<HTMLElement>(
+    `.mes[mesid="${floor}"] [data-sti-artifact-id="${artifactId}"]`,
+  );
+  if (card) {
+    revokeCardOverlay(card);
+    card.remove();
+  }
+
+  // 3) 数据
+  removeArtifact(floor, artifactId);
+
+  // 4) 落盘 + 对账（这一楼不再有作品时，"ST 创作"空壳也会一起收掉）
+  await saveChatSafe();
+  mountFloor(floor);
+  return true;
+}
+
+/** 带确认的删除（卡片按钮 / 灯箱 / 改词面板共用一套文案）。 */
+export async function requestDeleteComicPage(floor: number, artifactId: string): Promise<boolean> {
+  const artifact = getArtifacts(floor).find(a => a.id === artifactId);
+  const page = typeof artifact?.metadata?.pageTitle === 'string' && artifact.metadata.pageTitle
+    ? `「${artifact.metadata.pageTitle}」`
+    : '这一页漫画';
+  const ok = await confirmDialog({
+    title: '删除这一页？',
+    message: `${page}会从正文和存档里一起删掉（正文里的漫画标记也会一并清掉）。酒馆图库里的图片文件不会被删。`,
+    confirmText: '删除这一页',
+  });
+  if (!ok) return false;
+  return deleteComicPage(floor, artifactId);
+}
+
 /** 打开某一页漫画的灯箱（气泡开关 / 台词编辑 / 移动定位 / 下载）。 */
 function openComicCardLightbox(floor: number, artifactId: string, alt: string): void {
   const latest = getArtifacts(floor).find(a => a.id === artifactId);
@@ -551,6 +643,7 @@ function openComicCardLightbox(floor: number, artifactId: string, alt: string): 
       closeLightbox();
       editComicPrompt(floor, artifactId);
     },
+    onDelete: () => requestDeleteComicPage(floor, artifactId),
     onSave: async items => {
       // 写回 artifact（台词 + 手动钉的位置一起存）；
       // 落盘走防抖保存，不 await —— 否则点一下气泡要等 1.5s 才有反馈。
