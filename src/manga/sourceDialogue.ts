@@ -98,16 +98,33 @@ export function resolveSourceDialogue(rawText: unknown): SourceDialogueLine[] {
     .map((item, i) => ({ index: i, ...item }));
 }
 
+/** 只保留字与数字，用来做「标点/空格差异」的等价比较。 */
+function skeleton(text: string): string {
+  return String(text ?? '').replace(/[\s\p{P}\p{S}]/gu, '');
+}
+
 /**
- * 判断 LLM 写回的 text 是否就是原文某一句（逐字或 LLVM 常见的整句截断）。
- * 要求「一方完整包含另一方」，避免把两个词凑成一句也算命中。
+ * 判断 LLM 写回的 text 是否就是原文某一句。
+ *
+ * 两级判定：
+ * 1. 逐字包含（含整句截断）；
+ * 2. 去掉标点/空白后包含 —— 模型回述时最常见的是弄丢「」或把逗号改成句号，
+ *    这种差异不该让整句台词消失（用户实测：台词全没了）。
+ * 仍然要求「一方完整包含另一方」，不把两个词凑成一句也算命中。
  */
 function exactMatch(text: string, lines: readonly SourceDialogueLine[]): SourceDialogueLine | undefined {
   const a = text.trim();
   if (!a) return undefined;
-  return lines.find(line => {
+  const direct = lines.find(line => {
     const b = line.text.trim();
     return a === b || a.includes(b) || b.includes(a);
+  });
+  if (direct) return direct;
+  const sa = skeleton(a);
+  if (sa.length < 2) return undefined;
+  return lines.find(line => {
+    const sb = skeleton(line.text);
+    return sb.length >= 2 && (sa === sb || sa.includes(sb) || sb.includes(sa));
   });
 }
 
@@ -120,25 +137,76 @@ function exactMatch(text: string, lines: readonly SourceDialogueLine[]): SourceD
  * 否则丢弃此条（返回 false），保证输出里不会出现改写过的字。
  * speaker / area / panel / x / y / dir / mood 等排版字段原样保留。
  */
-export function reconcileDialogueWithSource(
+export interface ReconcileResult {
+  dialogue: ComicDialogue[];
+  /** 回填成原文的条数 */
+  restored: number;
+  /** 在原文里找不到出处、被丢弃的条数 */
+  dropped: number;
+  /** 没有任何原文候选（选段里抽不到台词），此时保留模型稿 */
+  noSource: boolean;
+}
+
+/**
+ * 回填 + 统计。`reconcileDialogueWithSource` 的详细版，供上层记日志与提示。
+ *
+ * 两种兜底，都是为了「台词不能整页消失」：
+ * - 选段里抽不到任何引号台词（noSource）→ 没有可比对的原文，保留模型稿；
+ * - 有原文但这一条匹配不上 → 丢弃（宁可少一句，也不画改写的字）。
+ */
+export function reconcileDialogueDetailed(
   dialogue: readonly ComicDialogue[] | undefined,
   lines: readonly SourceDialogueLine[],
-): ComicDialogue[] {
-  if (!Array.isArray(dialogue) || !dialogue.length) return [];
+): ReconcileResult {
+  if (!Array.isArray(dialogue) || !dialogue.length) {
+    return { dialogue: [], restored: 0, dropped: 0, noSource: lines.length === 0 };
+  }
+  const noSource = lines.length === 0;
   const out: ComicDialogue[] = [];
+  let restored = 0;
+  let dropped = 0;
   for (const item of dialogue) {
     if (!item || typeof item.text !== 'string') continue;
     const raw = item as ComicDialogue & { sourceIndex?: number; quote?: string; exactText?: string };
+    const { sourceIndex: _si, quote: _q, exactText: _e, ...rest } = raw;
+    const text = String(rest.text ?? '').trim();
+    if (noSource) {
+      // 没有原文可比对：text 是唯一内容，空的就丢
+      if (!text) continue;
+      out.push({ ...rest, text });
+      continue;
+    }
     let line: SourceDialogueLine | undefined;
     if (typeof raw.sourceIndex === 'number' && Number.isInteger(raw.sourceIndex)) {
       line = lines[raw.sourceIndex];
     }
-    if (!line) line = exactMatch(raw.quote ?? raw.exactText ?? raw.text, lines);
-    if (!line) continue; // 匹配不到原文 → 丢弃，绝不画改写的台词
-    const { sourceIndex: _si, quote: _q, exactText: _e, ...rest } = raw;
+    // text 只是定位用：允许模型省略 text 只给 sourceIndex
+    if (!line && !text) continue;
+    if (!line) line = exactMatch(raw.quote ?? raw.exactText ?? text, lines);
+    if (!line) {
+      dropped += 1;
+      continue;
+    }
+    restored += 1;
     out.push({ ...rest, text: line.text });
   }
-  return out;
+  return { dialogue: out, restored, dropped, noSource };
+}
+
+/**
+ * 把 LLM 的台词引用回填成原文逐字字符串。
+ *
+ * success 条件（任一）：
+ * - `sourceIndex` 合法 → 用 lines[index].text；
+ * - `quote` / `text` 与某句原文逐字（或去标点后）命中 → 用那一句原文。
+ * 否则丢弃此条（返回 false），保证输出里不会出现改写过的字。
+ * speaker / area / panel / x / y / dir / mood 等排版字段原样保留。
+ */
+export function reconcileDialogueWithSource(
+  dialogue: readonly ComicDialogue[] | undefined,
+  lines: readonly SourceDialogueLine[],
+): ComicDialogue[] {
+  return reconcileDialogueDetailed(dialogue, lines).dialogue;
 }
 
 /**

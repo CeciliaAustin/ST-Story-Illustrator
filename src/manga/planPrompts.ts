@@ -348,6 +348,11 @@ export interface ComicPlanOptions {
   layoutWhitespace?: ComicWhitespacePreference;
   /** 原文台词候选（台词 100% 引用，LLM 只能引用不能改写）。 */
   sourceDialogue?: import('./sourceDialogue').SourceDialogueLine[];
+  /**
+   * 逐格出图：一页 N 格各自出一张图，页面由代码排版。
+   * 打开后不再下发页级构图词与版面导演指令——那些是"一张图画多格"的指令。
+   */
+  perPanel?: boolean;
 }
 
 export function buildComicSystemPrompt(
@@ -365,7 +370,9 @@ export function buildComicSystemPrompt(
     dialogue: options.dialogue,
     dialogueMode: options.dialogueMode,
     dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy),
-    ...(options.layoutStyle
+    ...(options.perPanel === true ? { perPanel: true } : {}),
+    // 逐格出图时版面由代码排，不再让模型输出 layoutPlan（否则两套格位打架）
+    ...(options.layoutStyle && options.perPanel !== true
       ? {
           layoutDirective: buildLayoutDirective({
             style: options.layoutStyle,

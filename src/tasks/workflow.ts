@@ -16,6 +16,7 @@ import type {
   VisualProfile,
   BaiBaiCharacter,
   ComicPagePlan,
+  ComicPanelPlan,
   PanelLayout,
   BbiStatusInfo,
   StoryIllustratorSettings,
@@ -31,7 +32,7 @@ import { getCharacters } from '../baibai/bridge';
 import { readBackendState, baiBaiAdapter } from '../baibai/imageAdapter';
 import { readBookRoles } from '../baibai/bookMemory';
 import { appendOutfit, buildOutfitBlock, outfitOf, resolveOutfits } from '../baibai/outfit';
-import { saveChatSafe, readPersonaName, getSwipeId } from '../host/sillytavern';
+import { saveChatSafe, readPersonaName, getSwipeId, uploadImageBase64, blobToBase64 } from '../host/sillytavern';
 import { generateIllustrationPlan, generateComicPlan, makeModeLlmCaller } from '../manga/planGenerator';
 import { buildLibraryBlock, buildCastBlock, readCastContext } from '../theater/library';
 import { splitSegments, characterPromptsFromLibrary } from '../manga/tagSplit';
@@ -40,9 +41,12 @@ import { resolvePanelsPerPage } from '../manga/panelPlan';
 import { resolveLayoutStyle, resolvePanelCount, resolveWhitespaceIntent } from '../manga/layoutStyle';
 import { buildBoardGeneration } from '../manga/stylePrompt';
 import { enforcePanelPrompt } from '../manga/boardPrompt';
-import { resolveSourceDialogue, reconcileDialogueWithSource } from '../manga/sourceDialogue';
+import { resolveSourceDialogue, reconcileDialogueDetailed } from '../manga/sourceDialogue';
 import { hasStoryContent } from '../manga/panelRelevance';
 import { composePagePrompt, findCastShortfall, buildBoardNl } from '../manga/pageCompose';
+import { pageSlotsFor } from '../manga/pageSlots';
+import { buildPanelShots } from '../manga/panelShot';
+import { assemblePageBlob } from '../manga/pageAssemble';
 import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
 import {
   buildManwaTag,
@@ -424,6 +428,8 @@ async function runComic(
     layoutWhitespace: comicWhitespace,
     // 台词只从这些原文候选里引用，禁止 LLM 现编 / 改写
     sourceDialogue,
+    // 一页多格各自出图：规划层不许再写页级构图词，版面由代码排版
+    perPanel: true,
   };
 
   let plan = await generateComicPlan({
@@ -546,23 +552,19 @@ async function runComic(
     if (board.note) recordNotice({ mode: 'comic', floor, text: board.note });
 
     const pageForCompose: ComicPagePlan = { ...page, layout: board.layout as PanelLayout };
+    // 整页词仍要算一份：逐格失败时用它整页出一张，至少这一页有图（不让整页空着）
     const composed = composePagePrompt(pageForCompose, characters.characters, {
       nativeCharacters: comicNativeCharacters,
       selectedText: segment.text,
       ...(personaName ? { personaName } : {}),
     });
-
-    // 发送侧确定性纠偏：删掉模型写进去的冲突分格词（3koma / split screen / 空 tag），
-    // 把这一档必需的构图词（带权重）补到最前面，白底档再清一遍场景词。
-    // 模型写不写对不重要——发出去的那一串一定是干净的。
-    const enforced = enforcePanelPrompt(
+    const fallbackEnforced = enforcePanelPrompt(
       composed.prompt,
       board.layout,
       board.koma ? { koma: board.koma } : {},
     );
-    const finalPrompt = enforced.prompt;
-    // nl 的第一句由代码按档 + 页型写死（原版措辞），后面接各格画面内容 + 连续性收束。
-    const finalNl = wantComicNl
+    const fallbackPrompt = fallbackEnforced.prompt;
+    const fallbackNl = wantComicNl
       ? buildBoardNl(
         {
           layout: board.layout,
@@ -574,80 +576,200 @@ async function runComic(
         pageForCompose,
       )
       : '';
-    // 台词 100% 原文：把 LLM 引用（sourceIndex / 逐字命中）回填成选段里的原字，
-    // 匹配不上的一律丢弃——宁可这一页少一句气泡，也不许模型改写原文。
-    const dialogue = reconcileDialogueWithSource(composed.dialogue, sourceDialogue);
 
-    const pageStartedAt = Date.now();
-    let result;
-    try {
-      result = await baiBaiAdapter.generate(
-        {
-          prompt: finalPrompt,
-          ...(finalNl ? { nl: finalNl } : {}),
-          ...(composed.characters.length ? { characters: composed.characters } : {}),
-          ...(characterName ? { character: characterName } : {}),
-          size: 'portrait',
-          // 图必须进图库：用户是在柏宝绘的图库里找图、复用、看提示词的
-          save: true,
-        },
-        pickProfile(deps.settings, 'comic') ?? fallbackProfile('comic'),
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      recordImageLog({
-        mode: 'comic', floor, source: 'api',
-        plan: readOutConfig().activePlanName,
-        prompt: finalPrompt,
-        ...(finalNl ? { nl: finalNl } : {}),
-        size: 'portrait',
-        status: 'error',
-        error: message,
-        durationMs: Date.now() - pageStartedAt,
+    // 台词 100% 原文（详细版：能知道这次有几条没找到出处，而不是整页静默没字）
+    const dialogueResult = reconcileDialogueDetailed(composed.dialogue, sourceDialogue);
+    const dialogue = dialogueResult.dialogue;
+    if (dialogueResult.dropped > 0) {
+      recordNotice({
+        mode: 'comic',
+        floor,
+        text:
+          `第 ${page.pageIndex + 1} 页有 ${dialogueResult.dropped} 句台词在原文里找不到逐字出处，已略过。` +
+          '宁可少一句，也不把这句被改写的台词画上去。',
       });
-      // 一页失败不该让整本失败：记日志、继续下一页（最后 done===0 才报错）
-      console.warn('[ST-Story-Illustrator] 漫画页出图失败：', message);
-      continue;
     }
 
-    const rawPath = result.path ?? result.dataUrl ?? '';
-    recordImageLog({
-      mode: 'comic',
-      floor,
-      source: 'api',
-      plan: readOutConfig().activePlanName,
-      model: activePlanModel(),
-      prompt: finalPrompt,
-      ...(finalNl ? { nl: finalNl } : {}),
-      ...(composed.characters.length ? { characters: composed.characters } : {}),
-      size: 'portrait',
-      ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
-      status: rawPath ? 'ok' : 'error',
-      ...(rawPath ? {} : { error: '出图没有返回图片。' }),
-      durationMs: Date.now() - pageStartedAt,
+    // ★ 逐格出图：格子是代码排的，格数不需要模型"配合"。
+    // 每格独立一张图 —— 每格都有自己完整的场景背景，白底只出现在页面留白处。
+    const planPanels = (page.panels ?? []).slice(0, Math.max(1, board.panelCount));
+    const shotPage: ComicPagePlan = {
+      ...page,
+      panels: planPanels.length ? planPanels : [{ index: 0, title: page.title } as ComicPanelPlan],
+    };
+    const slots = pageSlotsFor(board.layout, shotPage.panels.length, { whitespace: whitespaceIntent });
+    const shots = buildPanelShots(shotPage, slots, characters.characters, {
+      nativeCharacters: comicNativeCharacters,
+      ...(personaName ? { personaName } : {}),
     });
+
+    const panelPaths: string[] = [];
+    const panelPrompts: string[] = [];
+    const panelNls: string[] = [];
+    let panelFailure = '';
+    let pageSeed: number | undefined;
+    const pageStartedAt = Date.now();
+
+    for (const shot of shots) {
+      if (ctx.signal.aborted) return;
+      const shotStartedAt = Date.now();
+      const useNl = wantComicNl && shot.nl ? { nl: shot.nl } : {};
+      let result;
+      try {
+        result = await baiBaiAdapter.generate(
+          {
+            prompt: shot.prompt,
+            ...useNl,
+            ...(shot.characters.length ? { characters: shot.characters } : {}),
+            ...(characterName ? { character: characterName } : {}),
+            size: 'portrait',
+            // 图必须进图库：用户是在柏宝绘的图库里找图、复用、看提示词的
+            save: true,
+          },
+          pickProfile(deps.settings, 'comic') ?? fallbackProfile('comic'),
+        );
+      } catch (err) {
+        panelFailure = err instanceof Error ? err.message : String(err);
+        recordImageLog({
+          mode: 'comic', floor, source: 'api',
+          plan: readOutConfig().activePlanName,
+          prompt: shot.prompt,
+          ...useNl,
+          ...(shot.characters.length ? { characters: shot.characters } : {}),
+          size: 'portrait',
+          status: 'error',
+          error: panelFailure,
+          durationMs: Date.now() - shotStartedAt,
+        });
+        break;
+      }
+      const shotPath = result.path ?? result.dataUrl ?? '';
+      recordImageLog({
+        mode: 'comic',
+        floor,
+        source: 'api',
+        plan: readOutConfig().activePlanName,
+        model: activePlanModel(),
+        prompt: shot.prompt,
+        ...useNl,
+        ...(shot.characters.length ? { characters: shot.characters } : {}),
+        size: 'portrait',
+        ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
+        status: shotPath ? 'ok' : 'error',
+        ...(shotPath ? {} : { error: '出图没有返回图片。' }),
+        durationMs: Date.now() - shotStartedAt,
+      });
+      if (!shotPath) {
+        panelFailure = '出图没有返回图片。';
+        break;
+      }
+      if (pageSeed === undefined && typeof result.seed === 'number') pageSeed = result.seed;
+      panelPaths.push(shotPath);
+      panelPrompts.push(shot.prompt);
+      panelNls.push(shot.nl);
+    }
+
+    // 合成整页：白纸 + 各格 + 细黑框（框外留白由页面空白提供）
+    let rawPath = '';
+    let pageAssembled = false;
+    let usedPrompt = panelPrompts.join('\n---\n');
+    let usedNl = panelNls.join('\n');
+
+    if (!panelFailure && panelPaths.length === shots.length && panelPaths.length > 0) {
+      if (panelPaths.length === 1) {
+        rawPath = panelPaths[0];
+      } else {
+        const pageImage = await assemblePageBlob({ slots, images: panelPaths });
+        if (pageImage) {
+          const base64 = await blobToBase64(pageImage.blob);
+          const uploaded = await uploadImageBase64(base64, {
+            format: 'png',
+            filename: `ST创作_漫画_${Date.now()}`,
+          });
+          if (uploaded) {
+            rawPath = uploaded;
+            pageAssembled = true;
+          }
+        }
+        if (!rawPath) {
+          // 合成或落盘失败：退回第一格，至少不是空白
+          rawPath = panelPaths[0] ?? '';
+          recordNotice({
+            mode: 'comic',
+            floor,
+            text: `第 ${page.pageIndex + 1} 页的整页合成没成功，先显示第一格。刷新后仍不对就把这条告诉我。`,
+          });
+        }
+      }
+    }
+
+    // 逐格出图失败 → 整页兜底（旧路径）。宁可版面不完美，也不要这一页空着
+    if (!rawPath) {
+      recordNotice({
+        mode: 'comic',
+        floor,
+        text:
+          `第 ${page.pageIndex + 1} 页逐格出图失败（${panelFailure || '没有返回图片'}），` +
+          '已退回整页一次性出图；这一页的格数不保证。',
+      });
+      try {
+        const whole = await baiBaiAdapter.generate(
+          {
+            prompt: fallbackPrompt,
+            ...(fallbackNl ? { nl: fallbackNl } : {}),
+            ...(composed.characters.length ? { characters: composed.characters } : {}),
+            ...(characterName ? { character: characterName } : {}),
+            size: 'portrait',
+            save: true,
+          },
+          pickProfile(deps.settings, 'comic') ?? fallbackProfile('comic'),
+        );
+        rawPath = whole.path ?? whole.dataUrl ?? '';
+        usedPrompt = fallbackPrompt;
+        usedNl = fallbackNl;
+        panelPaths.length = 0;
+        if (typeof whole.seed === 'number') pageSeed = whole.seed;
+        recordImageLog({
+          mode: 'comic', floor, source: 'api',
+          plan: readOutConfig().activePlanName,
+          prompt: fallbackPrompt,
+          ...(fallbackNl ? { nl: fallbackNl } : {}),
+          size: 'portrait',
+          status: rawPath ? 'ok' : 'error',
+          ...(rawPath ? {} : { error: '整页兜底也没有返回图片。' }),
+          durationMs: Date.now() - pageStartedAt,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        recordImageLog({
+          mode: 'comic', floor, source: 'api',
+          plan: readOutConfig().activePlanName,
+          prompt: fallbackPrompt,
+          ...(fallbackNl ? { nl: fallbackNl } : {}),
+          size: 'portrait',
+          status: 'error',
+          error: message,
+          durationMs: Date.now() - pageStartedAt,
+        });
+        console.warn('[ST-Story-Illustrator] 漫画页整页兜底也失败：', message);
+      }
+    }
     if (!rawPath) continue;
 
     // 对白气泡走柏宝绘原版架构：**落盘无字原图，显示时才本地合成**。
     // 图库不再多出「ST创作_带字」烧录副本；改台词 / 挪气泡 / 换形态都在显示层做，
     // 不用重出图。台词与当时的版面元数据一起存进 artifact，显示层按它重放——
     // 合成失败就显示无字原图，绝不升级成生成失败。
-    // 格数/页型元数据以 **这一页实际下发的版面** 为准（board 是出图词的唯一真源），
-    // 不再用设置里的旧字段——否则显示层按一套数、图里是另一套。
-    const panelCount = board.panelCount;
+    const panelCount = shots.length;
     const pageType = board.pageType;
-    // 固定格数 QC：LLM 给的实际格数与用户要求不一致就记下来（记日志不静默吞）
+    // 固定格数 QC：现在格数由代码决定，只有分镜计划本身给的格数不够才可能不等
     const expectedPanelCount = fixedPanels || undefined;
-    const renderedPanelCount = page.panels.length;
+    const renderedPanelCount = shots.length;
     if (expectedPanelCount && renderedPanelCount !== expectedPanelCount) {
-      console.warn(
-        `[ST-Story-Illustrator] 第 ${page.pageIndex + 1} 页：用户要求 ${expectedPanelCount} 格，` +
-        `分镜计划只给了 ${renderedPanelCount} 格。整页一次出图的格数由模型遵循提示词，无法程序级保证。`,
-      );
       recordNotice({
         mode: 'comic', floor,
         text: `第 ${page.pageIndex + 1} 页分镜只规划了 ${renderedPanelCount} 格（你选的是 ${expectedPanelCount} 格）。` +
-          '这一页格数可能不对，可以在提示词面板改词后重画，或换更稳定的模型。',
+          '这一页的格子已经按规划如实画出来了；要更多格就在提示词面板里重画这一页。',
       });
     }
 
@@ -665,8 +787,8 @@ async function runComic(
       ...(inlineAnchor ? { textAnchor: inlineAnchor } : {}),
       pageIndex: page.pageIndex,
       imagePath: rawPath,
-      prompt: finalPrompt,
-      ...(finalNl ? { nl: finalNl } : {}),
+      prompt: usedPrompt,
+      ...(usedNl ? { nl: usedNl } : {}),
       ...(showComposite && dialogue.length ? { dialogue } : {}),
       metadata: {
         // 重画要靠它还原「当时画的是谁」：没有角色块，重画一次就换人
@@ -683,21 +805,30 @@ async function runComic(
         boardLayout: board.layout,
         ...(board.koma ? { boardKoma: board.koma } : {}),
         panelTitles: composed.panelTitles,
+        // 逐格出图的证据链：每格原图、每格词、每格格位。
+        // 重排/重合成/复盘都靠它，不再依赖"当时模型画了几格"这种不可复现的信息。
+        ...(panelPaths.length ? { panelImages: panelPaths } : {}),
+        ...(panelPrompts.length ? { panelPrompts } : {}),
+        ...(panelNls.length ? { panelNls } : {}),
+        pageSlots: slots,
+        pageAssembled,
         // 新版面系统：把 LLM 的视觉方向 + 已校验几何随图存档。
-        // 显示层气泡与「版面设计」预览都以这份 slots 为真源，不再按 layout+count 猜格位。
         ...(page.direction ? { direction: page.direction } : {}),
         ...(page.layoutPlan ? { layoutPlan: page.layoutPlan } : {}),
         // 每格出场的人：显示层靠它把台词反查到正确的格（说话人证据 > 模型写的格号）
-        panelCast: page.panels.map(panel => (panel.characters ?? []).map(c => c.name).filter(Boolean)),
+        panelCast: shots.map(shot => shot.cast),
         // 用户实际选择的版面三维（出图词就是按这三个生成的，供审计/重放）
         comicStyle,
         comicPanelCount,
         comicWhitespace,
+        // 台词来源：原文回填 / 选段没抽到台词时用模型稿
+        dialogueSource: dialogueResult.noSource ? 'model' : 'source',
+        ...(dialogueResult.dropped ? { dialogueDropped: dialogueResult.dropped } : {}),
         // 格数 QC：不相等时不允许把这页静默当成功
         ...(expectedPanelCount !== undefined
           ? { expectedPanelCount, renderedPanelCount, panelCountMatched: renderedPanelCount === expectedPanelCount }
           : {}),
-        ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
+        ...(typeof pageSeed === 'number' ? { seed: pageSeed } : {}),
       },
       createdAt: Date.now(),
     };

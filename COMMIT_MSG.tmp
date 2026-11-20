@@ -1,0 +1,35 @@
+feat(comic): 逐格出图 + 代码排版 —— 格数/白底/留白/台词四个问题一起解决
+
+用户实测（主图+特写、固定三格、大面积留白）得到：一格、整张纯白底、台词全丢。
+前两版都在"整页一次出图"里调词，问题在上限不在措辞：
+
+1. 格数不可控：整页出图时 3koma 只是暗示，模型忽略就没有任何补救手段。
+2. 白底语义不可分：想表达"框外留白"只能用 white background，而 NAI 的意思是
+   "整张图不要背景"——单张图里"页面留白"和"格内背景"本来就没有区别。
+3. 台词整页丢失：逐字回填在模型丢引号/改标点时就整条丢弃；选段无引号台词
+   时候选表为空，于是每条都丢。
+
+架构改为：一页 N 格 = N 张图 + 代码排版。
+
+- 新增 manga/pageSlots.ts：确定性格位。regular 等分横排；irregular 大格+递减
+  小格铺满；inset 主图居中无框(四边不贴页边=框外留白)+顶部窄条+右下特写格；
+  unframed 主图铺满+浮动特写格。格数超容量时并入最后一格，绝不重叠。
+- 新增 manga/panelShot.ts：每格出图词。剥掉全部页级构图词(koma/multiple views/
+  split screen/white background/comic page/panel layout)，保留场景；人数词按
+  本格角色库条目的 sex/tag 重算（不再从 fields 拼出的角色块里数，那里没有性别词）；
+  只带本格入镜的人与其着装。
+- 新增 manga/pageAssemble.ts：Canvas 合成整页——白纸(框外留白)+cover 裁切
+  (顶部锚点 0.28 不切脸)+细黑框。
+- host：uploadImageBase64 走 ST /api/images/upload 落盘，刷新不丢。
+- workflow：出图循环改逐格，失败整页兜底；metadata 记 panelImages/panelPrompts/
+  panelNls/pageSlots/pageAssembled。
+- panelPlan：新增 perPanelRule——逐格模式规则里没有任何构图词，改为要求每格
+  自带场景、写清镜头与地点、禁止写版面词。
+- presets：COMIC 提示词同步（不许写 koma/white background；page.tags 必须写地点
+  与光线，会被带进每一格）。
+- sourceDialogue：两级匹配(逐字→去标点) + 选段无候选时保留模型稿，台词不再整页消失。
+- bubbleOverlay：气泡格位优先读 pageSlots（合成这张图用的那一份）。
+- rerollPage：逐格页改词重画按格重画再拼回一页，不会退回单格。
+
+验证：新增 tests/perPanelGeneration 21 例；全量 58 文件/835 用例通过，tsc 0 错，
+build 486.74 kB，部署 md5=65f5b0be。

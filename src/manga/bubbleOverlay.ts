@@ -51,6 +51,19 @@ export function artifactPanelCountOf(artifact: VisualArtifact): number {
  * 斜切格先用其 bounding box——气泡层的 polygon 精确碰撞在几何 compositor（Step 5）补。
  */
 export function artifactSlotsOf(artifact: VisualArtifact): PanelSlot[] {
+  // 逐格出图的页：格位是代码算的、也是合成这张图用的那一份——气泡必须按它落位，
+  // 不能再用 layout+count 猜（否则气泡会落在图上没有格子的地方）。
+  const composed = artifact.metadata?.pageSlots;
+  if (Array.isArray(composed) && composed.length) {
+    const slots = composed
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object' && !Array.isArray(s))
+      .map(s => {
+        const n = (v: unknown, d: number): number =>
+          typeof v === 'number' && Number.isFinite(v) ? v : d;
+        return { x: n(s.x, 0), y: n(s.y, 0), width: n(s.width, 0.3), height: n(s.height, 0.3) };
+      });
+    if (slots.length) return slots;
+  }
   const plan = artifact.metadata?.layoutPlan;
   const planObj = plan && typeof plan === 'object' && !Array.isArray(plan)
     ? plan as { slots?: unknown } : null;

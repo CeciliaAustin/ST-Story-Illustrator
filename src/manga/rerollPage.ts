@@ -10,7 +10,7 @@
  * 想重新分镜就重新选段生成——那是另一件事。
  */
 
-import type { PanelPageType } from '../types';
+import type { PanelPageType, StoryIllustratorSettings } from '../types';
 import { DEFAULT_SETTINGS, resolveModeSettings } from '../types';
 import { getSettings, saveChatSafe } from '../host/sillytavern';
 import { baiBaiAdapter } from '../baibai/imageAdapter';
@@ -19,6 +19,9 @@ import { ensureModeOutPlan, acquirePlanGuard, releasePlanGuard } from '../tasks/
 import { pickProfile, fallbackProfile } from '../tasks/theaterRun';
 import { recordImageLog } from '../log/imageLog';
 import { readOutConfig } from '../baibai/planConfig';
+import { assemblePageBlob } from './pageAssemble';
+import { uploadImageBase64, blobToBase64 } from '../host/sillytavern';
+import type { PageSlot } from './pageSlots';
 
 export interface ComicRerollResult {
   ok: boolean;
@@ -40,6 +43,113 @@ export interface ComicRerollOptions {
 /** NAI 种子上限；超了会被服务端拒。 */
 function randomSeed(): number {
   return Math.floor(Math.random() * 4294967295);
+}
+
+/** 逐格页重画：按当时每格自己的词重出一遍，再重新拼成一页。 */
+async function rerollPerPanel(args: {
+  floor: number;
+  artifactId: string;
+  prompts: string[];
+  nls: string[];
+  slots: PageSlot[];
+  cast: string[][];
+  characters: Array<{ name: string; tag: string; nl?: string }>;
+  characterName?: string;
+  settings: StoryIllustratorSettings;
+}): Promise<ComicRerollResult> {
+  const { floor, artifactId, prompts, nls, slots, cast, characters, settings } = args;
+  const startedAt = Date.now();
+  const paths: string[] = [];
+  let seed: number | undefined;
+
+  for (let i = 0; i < prompts.length; i += 1) {
+    const seedForPanel = randomSeed();
+    const names = cast[i] ?? [];
+    const blocks = names.length
+      ? characters.filter(c => names.includes(c.name))
+      : [];
+    try {
+      const result = await baiBaiAdapter.generate(
+        {
+          prompt: prompts[i],
+          ...(nls[i] ? { nl: nls[i] } : {}),
+          ...(blocks.length ? { characters: blocks } : {}),
+          ...(args.characterName ? { character: args.characterName } : {}),
+          seed: seedForPanel,
+          size: 'portrait',
+          save: true,
+        },
+        pickProfile(settings.profiles ?? [], 'comic') ?? fallbackProfile('comic'),
+      );
+      const path = result.path ?? result.dataUrl;
+      recordImageLog({
+        mode: 'comic', floor, source: 'api',
+        plan: readOutConfig().activePlanName,
+        prompt: prompts[i],
+        ...(nls[i] ? { nl: nls[i] } : {}),
+        ...(blocks.length ? { characters: blocks } : {}),
+        size: 'portrait', seed: seedForPanel,
+        ...(result.seed !== undefined ? { seed: result.seed } : {}),
+        status: path ? 'ok' : 'error',
+        ...(path ? {} : { error: '出图没有返回图片。' }),
+        durationMs: Date.now() - startedAt,
+      });
+      if (!path) return { ok: false, message: `第 ${i + 1} 格出图没有返回图片。` };
+      if (seed === undefined && typeof result.seed === 'number') seed = result.seed;
+      paths.push(path);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      recordImageLog({
+        mode: 'comic', floor, source: 'api',
+        plan: readOutConfig().activePlanName,
+        prompt: prompts[i],
+        size: 'portrait', seed: seedForPanel,
+        status: 'error', error: message,
+        durationMs: Date.now() - startedAt,
+      });
+      return { ok: false, message: `第 ${i + 1} 格：${message}` };
+    }
+  }
+
+  let pagePath = '';
+  let assembled = false;
+  if (paths.length > 1) {
+    const pageImage = await assemblePageBlob({ slots, images: paths });
+    if (pageImage) {
+      const uploaded = await uploadImageBase64(await blobToBase64(pageImage.blob), {
+        format: 'png',
+        filename: `ST创作_漫画_${Date.now()}`,
+      });
+      if (uploaded) {
+        pagePath = uploaded;
+        assembled = true;
+      }
+    }
+  }
+  if (!pagePath) pagePath = paths[0] ?? '';
+  if (!pagePath) return { ok: false, message: '整页合成失败。' };
+
+  const artifact = getArtifacts(floor).find(a => a.id === artifactId);
+  const meta = artifact?.metadata ?? {};
+  updateArtifact(floor, artifactId, {
+    imagePath: pagePath,
+    originalImagePath: undefined,
+    prompt: prompts.join('\n---\n'),
+    ...(nls.some(Boolean) ? { nl: nls.join('\n') } : {}),
+    metadata: {
+      ...meta,
+      rawImagePath: pagePath,
+      panelImages: paths,
+      panelPrompts: prompts,
+      panelNls: nls,
+      pageAssembled: assembled,
+      bubbleBakedPath: undefined,
+      ...(seed !== undefined ? { seed } : {}),
+      promptEditedAt: Date.now(),
+    },
+  });
+  void saveChatSafe();
+  return { ok: true };
 }
 
 /**
@@ -70,6 +180,50 @@ export async function rerollComicPage(
   const characters = overrides.characters ?? storedCharacters;
   // 页型优先用这一页自己的元数据：显示层合成按它重放，改全局设置不影响历史页
   const pageType = (meta.pageType ?? comic.comicPageType ?? 'auto') as PanelPageType;
+
+  // 逐格页：按每格自己的词重画，再拼回一页（整页重画会让版面退回单格）
+  const storedPanels = Array.isArray(meta.panelPrompts)
+    ? (meta.panelPrompts as unknown[]).filter((v): v is string => typeof v === 'string' && !!v.trim())
+    : [];
+  const storedNls = Array.isArray(meta.panelNls)
+    ? (meta.panelNls as unknown[]).map(v => (typeof v === 'string' ? v : ''))
+    : [];
+  const storedSlots = Array.isArray(meta.pageSlots) ? (meta.pageSlots as PageSlot[]) : [];
+  if (storedPanels.length > 1 && storedSlots.length === storedPanels.length) {
+    // 用户可能把整页词拆成多段（用 --- 分隔）逐个改；段数对得上才认，否则沿用原词
+    const editedParts = overrides.prompt !== undefined
+      ? prompt.split(/\n\s*-{3,}\s*\n/).map(s => s.trim()).filter(Boolean)
+      : [];
+    const prompts = editedParts.length === storedPanels.length ? editedParts : storedPanels;
+    const editedNls = overrides.nl !== undefined
+      ? nl.split(/\n+/).map(s => s.trim()).filter(Boolean)
+      : [];
+    const nls = editedNls.length === prompts.length
+      ? editedNls
+      : storedNls.length === prompts.length ? storedNls : prompts.map(() => '');
+    const cast = Array.isArray(meta.panelCast)
+      ? (meta.panelCast as unknown[][]).map(row => (Array.isArray(row) ? row.map(String) : []))
+      : prompts.map(() => [] as string[]);
+    acquirePlanGuard();
+    try {
+      await ensureModeOutPlan('comic', settings);
+      return await rerollPerPanel({
+        floor,
+        artifactId,
+        prompts,
+        nls,
+        slots: storedSlots,
+        cast,
+        characters,
+        ...(typeof meta.characterName === 'string' && meta.characterName
+          ? { characterName: meta.characterName }
+          : {}),
+        settings,
+      });
+    } finally {
+      await releasePlanGuard(settings);
+    }
+  }
 
   const seed = randomSeed();
   const startedAt = Date.now();

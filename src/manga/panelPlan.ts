@@ -563,6 +563,44 @@ export interface PanelRuleOptions {
    * 让 LLM 输出 direction/layout。老调用方不传则行为完全不变。
    */
   layoutDirective?: string;
+  /**
+   * 逐格出图模式：一页 N 格各自单独生成一张图，页面由代码排版。
+   * 这个模式下**不能**再往提示词里塞 koma / multiple views / white background 这类
+   * 页级构图词——它们是"一张图画多格"的指令，用在单格图上只会画出格中格或丢掉背景。
+   */
+  perPanel?: boolean;
+}
+
+/**
+ * 逐格出图模式的分镜规则。
+ *
+ * 与整页一次出图的根本区别：**每格是一张独立插画**。所以
+ * - 页级构图词（koma / multiple views / split screen / white background）必须全部禁掉；
+ * - 每一格都必须写出自己的场景（地点 + 光线），否则那一格会变成纯白底；
+ * - 版面（主次、留白、格位）由代码排版，不需要模型操心。
+ */
+function perPanelRule(nlOn: boolean, panels: number): string {
+  const countClause = panels >= 2
+    ? `**每页固定 ${panels} 格**：panels 数组必须正好 ${panels} 条，一条就是一张图。`
+    : '格数 2~4（默认 3）：panels 有几条就出几张图，不要为了凑数编出另一个瞬间。';
+  return [
+    '【分镜规则（逐格出图：一页多格，每格单独画一张，再由代码拼成一页）】',
+    '0. **绝对不要写版面/分格词**：`koma`、`multiple views`、`split screen`、`white background`、' +
+      '`simple background`、`comic page`、`manga`、`panel layout`、`asymmetric layout`。' +
+      '每一格都是一张独立插画：写了这些词，单张图会变成"格中格"，或者整格失去背景变成大白底。',
+    `1. ${countClause}`,
+    '2. **每一格都必须自带完整场景**：每格 nl 里要写清「地点 + 光线 + 人物在做什么 + 镜头距离」。' +
+      '同一页所有格是同一个地点（可以不同角度），但不许某一格只写"白底 + 人物"。',
+    '3. page.tags 写这一页**共用的场景与共享动作**（地点、时间、光线、关键道具、两人之间的共享互动），' +
+      '它会被代码带进每一格的图里。人物外貌、发色、瞳色、服装一律不写进 page.tags（走角色块）。',
+    '4. 每格 shot 必须是 wide shot / medium shot / close-up / extreme close-up 里的一个；' +
+      '同一页至少出现两种景别，让镜头真的在移动。',
+    '5. 每格人物数量按这一格的镜头决定：单人、双人、双人局部、纯物件都合法，' +
+      '不要把全页人物复制进每一格；一格只有一只手或一件道具完全正确。',
+    '6. **留白与主次由代码排版**，你不用在 tags/nl 里描述留白、格位、页边。' +
+      '你只要保证每一格本身是一张成立的单幅画。',
+    nlOn ? '7. 每格 nl 用英文，一句 20~35 词；不要出现 panel / comic page / gutter 这类词。' : '',
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -576,7 +614,9 @@ export function buildPanelRule(enabled: boolean, options: PanelRuleOptions): str
   const pageType = normalizePanelPageType(options.pageType);
 
   let body: string;
-  if (choice === 'auto') {
+  if (options.perPanel === true) {
+    body = perPanelRule(nlOn, resolvePanelsPerPage(choice, options.panelsPerPage));
+  } else if (choice === 'auto') {
     // 自动档不钉版面；格数只有用户显式设了才钉（模型挑版面、用户定格数，两者不冲突）
     body = autoRule(nlOn, resolvePanelsPerPage('auto', options.panelsPerPage));
   } else {

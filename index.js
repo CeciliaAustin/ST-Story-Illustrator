@@ -235,6 +235,43 @@ function stillCurrent(chatId, floor, swipe, sendDate) {
   if (currentSwipe !== swipe) return false;
   return true;
 }
+async function uploadImageBase64(base64, options = {}) {
+  const raw = String(base64 ?? "");
+  if (!raw) return null;
+  const ctx = getContext();
+  let headers = { "Content-Type": "application/json" };
+  try {
+    const fn = ctx.getRequestHeaders;
+    if (typeof fn === "function") headers = fn();
+  } catch {
+  }
+  try {
+    const response = await fetch("/api/images/upload", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        image: raw.replace(/^data:[^,]*,/, ""),
+        format: options.format ?? "png",
+        ...options.filename ? { filename: options.filename } : {}
+      })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof (data == null ? void 0 : data.path) === "string" && data.path ? data.path : null;
+  } catch {
+    return null;
+  }
+}
+async function blobToBase64(blob) {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 32768;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
 const MIN_API_VERSION = "1";
 const MAX_WAIT_ATTEMPTS = 20;
 const WAIT_INTERVAL_MS = 500;
@@ -522,7 +559,7 @@ const QUOTE_MAP = {
   "—": "-",
   "–": "-"
 };
-function skeleton(text) {
+function skeleton$1(text) {
   const src = String(text ?? "");
   const chars = [];
   const map = [];
@@ -552,8 +589,8 @@ function skeleton(text) {
   return { s: chars.join(""), map };
 }
 function findAnchorRange(haystack, needle) {
-  const hay = skeleton(haystack);
-  const pin = skeleton(needle);
+  const hay = skeleton$1(haystack);
+  const pin = skeleton$1(needle);
   if (!hay.s || !pin.s) return null;
   const probes = [pin.s, pin.s.slice(0, 60), pin.s.slice(0, 40), pin.s.slice(0, 24)];
   for (let len = 22; len >= 8; len -= 2) probes.push(pin.s.slice(0, len));
@@ -3230,8 +3267,16 @@ function artifactPanelCountOf(artifact) {
   return typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0;
 }
 function artifactSlotsOf(artifact) {
-  var _a;
-  const plan = (_a = artifact.metadata) == null ? void 0 : _a.layoutPlan;
+  var _a, _b;
+  const composed = (_a = artifact.metadata) == null ? void 0 : _a.pageSlots;
+  if (Array.isArray(composed) && composed.length) {
+    const slots = composed.filter((s) => !!s && typeof s === "object" && !Array.isArray(s)).map((s) => {
+      const n = (v, d) => typeof v === "number" && Number.isFinite(v) ? v : d;
+      return { x: n(s.x, 0), y: n(s.y, 0), width: n(s.width, 0.3), height: n(s.height, 0.3) };
+    });
+    if (slots.length) return slots;
+  }
+  const plan = (_b = artifact.metadata) == null ? void 0 : _b.layoutPlan;
   const planObj = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : null;
   if (planObj && Array.isArray(planObj.slots) && planObj.slots.length) {
     const slots = planObj.slots.filter((s) => !!s && typeof s === "object" && !Array.isArray(s)).map((s) => {
@@ -4768,20 +4813,21 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 {{#noNegative}}不要生成 negative 字段。{{/noNegative}}
 {{#sizeClause}}画幅倾向：{{sizeClause}}。{{/sizeClause}}
 {{/hasFlags}}`;
-const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
+const COMIC = `你是一位漫画分镜编辑。你要输出的是**一页漫画**的分镜计划：一页多格，每一格由代码**单独出一张图**，再由代码把这N张图拼成一页。
+你只负责「每一格画什么」；格位、留白、主次、边框全部由代码排版，你不需要也不允许描述版面。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
 结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","beat":{"timeScope":"这一瞬间的定格时间(同一时刻/紧邻动作)","location":"地点","event":"正在发生的一件事","continuityNote":"一句说明为什么这几格属于同一瞬间"},"layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"整页 nl（可省略：各格 nl 优先）"{{/nl}},"dialogue":[{"sourceIndex":"【本页可选台词原文】里的序号(整数)","text":"可省略，仅定位用","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","composition":"single|single_detail|duo|duo_detail|object|environment_detail|split_scene","shot":"wide shot|medium shot|close-up|extreme close-up","subject":"这一格的信息点(一句中文：读者要看到什么)","characters":[{"name":"角色","act":"English danbooru phrases: 这一格在做什么","look":"English 外貌短语，仅角色库里没有的人填"}],"mood":"氛围"{{#nl}},"nl":"English，一句 20~35 词：镜头距离 + 谁在画面哪一侧 + 在做什么 + 空白留在哪"{{/nl}}}]}],"cast":[{"name":"角色名","outfit":"English danbooru phrases: 这一批的当前着装，版型+主色+关键配件"}]}
 硬要求：
 1. **一页 = 一个连续的瞬间（one continuous beat）**：先在 beat 里定格选段中一个时刻/一件事，整页所有格只从这一个瞬间里取镜头切面（全景/某人眼睛/交叠的手/关键物件），连起来像镜头在同一件事上移动。**严禁**从选段里挑几个互不相连的时刻拼成剧情摘要（早上→晚上、房间→街道、争吵→和好都不许）；前后文只用来理解人物和代词，不得扩成本页事件。
 1a. **台词也必须连续**：只取本页这一瞬间里、按原文顺序说过的话，可只截一句/半句/关键短语，允许某格无台词；不编对白、不把旁白改成角色台词、不把相隔很远的台词凑一页。
 1b. **每格镜头自由**：composition 按这一格的叙事需要选——单人、单人局部、双人、双人局部、纯物件、环境细节、同步分屏（电话两端）都合法；一格只有一只手/一张脸/一个道具完全正确。**角色只在实际入镜的格出现**，不要把全页人物复制进每一格。
-1c. **版面有主次、留白是版面的一部分**：至少一格主视觉大，其余格小且不等大；主格与小格之间、页面边缘留明显空白/负空间；不要把所有格做成同尺寸矩形填满整页。允许宽 gutter、浮动特写格。
-2. 一页 = 一张图。整页 tag 只写在 page.tags 里，**不要按格分别写 tag**。
-2. page.tags 必须写出：在场的人**在做什么**（共享动作与互动）、在哪里、画面里的关键物件。**人物和动作是画面主体**，只写构图词的图等于没画。**单个角色的外貌、发色、瞳色、服装一律不写进 page.tags**——它们由 panels[].characters[].name 对应的角色库条目提供，代码会拼成每个角色自己的提示词；两边都写会把两套衣服糊给同框所有人。tag 写足 15~25 个没关系（构图、地点、道具、共享动作、光线都算），但每一个都必须是画面里真的有的东西。
+1c. **版面不用你操心**：格位、主次、留白、边框由代码排版。你只要保证每一格本身是一张成立的单幅画（有场景、有镜头、有人物动作）。
+2. 整页共用 tag 只写在 page.tags 里，**不要按格分别写 tag**；它会被带进每一格的图。
+2. page.tags 必须写出：在场的人**在做什么**（共享动作与互动）、在哪里、光线/时间、画面里的关键物件。**地点与光线必写**——每一格都是一张独立插画，缺了场景词那一格就会变成纯白底。**人物和动作是画面主体**，只写构图词的图等于没画。**单个角色的外貌、发色、瞳色、服装一律不写进 page.tags**——它们由 panels[].characters[].name 对应的角色库条目提供，代码会拼成每个角色自己的提示词；两边都写会把两套衣服糊给同框所有人。tag 写足 15~25 个没关系（构图、地点、道具、共享动作、光线都算），但每一个都必须是画面里真的有的东西。
 2b. **服装只写一次，写在顶层 cast[].outfit**：给了【本批定妆】就照着把每人那套翻成英文 danbooru 短语（版型+主色+关键部件），一个角色一条；所有页所有格穿的都是这同一串，绝不换。代码把它逐字拼进该角色的每个角色块，所以 tags / nl / act 里都不要再写衣服。outfit 必须是纯英文，带中文会被整条丢弃。
-3. 构图词必须按【分镜规则】里该档的写法**原样照抄**（含 1.4:: 这类权重写法），少一个就不是漫画。
+3. **绝对不要写任何版面/分格词**：koma、multiple views、split screen、white background、simple background、comic page、manga、panel layout、asymmetric layout、panel、gutter。每一格都是独立一张插画：写了这些词，单张图会变成"格中格"，或者整格失去背景变成大白底。
 4. 景别 tag 整页只写一个（cowboy shot / upper body 之类），{{#nl}}各格远近只写在 nl 里{{/nl}}{{^nl}}各格远近只能用构图 tag 区分{{/nl}}。
-5. {{#nl}}**每一格都必须写 nl**（page.nl 可以省略）：一句英文，20~35 词，写清「镜头距离 + 谁在画面哪一侧 + 正在做什么 + 画面的空白留在哪」。只写「两人在桌边」这种没有镜头信息的句子，两格就会长得一模一样。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}
+5. {{#nl}}**每一格都必须写 nl**（page.nl 可以省略）：一句英文，20~35 词，写清「地点 + 光线 + 镜头距离 + 谁在画面哪一侧 + 正在做什么」。只写「两人在桌边」这种没有镜头和场景的句子，两格就会长得一模一样、或者某一格变成白底。{{/nl}}{{^nl}}这套方案没有自然语言通道，不要生成 nl：每一格画了什么只能靠 tags 与 panels 表达，因此 tags 必须把各格的人物与动作都写进去。{{/nl}}
 5b. **每格镜头要有变化，但事件不许变**：给每格写 shot（wide/medium/close-up/extreme close-up）与 subject（这一格的信息点）。同一页要同时有「交代空间」的大景与「推近」的特写；变化只体现在景别/机位/局部，不是跳时间换动作——静止的同一瞬间从三个角度拍也完全成立。
 5c. **每格人物数量由该格镜头决定**：单人、双人、双人局部、纯物件都对；绝不要把「本页所有出场人物」复制进每一格。只有某一格**明确写了两人同框**时，这两人才都要有外貌：角色库里没有的那位（常是「你」）要给 look 字段（英文外貌短语，从角色参考/人设摘要取）；只出现一个人的格不需要给第二个人补词。
 5d. **page.tags 写主画面的人数**：描述主视觉格里实际有几个人（1girl / 1boy / 2girls / couple），不要把全页各格出现过的人都数进去；单人局部格、物件格的 tags 不要硬塞两人。
@@ -5393,7 +5439,7 @@ const COMIC_STYLE_CARDS = [
   { id: "classic_grid", name: "传统四格", hint: "纵向等宽 / 2×2，阅读节奏稳定" },
   { id: "open_montage", name: "开放拼版", hint: "大小格自由组合、铺满整页（不留白边）" },
   { id: "diagonal_panels", name: "斜切分格", hint: "斜边制造动势，适合冲突与速度" },
-  { id: "hero_insets", name: "主图 + 特写", hint: "一张主图 + 带框特写格；留白多=白底居中，留白少=主图铺到底" },
+  { id: "hero_insets", name: "主图 + 特写", hint: "一张主图 + 带框特写格；白底只在格子之外，格子里仍是完整场景" },
   { id: "freeform", name: "自由构图", hint: "由 AI 按剧情设计版面并先出预览" }
 ];
 function styleCardChooser(current) {
@@ -5471,7 +5517,7 @@ function renderComicSettings() {
     (v) => patchSettings((st) => {
       st.modes["comic"].comicWhitespace = v;
     }),
-    "留白默认跟着风格走（传统四格紧凑、主图+特写大面积留白），这里选了就以你的偏好为准。「开放拼版」本身是铺满页面的不等格拼版，留白偏好对它不起作用——要大片白边请选「主图 + 特写」。"
+    "留白默认跟着风格走（传统四格紧凑、主图+特写大面积留白），这里选了就以你的偏好为准。每格都是单独出图再排版：留白是页面空白（框外），格子里永远保留自己的场景背景。「开放拼版」本身是铺满页面的不等格拼版，留白偏好对它不起作用——要大片白边请选「主图 + 特写」。"
   ));
   box.appendChild(selectRow(
     "最多页数",
@@ -6205,11 +6251,11 @@ function composeEnglishPrompt(segments) {
     for (const tag of segment.english) {
       const trimmed = tag.trim();
       if (!trimmed) continue;
-      const bare = bareTagOf$1(trimmed);
-      if (bare && seenBareTags.has(bare) && !trimmed.includes("::")) {
+      const bare2 = bareTagOf$1(trimmed);
+      if (bare2 && seenBareTags.has(bare2) && !trimmed.includes("::")) {
         continue;
       }
-      if (bare) seenBareTags.add(bare);
+      if (bare2) seenBareTags.add(bare2);
       allTags.push(trimmed);
     }
   }
@@ -6398,9 +6444,9 @@ function splitSegments(segments, native) {
     for (const raw of tags) {
       const piece = raw.trim();
       if (!piece) continue;
-      const bare = piece.replace(/^\s*[\d.]+\s*::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
-      if (bare && seen.has(bare)) continue;
-      if (bare) seen.add(bare);
+      const bare2 = piece.replace(/^\s*[\d.]+\s*::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+      if (bare2 && seen.has(bare2)) continue;
+      if (bare2) seen.add(bare2);
       kept.push(piece);
     }
     if (kept.length) characters.push({ name, tag: kept.join(", ") });
@@ -7068,13 +7114,29 @@ function autoRule(nlOn, panels) {
     ninth
   ].join("\n");
 }
+function perPanelRule(nlOn, panels) {
+  const countClause = panels >= 2 ? `**每页固定 ${panels} 格**：panels 数组必须正好 ${panels} 条，一条就是一张图。` : "格数 2~4（默认 3）：panels 有几条就出几张图，不要为了凑数编出另一个瞬间。";
+  return [
+    "【分镜规则（逐格出图：一页多格，每格单独画一张，再由代码拼成一页）】",
+    '0. **绝对不要写版面/分格词**：`koma`、`multiple views`、`split screen`、`white background`、`simple background`、`comic page`、`manga`、`panel layout`、`asymmetric layout`。每一格都是一张独立插画：写了这些词，单张图会变成"格中格"，或者整格失去背景变成大白底。',
+    `1. ${countClause}`,
+    '2. **每一格都必须自带完整场景**：每格 nl 里要写清「地点 + 光线 + 人物在做什么 + 镜头距离」。同一页所有格是同一个地点（可以不同角度），但不许某一格只写"白底 + 人物"。',
+    "3. page.tags 写这一页**共用的场景与共享动作**（地点、时间、光线、关键道具、两人之间的共享互动），它会被代码带进每一格的图里。人物外貌、发色、瞳色、服装一律不写进 page.tags（走角色块）。",
+    "4. 每格 shot 必须是 wide shot / medium shot / close-up / extreme close-up 里的一个；同一页至少出现两种景别，让镜头真的在移动。",
+    "5. 每格人物数量按这一格的镜头决定：单人、双人、双人局部、纯物件都合法，不要把全页人物复制进每一格；一格只有一只手或一件道具完全正确。",
+    "6. **留白与主次由代码排版**，你不用在 tags/nl 里描述留白、格位、页边。你只要保证每一格本身是一张成立的单幅画。",
+    nlOn ? "7. 每格 nl 用英文，一句 20~35 词；不要出现 panel / comic page / gutter 这类词。" : ""
+  ].filter(Boolean).join("\n");
+}
 function buildPanelRule(enabled, options) {
   if (!enabled) return "";
   const choice = normalizeLayoutChoice(options.layout);
   const nlOn = options.nl !== false;
   const pageType = normalizePanelPageType(options.pageType);
   let body;
-  if (choice === "auto") {
+  if (options.perPanel === true) {
+    body = perPanelRule(nlOn, resolvePanelsPerPage(choice, options.panelsPerPage));
+  } else if (choice === "auto") {
     body = autoRule(nlOn, resolvePanelsPerPage("auto", options.panelsPerPage));
   } else {
     const layout = normalizePanelLayout(choice);
@@ -7386,30 +7448,56 @@ function resolveSourceDialogue(rawText) {
   }
   return found.sort((a, b) => a.start - b.start).slice(0, 16).map((item, i) => ({ index: i, ...item }));
 }
+function skeleton(text) {
+  return String(text ?? "").replace(/[\s\p{P}\p{S}]/gu, "");
+}
 function exactMatch(text, lines) {
   const a = text.trim();
   if (!a) return void 0;
-  return lines.find((line) => {
+  const direct = lines.find((line) => {
     const b = line.text.trim();
     return a === b || a.includes(b) || b.includes(a);
   });
+  if (direct) return direct;
+  const sa = skeleton(a);
+  if (sa.length < 2) return void 0;
+  return lines.find((line) => {
+    const sb = skeleton(line.text);
+    return sb.length >= 2 && (sa === sb || sa.includes(sb) || sb.includes(sa));
+  });
 }
-function reconcileDialogueWithSource(dialogue, lines) {
-  if (!Array.isArray(dialogue) || !dialogue.length) return [];
+function reconcileDialogueDetailed(dialogue, lines) {
+  if (!Array.isArray(dialogue) || !dialogue.length) {
+    return { dialogue: [], restored: 0, dropped: 0, noSource: lines.length === 0 };
+  }
+  const noSource = lines.length === 0;
   const out = [];
+  let restored = 0;
+  let dropped = 0;
   for (const item of dialogue) {
     if (!item || typeof item.text !== "string") continue;
     const raw = item;
+    const { sourceIndex: _si, quote: _q, exactText: _e, ...rest } = raw;
+    const text = String(rest.text ?? "").trim();
+    if (noSource) {
+      if (!text) continue;
+      out.push({ ...rest, text });
+      continue;
+    }
     let line;
     if (typeof raw.sourceIndex === "number" && Number.isInteger(raw.sourceIndex)) {
       line = lines[raw.sourceIndex];
     }
-    if (!line) line = exactMatch(raw.quote ?? raw.exactText ?? raw.text, lines);
-    if (!line) continue;
-    const { sourceIndex: _si, quote: _q, exactText: _e, ...rest } = raw;
+    if (!line && !text) continue;
+    if (!line) line = exactMatch(raw.quote ?? raw.exactText ?? text, lines);
+    if (!line) {
+      dropped += 1;
+      continue;
+    }
+    restored += 1;
     out.push({ ...rest, text: line.text });
   }
-  return out;
+  return { dialogue: out, restored, dropped, noSource };
 }
 function sourceDialogueBlock(lines) {
   if (!lines.length) return "";
@@ -7587,7 +7675,9 @@ function buildComicSystemPrompt(options, overrides) {
     dialogue: options.dialogue,
     dialogueMode: options.dialogueMode,
     dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy),
-    ...options.layoutStyle ? {
+    ...options.perPanel === true ? { perPanel: true } : {},
+    // 逐格出图时版面由代码排，不再让模型输出 layoutPlan（否则两套格位打架）
+    ...options.layoutStyle && options.perPanel !== true ? {
       layoutDirective: buildLayoutDirective({
         style: options.layoutStyle,
         panelCount: options.layoutPanelCount ?? "auto",
@@ -9062,8 +9152,320 @@ ${user}`
     ...((_a = result.missingLooks) == null ? void 0 : _a.length) ? { missingLooks: result.missingLooks } : {}
   };
 }
+const PAGE_WIDTH = 832;
+const PAGE_HEIGHT = 1216;
+const MARGIN = 0.045;
+const GUTTER = 0.01;
+function clampSlot(slot) {
+  const x = Math.max(0, Math.min(1, slot.x));
+  const y = Math.max(0, Math.min(1, slot.y));
+  const width = Math.max(0.02, Math.min(1 - x, slot.width));
+  const height = Math.max(0.02, Math.min(1 - y, slot.height));
+  return { ...slot, x, y, width, height };
+}
+function regularSlots(count) {
+  if (count <= 1) {
+    return [{ panelIndex: 0, x: MARGIN, y: MARGIN, width: 1 - MARGIN * 2, height: 1 - MARGIN * 2, border: "thin" }];
+  }
+  const usable = 1 - MARGIN * 2 - GUTTER * (count - 1);
+  const h = usable / count;
+  return Array.from({ length: count }, (_, i) => ({
+    panelIndex: i,
+    x: MARGIN,
+    y: MARGIN + i * (h + GUTTER),
+    width: 1 - MARGIN * 2,
+    height: h,
+    border: "thin"
+  }));
+}
+function irregularSlots(count) {
+  if (count <= 1) {
+    return [{ panelIndex: 0, x: MARGIN, y: MARGIN, width: 1 - MARGIN * 2, height: 1 - MARGIN * 2, border: "thin" }];
+  }
+  const usableW = 1 - MARGIN * 2;
+  const usableH = 1 - MARGIN * 2;
+  const heroW = count === 2 ? usableW * 0.64 : usableW * 0.57;
+  const sideW = usableW - heroW - GUTTER;
+  const slots = [
+    { panelIndex: 0, x: MARGIN, y: MARGIN, width: heroW, height: usableH, border: "thin" }
+  ];
+  const rest = count - 1;
+  const totalGap = GUTTER * (rest - 1);
+  const weights = Array.from({ length: rest }, (_, i) => 1 / (i + 1.25));
+  const weightSum = weights.reduce((a, b) => a + b, 0);
+  let cursor = MARGIN;
+  for (let i = 0; i < rest; i += 1) {
+    const h = (usableH - totalGap) * weights[i] / weightSum;
+    slots.push({
+      panelIndex: i + 1,
+      x: MARGIN + heroW + GUTTER,
+      y: cursor,
+      width: sideW,
+      height: h,
+      border: "thin"
+    });
+    cursor += h + GUTTER;
+  }
+  return slots;
+}
+function insetSlots(count, airy) {
+  if (count <= 1) {
+    const m = airy ? 0.13 : 0.09;
+    return [{ panelIndex: 0, x: m, y: m, width: 1 - m * 2, height: 1 - m * 2, border: "none" }];
+  }
+  const stripY = 0.035;
+  const stripH = 0.12;
+  const mainX = airy ? 0.055 : 0.05;
+  const mainTop = stripY + stripH + 0.04;
+  const mainH = 0.545;
+  const insetY = mainTop + mainH + 0.055;
+  const insetH = 1 - insetY - 0.035;
+  const slots = [
+    { panelIndex: 0, x: mainX, y: mainTop, width: 1 - mainX * 2, height: mainH, border: "none" },
+    { panelIndex: 1, x: 0.14, y: stripY, width: 0.72, height: stripH, border: "thin" }
+  ];
+  const rest = count - 2;
+  const boxes = [
+    { x: 0.6, width: 0.35 },
+    { x: 0.055, width: 0.33 },
+    { x: 0.42, width: 0.16 }
+  ];
+  for (let i = 0; i < Math.min(rest, boxes.length); i += 1) {
+    slots.push({
+      panelIndex: i + 2,
+      x: boxes[i].x,
+      y: insetY,
+      width: boxes[i].width,
+      height: insetH,
+      border: "thin"
+    });
+  }
+  return slots;
+}
+function unframedSlots(count) {
+  const slots = [
+    { panelIndex: 0, x: 0.015, y: 0.015, width: 0.97, height: 0.97, border: "none" }
+  ];
+  const boxes = [
+    { x: 0.6, y: 0.03, width: 0.36, height: 0.17 },
+    { x: 0.04, y: 0.79, width: 0.32, height: 0.17 },
+    { x: 0.6, y: 0.79, width: 0.36, height: 0.17 }
+  ];
+  for (let i = 1; i < count; i += 1) {
+    const box = boxes[Math.min(i - 1, boxes.length - 1)];
+    slots.push({ panelIndex: i, ...box, border: "thin" });
+  }
+  return slots;
+}
+function pageSlotsFor(layout, count, options = {}) {
+  const n = Math.max(1, Math.min(6, Math.floor(count) || 1));
+  const airy = options.whitespace === "airy" || options.whitespace === "dramatic" || options.whitespace === void 0;
+  let slots;
+  switch (layout) {
+    case "regular":
+      slots = regularSlots(n);
+      break;
+    case "irregular":
+      slots = irregularSlots(n);
+      break;
+    case "unframed":
+      slots = unframedSlots(n);
+      break;
+    case "inset":
+    default:
+      slots = insetSlots(n, airy);
+      break;
+  }
+  const capacity = slots.length;
+  if (n > capacity) {
+    for (let i = capacity; i < n; i += 1) {
+      slots.push({ ...slots[capacity - 1], panelIndex: i });
+    }
+  }
+  return slots.slice(0, n).map(clampSlot);
+}
+const CROP_ANCHOR_Y = 0.28;
+function coverRect(srcW, srcH, dstW, dstH) {
+  if (!srcW || !srcH || !dstW || !dstH) return { x: 0, y: 0, width: srcW, height: srcH };
+  const srcAspect = srcW / srcH;
+  const dstAspect = dstW / dstH;
+  if (srcAspect > dstAspect) {
+    const width = srcH * dstAspect;
+    return { x: (srcW - width) / 2, y: 0, width, height: srcH };
+  }
+  const height = srcW / dstAspect;
+  const spare = srcH - height;
+  return { x: 0, y: Math.max(0, spare * CROP_ANCHOR_Y), width: srcW, height };
+}
+function drawAssembledPage(doc, input, images) {
+  const width = input.width ?? PAGE_WIDTH;
+  const height = input.height ?? PAGE_HEIGHT;
+  const canvas = doc.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { canvas, drawn: [] };
+  ctx.fillStyle = input.background ?? "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  const borderColor = input.borderColor ?? "rgba(0,0,0,0.88)";
+  const drawn = new Array(input.slots.length).fill(false);
+  input.slots.forEach((slot, index2) => {
+    const img = images[index2];
+    const dx = slot.x * width;
+    const dy = slot.y * height;
+    const dw = slot.width * width;
+    const dh = slot.height * height;
+    if (!img || !img.width || !img.height) return;
+    if (slot.border === "thin") {
+      const pad = Math.max(3, Math.round(width * 6e-3));
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(dx - pad, dy - pad, dw + pad * 2, dh + pad * 2);
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(dx, dy, dw, dh);
+    ctx.clip();
+    const src = coverRect(img.width, img.height, dw, dh);
+    ctx.drawImage(img, src.x, src.y, src.width, src.height, dx, dy, dw, dh);
+    ctx.restore();
+    if (slot.border === "thin") {
+      ctx.save();
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = Math.max(2, Math.round(width * 35e-4));
+      ctx.strokeRect(dx, dy, dw, dh);
+      ctx.restore();
+    }
+    drawn[index2] = true;
+  });
+  return { canvas, drawn };
+}
+async function assemblePageCanvas(input) {
+  if (!input.slots.length || !input.images.length) return null;
+  const doc = typeof document !== "undefined" ? document : null;
+  if (!doc) return null;
+  const loaded = await Promise.all(
+    input.images.map(async (src) => {
+      try {
+        const { image, cleanup } = await loadDrawableImage(src);
+        return { image, cleanup };
+      } catch {
+        return null;
+      }
+    })
+  );
+  try {
+    const images = loaded.map((item) => (item == null ? void 0 : item.image) ?? void 0);
+    return drawAssembledPage(doc, input, images);
+  } finally {
+    loaded.forEach((item) => item == null ? void 0 : item.cleanup());
+  }
+}
+async function assemblePageBlob(input) {
+  const result = await assemblePageCanvas(input);
+  if (!result) return null;
+  const blob = await new Promise((resolve) => result.canvas.toBlob(resolve, "image/png"));
+  if (!blob) return null;
+  return { blob, drawn: result.drawn };
+}
 function randomSeed$1() {
   return Math.floor(Math.random() * 4294967295);
+}
+async function rerollPerPanel(args) {
+  const { floor, artifactId, prompts, nls, slots, cast, characters, settings: settings2 } = args;
+  const startedAt = Date.now();
+  const paths = [];
+  let seed;
+  for (let i = 0; i < prompts.length; i += 1) {
+    const seedForPanel = randomSeed$1();
+    const names = cast[i] ?? [];
+    const blocks = names.length ? characters.filter((c) => names.includes(c.name)) : [];
+    try {
+      const result = await baiBaiAdapter.generate(
+        {
+          prompt: prompts[i],
+          ...nls[i] ? { nl: nls[i] } : {},
+          ...blocks.length ? { characters: blocks } : {},
+          ...args.characterName ? { character: args.characterName } : {},
+          seed: seedForPanel,
+          size: "portrait",
+          save: true
+        },
+        pickProfile(settings2.profiles ?? [], "comic") ?? fallbackProfile("comic")
+      );
+      const path = result.path ?? result.dataUrl;
+      recordImageLog({
+        mode: "comic",
+        floor,
+        source: "api",
+        plan: readOutConfig().activePlanName,
+        prompt: prompts[i],
+        ...nls[i] ? { nl: nls[i] } : {},
+        ...blocks.length ? { characters: blocks } : {},
+        size: "portrait",
+        seed: seedForPanel,
+        ...result.seed !== void 0 ? { seed: result.seed } : {},
+        status: path ? "ok" : "error",
+        ...path ? {} : { error: "出图没有返回图片。" },
+        durationMs: Date.now() - startedAt
+      });
+      if (!path) return { ok: false, message: `第 ${i + 1} 格出图没有返回图片。` };
+      if (seed === void 0 && typeof result.seed === "number") seed = result.seed;
+      paths.push(path);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      recordImageLog({
+        mode: "comic",
+        floor,
+        source: "api",
+        plan: readOutConfig().activePlanName,
+        prompt: prompts[i],
+        size: "portrait",
+        seed: seedForPanel,
+        status: "error",
+        error: message,
+        durationMs: Date.now() - startedAt
+      });
+      return { ok: false, message: `第 ${i + 1} 格：${message}` };
+    }
+  }
+  let pagePath = "";
+  let assembled = false;
+  if (paths.length > 1) {
+    const pageImage = await assemblePageBlob({ slots, images: paths });
+    if (pageImage) {
+      const uploaded = await uploadImageBase64(await blobToBase64(pageImage.blob), {
+        format: "png",
+        filename: `ST创作_漫画_${Date.now()}`
+      });
+      if (uploaded) {
+        pagePath = uploaded;
+        assembled = true;
+      }
+    }
+  }
+  if (!pagePath) pagePath = paths[0] ?? "";
+  if (!pagePath) return { ok: false, message: "整页合成失败。" };
+  const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
+  const meta = (artifact == null ? void 0 : artifact.metadata) ?? {};
+  updateArtifact(floor, artifactId, {
+    imagePath: pagePath,
+    originalImagePath: void 0,
+    prompt: prompts.join("\n---\n"),
+    ...nls.some(Boolean) ? { nl: nls.join("\n") } : {},
+    metadata: {
+      ...meta,
+      rawImagePath: pagePath,
+      panelImages: paths,
+      panelPrompts: prompts,
+      panelNls: nls,
+      pageAssembled: assembled,
+      bubbleBakedPath: void 0,
+      ...seed !== void 0 ? { seed } : {},
+      promptEditedAt: Date.now()
+    }
+  });
+  void saveChatSafe();
+  return { ok: true };
 }
 async function rerollComicPage(floor, artifactId, overrides = {}) {
   const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
@@ -9079,6 +9481,33 @@ async function rerollComicPage(floor, artifactId, overrides = {}) {
   const storedCharacters = Array.isArray(meta.characters) ? meta.characters : [];
   const characters = overrides.characters ?? storedCharacters;
   const pageType = meta.pageType ?? comic.comicPageType ?? "auto";
+  const storedPanels = Array.isArray(meta.panelPrompts) ? meta.panelPrompts.filter((v) => typeof v === "string" && !!v.trim()) : [];
+  const storedNls = Array.isArray(meta.panelNls) ? meta.panelNls.map((v) => typeof v === "string" ? v : "") : [];
+  const storedSlots = Array.isArray(meta.pageSlots) ? meta.pageSlots : [];
+  if (storedPanels.length > 1 && storedSlots.length === storedPanels.length) {
+    const editedParts = overrides.prompt !== void 0 ? prompt.split(/\n\s*-{3,}\s*\n/).map((s) => s.trim()).filter(Boolean) : [];
+    const prompts = editedParts.length === storedPanels.length ? editedParts : storedPanels;
+    const editedNls = overrides.nl !== void 0 ? nl.split(/\n+/).map((s) => s.trim()).filter(Boolean) : [];
+    const nls = editedNls.length === prompts.length ? editedNls : storedNls.length === prompts.length ? storedNls : prompts.map(() => "");
+    const cast = Array.isArray(meta.panelCast) ? meta.panelCast.map((row) => Array.isArray(row) ? row.map(String) : []) : prompts.map(() => []);
+    acquirePlanGuard();
+    try {
+      await ensureModeOutPlan("comic", settings2);
+      return await rerollPerPanel({
+        floor,
+        artifactId,
+        prompts,
+        nls,
+        slots: storedSlots,
+        cast,
+        characters,
+        ...typeof meta.characterName === "string" && meta.characterName ? { characterName: meta.characterName } : {},
+        settings: settings2
+      });
+    } finally {
+      await releasePlanGuard(settings2);
+    }
+  }
   const seed = randomSeed$1();
   const startedAt = Date.now();
   acquirePlanGuard();
@@ -10559,19 +10988,19 @@ function enforcePanelPrompt(prompt, layout, options = {}) {
   for (const segment of source.split(",")) {
     const text = segment.trim();
     if (!text) continue;
-    const bare = bareTagOf(text);
-    present.add(bare);
-    if (JUNK_TAGS.includes(bare) && isPlainSegment(text)) {
+    const bare2 = bareTagOf(text);
+    present.add(bare2);
+    if (JUNK_TAGS.includes(bare2) && isPlainSegment(text)) {
       removed.push(text);
       continue;
     }
-    if (!PANEL_FAMILY$1.includes(bare)) {
+    if (!PANEL_FAMILY$1.includes(bare2)) {
       if (sceneLimit && isPlainSegment(text)) {
-        if (SCENE_ANCHOR_TAGS.includes(bare)) {
+        if (SCENE_ANCHOR_TAGS.includes(bare2)) {
           kept.push(text);
           continue;
         }
-        if (SCENE_LOCATION_TAGS.includes(bare)) {
+        if (SCENE_LOCATION_TAGS.includes(bare2)) {
           if (locationKept < 2) {
             locationKept += 1;
             kept.push(text);
@@ -10580,21 +11009,21 @@ function enforcePanelPrompt(prompt, layout, options = {}) {
           removed.push(text);
           continue;
         }
-        if (INSET_SCENE_TAGS.includes(bare)) {
+        if (INSET_SCENE_TAGS.includes(bare2)) {
           removed.push(text);
           continue;
         }
         kept.push(text);
         continue;
       }
-      if (stripScene && isPlainSegment(text) && INSET_SCENE_TAGS.includes(bare)) {
+      if (stripScene && isPlainSegment(text) && INSET_SCENE_TAGS.includes(bare2)) {
         removed.push(text);
         continue;
       }
       kept.push(text);
       continue;
     }
-    if (isPlainSegment(text) && forbidden.has(bare)) {
+    if (isPlainSegment(text) && forbidden.has(bare2)) {
       removed.push(text);
       continue;
     }
@@ -10660,17 +11089,17 @@ const PERSON_TAG = /^(?:\d+\s*(?:girl|boy|other)s?|\d+\s*people|couple|solo)$/i;
 function declaredPersonsOf(base) {
   let total = 0;
   for (const raw of String(base ?? "").split(",")) {
-    const bare = bareTagOf(raw);
-    if (!bare) continue;
-    if (bare === "couple") {
+    const bare2 = bareTagOf(raw);
+    if (!bare2) continue;
+    if (bare2 === "couple") {
       total += 2;
       continue;
     }
-    if (bare === "solo") {
+    if (bare2 === "solo") {
       total += 1;
       continue;
     }
-    const m = bare.match(/^(\d+)\s*(?:girl|boy|other|people)s?$/);
+    const m = bare2.match(/^(\d+)\s*(?:girl|boy|other|people)s?$/);
     if (m) total += Math.max(1, parseInt(m[1], 10) || 1);
   }
   return total;
@@ -11028,6 +11457,136 @@ function composePagePrompt(page, characters = [], options = {}) {
     panelTitles: (page.panels ?? []).map((p) => p.title).filter(Boolean),
     characters: dressed
   };
+}
+const PAGE_COMPOSITION = [
+  /^\d+\s*koma$/i,
+  /^multiple views$/i,
+  /^split screen$/i,
+  /^white background$/i,
+  /^black background$/i,
+  /^simple background$/i,
+  /^close-up inset$/i,
+  /^inset$/i,
+  /^comic page layout$/i,
+  /^panel layout$/i,
+  /^comic panel$/i,
+  /^comic page$/i,
+  /^manga page$/i,
+  /^manga$/i,
+  /^comic$/i,
+  /^asymmetric layout$/i,
+  /^dynamic diagonal composition$/i,
+  /^panels?$/i,
+  /^gutter$/i,
+  /^white margins?$/i,
+  /^negative space$/i
+];
+const PERSON = /^(?:\d+\s*(?:girl|boy|other)s?|\d+\s*people|couple|solo|multiple girls|multiple boys)$/i;
+function bare(segment) {
+  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim();
+}
+function isPageComposition(segment) {
+  const word = bare(segment).toLowerCase();
+  return PAGE_COMPOSITION.some((re) => re.test(word));
+}
+function cleanSceneTags(raw, options = {}) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const piece of String(raw ?? "").split(",")) {
+    const segment = piece.trim();
+    if (!segment) continue;
+    if (isPageComposition(segment)) continue;
+    const word = bare(segment).toLowerCase();
+    if (!word) continue;
+    if (options.keepPeople !== true && PERSON.test(word)) continue;
+    if (seen.has(word)) continue;
+    seen.add(word);
+    out.push(segment);
+  }
+  return out;
+}
+const AREA_CLAUSE = /\b(?:in|on)\s+the\s+[a-z\s-]{0,24}(?:panel|illustration|strip|inset|image)\b\s*[,:]?\s*/gi;
+function cleanPanelNl(panel) {
+  const body = panelNlBody(panel).replace(AREA_CLAUSE, "").replace(/\b(?:comic page|manga page|panel|panels|gutter|gutters|white background)\b/gi, "").replace(/\s{2,}/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
+  return body.replace(/^[,:;.\s]+/, "");
+}
+function buildPanelShots(page, slots, characters = [], options = {}) {
+  const pageScene = cleanSceneTags(String(page.tags ?? ""));
+  const outfitMap = resolveOutfits(page.outfits, options.personaName);
+  const native = options.nativeCharacters !== false;
+  const panels = page.panels ?? [];
+  return panels.map((panel, index2) => {
+    const slot = slots.find((s) => s.panelIndex === index2) ?? slots[Math.min(index2, slots.length - 1)] ?? { panelIndex: index2, x: 0, y: 0, width: 1, height: 1, border: "thin" };
+    const rawNames = (panel.characters ?? []).map((c) => String(c.name ?? "").trim()).filter(Boolean);
+    const looks = /* @__PURE__ */ new Map();
+    const acts = /* @__PURE__ */ new Map();
+    for (const c of panel.characters ?? []) {
+      const name = String(c.name ?? "").trim();
+      if (!name) continue;
+      const look = String(c.look ?? "").trim();
+      if (look) looks.set(name, look);
+      const act = String(c.act ?? "").trim();
+      if (act) acts.set(name, [act]);
+    }
+    const resolved = rawNames.length ? resolveCastNames(rawNames, [...characters], {
+      ...options.personaName ? { personaName: options.personaName } : {},
+      declared: rawNames.length,
+      max: 3,
+      looks,
+      acts
+    }) : { cast: [], acts: /* @__PURE__ */ new Map(), looks: /* @__PURE__ */ new Map() };
+    const blocks = native ? characterPromptsFromLibrary(resolved.cast, [...characters], resolved.acts, resolved.looks) : [];
+    const dressed = blocks.map((block) => {
+      const outfit = outfitOf(block.name, outfitMap, [...characters], options.personaName);
+      if (!outfit) return block;
+      const tag = appendOutfit(block.tag, outfit);
+      return tag === block.tag ? block : { ...block, tag };
+    });
+    const panelTags = cleanSceneTags(String(panel.tags ?? ""));
+    const shot = String(panel.shot ?? "").trim();
+    const genderOf = (name) => {
+      var _a;
+      const entry = characters.find((c) => String(c.name ?? "").trim() === name);
+      const sex = String(((_a = entry == null ? void 0 : entry.fields) == null ? void 0 : _a.sex) ?? "").trim();
+      if (/^\d*\s*(?:girl|boy|other)/i.test(sex)) return sex;
+      const m = String((entry == null ? void 0 : entry.tag) ?? "").match(/\b(\d+)\s*(girl|boy|other)\b/i);
+      return m ? `${m[1]}${m[2]}` : "";
+    };
+    const genderTags = resolved.cast.map(genderOf).filter(Boolean);
+    const segments = [];
+    const seen = /* @__PURE__ */ new Set();
+    const push2 = (value) => {
+      const text = String(value ?? "").trim();
+      if (!text) return;
+      const key = bare(text).toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      segments.push(text);
+    };
+    if (dressed.length && genderTags.length) {
+      push2(reconcileHeadcount("", genderTags));
+    }
+    if (shot) push2(shot);
+    for (const tag of panelTags) push2(tag);
+    for (const tag of pageScene) push2(tag);
+    let prompt = segments.join(", ");
+    if (!dressed.length) {
+      const fallback = [...outfitMap.values()].map((item) => item.outfit);
+      if (fallback.length) {
+        const lower = prompt.toLowerCase();
+        const extra = fallback.filter((o) => !lower.includes(o.toLowerCase()));
+        prompt = [prompt, ...extra].filter(Boolean).join(", ");
+      }
+    }
+    return {
+      panelIndex: index2,
+      prompt,
+      nl: cleanPanelNl(panel),
+      characters: dressed,
+      slot,
+      cast: resolved.cast
+    };
+  });
 }
 const BBI_IMAGE_EXTRA_KEY = "bbiImage";
 const BBI_SLOT_SELECTOR = "div[data-bbi-slot]";
@@ -11531,7 +12090,9 @@ async function runComic(task, ctx, deps) {
     layoutPanelCount: comicPanelCount,
     layoutWhitespace: comicWhitespace,
     // 台词只从这些原文候选里引用，禁止 LLM 现编 / 改写
-    sourceDialogue
+    sourceDialogue,
+    // 一页多格各自出图：规划层不许再写页级构图词，版面由代码排版
+    perPanel: true
   };
   let plan = await generateComicPlan({
     scene: sceneFromSegment(segment),
@@ -11620,13 +12181,13 @@ async function runComic(task, ctx, deps) {
       selectedText: segment.text,
       ...personaName ? { personaName } : {}
     });
-    const enforced = enforcePanelPrompt(
+    const fallbackEnforced = enforcePanelPrompt(
       composed.prompt,
       board.layout,
       board.koma ? { koma: board.koma } : {}
     );
-    const finalPrompt = enforced.prompt;
-    const finalNl = wantComicNl ? buildBoardNl(
+    const fallbackPrompt = fallbackEnforced.prompt;
+    const fallbackNl = wantComicNl ? buildBoardNl(
       {
         layout: board.layout,
         pageType: board.pageType,
@@ -11636,68 +12197,183 @@ async function runComic(task, ctx, deps) {
       },
       pageForCompose
     ) : "";
-    const dialogue = reconcileDialogueWithSource(composed.dialogue, sourceDialogue);
+    const dialogueResult = reconcileDialogueDetailed(composed.dialogue, sourceDialogue);
+    const dialogue = dialogueResult.dialogue;
+    if (dialogueResult.dropped > 0) {
+      recordNotice({
+        mode: "comic",
+        floor,
+        text: `第 ${page.pageIndex + 1} 页有 ${dialogueResult.dropped} 句台词在原文里找不到逐字出处，已略过。宁可少一句，也不把这句被改写的台词画上去。`
+      });
+    }
+    const planPanels = (page.panels ?? []).slice(0, Math.max(1, board.panelCount));
+    const shotPage = {
+      ...page,
+      panels: planPanels.length ? planPanels : [{ index: 0, title: page.title }]
+    };
+    const slots = pageSlotsFor(board.layout, shotPage.panels.length, { whitespace: whitespaceIntent });
+    const shots = buildPanelShots(shotPage, slots, characters.characters, {
+      nativeCharacters: comicNativeCharacters,
+      ...personaName ? { personaName } : {}
+    });
+    const panelPaths = [];
+    const panelPrompts = [];
+    const panelNls = [];
+    let panelFailure = "";
+    let pageSeed;
     const pageStartedAt = Date.now();
-    let result;
-    try {
-      result = await baiBaiAdapter.generate(
-        {
-          prompt: finalPrompt,
-          ...finalNl ? { nl: finalNl } : {},
-          ...composed.characters.length ? { characters: composed.characters } : {},
-          ...characterName ? { character: characterName } : {},
+    for (const shot of shots) {
+      if (ctx.signal.aborted) return;
+      const shotStartedAt = Date.now();
+      const useNl = wantComicNl && shot.nl ? { nl: shot.nl } : {};
+      let result;
+      try {
+        result = await baiBaiAdapter.generate(
+          {
+            prompt: shot.prompt,
+            ...useNl,
+            ...shot.characters.length ? { characters: shot.characters } : {},
+            ...characterName ? { character: characterName } : {},
+            size: "portrait",
+            // 图必须进图库：用户是在柏宝绘的图库里找图、复用、看提示词的
+            save: true
+          },
+          pickProfile(deps.settings, "comic") ?? fallbackProfile("comic")
+        );
+      } catch (err) {
+        panelFailure = err instanceof Error ? err.message : String(err);
+        recordImageLog({
+          mode: "comic",
+          floor,
+          source: "api",
+          plan: readOutConfig().activePlanName,
+          prompt: shot.prompt,
+          ...useNl,
+          ...shot.characters.length ? { characters: shot.characters } : {},
           size: "portrait",
-          // 图必须进图库：用户是在柏宝绘的图库里找图、复用、看提示词的
-          save: true
-        },
-        pickProfile(deps.settings, "comic") ?? fallbackProfile("comic")
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+          status: "error",
+          error: panelFailure,
+          durationMs: Date.now() - shotStartedAt
+        });
+        break;
+      }
+      const shotPath = result.path ?? result.dataUrl ?? "";
       recordImageLog({
         mode: "comic",
         floor,
         source: "api",
         plan: readOutConfig().activePlanName,
-        prompt: finalPrompt,
-        ...finalNl ? { nl: finalNl } : {},
+        model: activePlanModel(),
+        prompt: shot.prompt,
+        ...useNl,
+        ...shot.characters.length ? { characters: shot.characters } : {},
         size: "portrait",
-        status: "error",
-        error: message,
-        durationMs: Date.now() - pageStartedAt
+        ...typeof result.seed === "number" ? { seed: result.seed } : {},
+        status: shotPath ? "ok" : "error",
+        ...shotPath ? {} : { error: "出图没有返回图片。" },
+        durationMs: Date.now() - shotStartedAt
       });
-      console.warn("[ST-Story-Illustrator] 漫画页出图失败：", message);
-      continue;
+      if (!shotPath) {
+        panelFailure = "出图没有返回图片。";
+        break;
+      }
+      if (pageSeed === void 0 && typeof result.seed === "number") pageSeed = result.seed;
+      panelPaths.push(shotPath);
+      panelPrompts.push(shot.prompt);
+      panelNls.push(shot.nl);
     }
-    const rawPath = result.path ?? result.dataUrl ?? "";
-    recordImageLog({
-      mode: "comic",
-      floor,
-      source: "api",
-      plan: readOutConfig().activePlanName,
-      model: activePlanModel(),
-      prompt: finalPrompt,
-      ...finalNl ? { nl: finalNl } : {},
-      ...composed.characters.length ? { characters: composed.characters } : {},
-      size: "portrait",
-      ...typeof result.seed === "number" ? { seed: result.seed } : {},
-      status: rawPath ? "ok" : "error",
-      ...rawPath ? {} : { error: "出图没有返回图片。" },
-      durationMs: Date.now() - pageStartedAt
-    });
-    if (!rawPath) continue;
-    const panelCount = board.panelCount;
-    const pageType = board.pageType;
-    const expectedPanelCount = fixedPanels || void 0;
-    const renderedPanelCount = page.panels.length;
-    if (expectedPanelCount && renderedPanelCount !== expectedPanelCount) {
-      console.warn(
-        `[ST-Story-Illustrator] 第 ${page.pageIndex + 1} 页：用户要求 ${expectedPanelCount} 格，分镜计划只给了 ${renderedPanelCount} 格。整页一次出图的格数由模型遵循提示词，无法程序级保证。`
-      );
+    let rawPath = "";
+    let pageAssembled = false;
+    let usedPrompt = panelPrompts.join("\n---\n");
+    let usedNl = panelNls.join("\n");
+    if (!panelFailure && panelPaths.length === shots.length && panelPaths.length > 0) {
+      if (panelPaths.length === 1) {
+        rawPath = panelPaths[0];
+      } else {
+        const pageImage = await assemblePageBlob({ slots, images: panelPaths });
+        if (pageImage) {
+          const base64 = await blobToBase64(pageImage.blob);
+          const uploaded = await uploadImageBase64(base64, {
+            format: "png",
+            filename: `ST创作_漫画_${Date.now()}`
+          });
+          if (uploaded) {
+            rawPath = uploaded;
+            pageAssembled = true;
+          }
+        }
+        if (!rawPath) {
+          rawPath = panelPaths[0] ?? "";
+          recordNotice({
+            mode: "comic",
+            floor,
+            text: `第 ${page.pageIndex + 1} 页的整页合成没成功，先显示第一格。刷新后仍不对就把这条告诉我。`
+          });
+        }
+      }
+    }
+    if (!rawPath) {
       recordNotice({
         mode: "comic",
         floor,
-        text: `第 ${page.pageIndex + 1} 页分镜只规划了 ${renderedPanelCount} 格（你选的是 ${expectedPanelCount} 格）。这一页格数可能不对，可以在提示词面板改词后重画，或换更稳定的模型。`
+        text: `第 ${page.pageIndex + 1} 页逐格出图失败（${panelFailure || "没有返回图片"}），已退回整页一次性出图；这一页的格数不保证。`
+      });
+      try {
+        const whole = await baiBaiAdapter.generate(
+          {
+            prompt: fallbackPrompt,
+            ...fallbackNl ? { nl: fallbackNl } : {},
+            ...composed.characters.length ? { characters: composed.characters } : {},
+            ...characterName ? { character: characterName } : {},
+            size: "portrait",
+            save: true
+          },
+          pickProfile(deps.settings, "comic") ?? fallbackProfile("comic")
+        );
+        rawPath = whole.path ?? whole.dataUrl ?? "";
+        usedPrompt = fallbackPrompt;
+        usedNl = fallbackNl;
+        panelPaths.length = 0;
+        if (typeof whole.seed === "number") pageSeed = whole.seed;
+        recordImageLog({
+          mode: "comic",
+          floor,
+          source: "api",
+          plan: readOutConfig().activePlanName,
+          prompt: fallbackPrompt,
+          ...fallbackNl ? { nl: fallbackNl } : {},
+          size: "portrait",
+          status: rawPath ? "ok" : "error",
+          ...rawPath ? {} : { error: "整页兜底也没有返回图片。" },
+          durationMs: Date.now() - pageStartedAt
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        recordImageLog({
+          mode: "comic",
+          floor,
+          source: "api",
+          plan: readOutConfig().activePlanName,
+          prompt: fallbackPrompt,
+          ...fallbackNl ? { nl: fallbackNl } : {},
+          size: "portrait",
+          status: "error",
+          error: message,
+          durationMs: Date.now() - pageStartedAt
+        });
+        console.warn("[ST-Story-Illustrator] 漫画页整页兜底也失败：", message);
+      }
+    }
+    if (!rawPath) continue;
+    const panelCount = shots.length;
+    const pageType = board.pageType;
+    const expectedPanelCount = fixedPanels || void 0;
+    const renderedPanelCount = shots.length;
+    if (expectedPanelCount && renderedPanelCount !== expectedPanelCount) {
+      recordNotice({
+        mode: "comic",
+        floor,
+        text: `第 ${page.pageIndex + 1} 页分镜只规划了 ${renderedPanelCount} 格（你选的是 ${expectedPanelCount} 格）。这一页的格子已经按规划如实画出来了；要更多格就在提示词面板里重画这一页。`
       });
     }
     const artifact = {
@@ -11714,8 +12390,8 @@ async function runComic(task, ctx, deps) {
       ...inlineAnchor ? { textAnchor: inlineAnchor } : {},
       pageIndex: page.pageIndex,
       imagePath: rawPath,
-      prompt: finalPrompt,
-      ...finalNl ? { nl: finalNl } : {},
+      prompt: usedPrompt,
+      ...usedNl ? { nl: usedNl } : {},
       ...showComposite && dialogue.length ? { dialogue } : {},
       metadata: {
         // 重画要靠它还原「当时画的是谁」：没有角色块，重画一次就换人
@@ -11732,19 +12408,28 @@ async function runComic(task, ctx, deps) {
         boardLayout: board.layout,
         ...board.koma ? { boardKoma: board.koma } : {},
         panelTitles: composed.panelTitles,
+        // 逐格出图的证据链：每格原图、每格词、每格格位。
+        // 重排/重合成/复盘都靠它，不再依赖"当时模型画了几格"这种不可复现的信息。
+        ...panelPaths.length ? { panelImages: panelPaths } : {},
+        ...panelPrompts.length ? { panelPrompts } : {},
+        ...panelNls.length ? { panelNls } : {},
+        pageSlots: slots,
+        pageAssembled,
         // 新版面系统：把 LLM 的视觉方向 + 已校验几何随图存档。
-        // 显示层气泡与「版面设计」预览都以这份 slots 为真源，不再按 layout+count 猜格位。
         ...page.direction ? { direction: page.direction } : {},
         ...page.layoutPlan ? { layoutPlan: page.layoutPlan } : {},
         // 每格出场的人：显示层靠它把台词反查到正确的格（说话人证据 > 模型写的格号）
-        panelCast: page.panels.map((panel) => (panel.characters ?? []).map((c) => c.name).filter(Boolean)),
+        panelCast: shots.map((shot) => shot.cast),
         // 用户实际选择的版面三维（出图词就是按这三个生成的，供审计/重放）
         comicStyle,
         comicPanelCount,
         comicWhitespace,
+        // 台词来源：原文回填 / 选段没抽到台词时用模型稿
+        dialogueSource: dialogueResult.noSource ? "model" : "source",
+        ...dialogueResult.dropped ? { dialogueDropped: dialogueResult.dropped } : {},
         // 格数 QC：不相等时不允许把这页静默当成功
         ...expectedPanelCount !== void 0 ? { expectedPanelCount, renderedPanelCount, panelCountMatched: renderedPanelCount === expectedPanelCount } : {},
-        ...typeof result.seed === "number" ? { seed: result.seed } : {}
+        ...typeof pageSeed === "number" ? { seed: pageSeed } : {}
       },
       createdAt: Date.now()
     };

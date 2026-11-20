@@ -454,3 +454,53 @@ export function stillCurrent(chatId: string, floor: number, swipe: number, sendD
   if (currentSwipe !== swipe) return false;
   return true;
 }
+
+/**
+ * 把一张图（base64）存进 ST 的 user/images，返回可直接放进 <img src> 的路径。
+ *
+ * 逐格出图之后，整页是代码合成的：合成结果必须落盘，否则刷新就没了。
+ * 走 ST 自己的上传接口（/api/images/upload），不自己造文件路径——
+ * 这样备份、迁移、清理都跟 ST 的图片目录一致。
+ */
+export async function uploadImageBase64(
+  base64: string,
+  options: { format?: string; filename?: string } = {},
+): Promise<string | null> {
+  const raw = String(base64 ?? '');
+  if (!raw) return null;
+  const ctx = getContext();
+  let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  try {
+    const fn = (ctx as { getRequestHeaders?: () => Record<string, string> }).getRequestHeaders;
+    if (typeof fn === 'function') headers = fn();
+  } catch { /* 拿不到就用最小头，ST 允许同源无 CSRF 的部署 */ }
+
+  try {
+    const response = await fetch('/api/images/upload', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        image: raw.replace(/^data:[^,]*,/, ''),
+        format: options.format ?? 'png',
+        ...(options.filename ? { filename: options.filename } : {}),
+      }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as { path?: string };
+    return typeof data?.path === 'string' && data.path ? data.path : null;
+  } catch {
+    return null;
+  }
+}
+
+/** canvas / blob → base64（不含 data: 前缀）。 */
+export async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
