@@ -12,8 +12,10 @@
 
 import type { BaiBaiCharacter, ComicPagePlan, ComicPanelPlan } from '../types';
 import type { BbiTagCharacter } from '../baibai/bbiTag';
-import { characterPromptsFromLibrary, resolveCastNames } from './tagSplit';
+import { characterPromptsFromLibrary, ensurePageCast, resolveCastNames } from './tagSplit';
+import { declaredPeople } from './peopleCount';
 import { appendOutfit, outfitOf, resolveOutfits } from '../baibai/outfit';
+import type { CurrentOutfit } from '../baibai/outfit';
 import { reconcileHeadcount } from './boardPrompt';
 import { panelNlBody } from './pageCompose';
 import type { PageSlot } from './pageSlots';
@@ -44,6 +46,9 @@ const PAGE_COMPOSITION = [
 ];
 
 const PERSON = /^(?:\d+\s*(?:girl|boy|other)s?|\d+\s*people|couple|solo|multiple girls|multiple boys)$/i;
+
+/** 纯物件格 / 环境细节格：这一格本来就不该有人，不能拿页级阵容去填。 */
+const OBJECT_ONLY: ReadonlySet<string> = new Set(['object', 'environment_detail']);
 
 function bare(segment: string): string {
   return segment.replace(/^\s*[\d.]+::/, '').replace(/^\s*::/, '').replace(/::\s*$/, '').trim();
@@ -102,6 +107,48 @@ export interface PanelShot {
 export interface PanelShotOptions {
   nativeCharacters?: boolean;
   personaName?: string;
+  /** 用户划的那段原文：整页都没点名时，用它从正文里认人（与页级兜底同一套判据） */
+  selectedText?: string;
+}
+
+/** 剥掉整页 tag 里与定妆重复的服装段：衣服已经在角色块里，Base 再写一遍就是两套。 */
+function stripOutfitTags(
+  tags: readonly string[],
+  outfits: ReadonlyMap<string, CurrentOutfit>,
+): string[] {
+  if (!outfits.size) return [...tags];
+  const owned = new Set<string>();
+  for (const item of outfits.values()) {
+    for (const piece of item.outfit.split(',')) {
+      const key = bare(piece).toLowerCase();
+      if (key) owned.add(key);
+    }
+  }
+  return tags.filter(tag => !owned.has(bare(tag).toLowerCase()));
+}
+
+/**
+ * 整页没有一格点名时的页面级阵容（与页级出图 `composePagePrompt` 同一套判据）。
+ *
+ * 为什么必须有：模型经常只把「谁在格子里」写进 `subject`（中文）而漏掉
+ * `characters` 数组。页级出图有 `ensurePageCast` 兜底，逐格出图却没有——
+ * 一旦漏写，每一格都建不出角色块，正向词里只剩 page.tags 的场景与衣服，
+ * 柏宝绘的「角色（柏宝绘角色库）」整栏空着，NAI 只能自己编一张脸。
+ */
+export function resolvePageCast(
+  page: ComicPagePlan,
+  characters: readonly BaiBaiCharacter[],
+  options: PanelShotOptions = {},
+): string[] {
+  const looks = new Map<string, string>();
+  const picked = ensurePageCast(page, characters, options.selectedText ?? '', looks);
+  if (!picked.length) return [];
+  return resolveCastNames(picked, [...characters], {
+    ...(options.personaName ? { personaName: options.personaName } : {}),
+    declared: declaredPeople(String(page.tags ?? '')),
+    max: 3,
+    looks,
+  }).cast;
 }
 
 /**
@@ -121,6 +168,13 @@ export function buildPanelShots(
   const native = options.nativeCharacters !== false;
 
   const panels = page.panels ?? [];
+  // ★ 整页一格都没点名 = 模型漏写 characters（不是「这一页没人」）。
+  // 这种情况下每格都用页面级阵容兜底；纯物件格/环境细节格仍然留空。
+  const pageHasCast = panels.some(panel =>
+    (panel.characters ?? []).some(c => String(c.name ?? '').trim()),
+  );
+  const pageCast = pageHasCast ? [] : resolvePageCast(page, characters, options);
+
   return panels.map((panel, index) => {
     const slot = slots.find(s => s.panelIndex === index)
       ?? slots[Math.min(index, slots.length - 1)]
@@ -140,10 +194,13 @@ export function buildPanelShots(
       const act = String(c.act ?? '').trim();
       if (act) acts.set(name, [act]);
     }
-    const resolved = rawNames.length
-      ? resolveCastNames(rawNames, [...characters], {
+    const shotNames = rawNames.length
+      ? rawNames
+      : (OBJECT_ONLY.has(String(panel.composition ?? '')) ? [] : pageCast);
+    const resolved = shotNames.length
+      ? resolveCastNames(shotNames, [...characters], {
         ...(options.personaName ? { personaName: options.personaName } : {}),
-        declared: rawNames.length,
+        declared: shotNames.length,
         max: 3,
         looks,
         acts,
@@ -165,6 +222,9 @@ export function buildPanelShots(
     // 本格道具/动作词（模型给 panel.tags 时才用）
     const panelTags = cleanSceneTags(String(panel.tags ?? ''));
     const shot = String(panel.shot ?? '').trim();
+    // 服装已在角色块里：整页 tag 里再写一遍就是「同一套衣服说两次」，
+    // 两个角色时会糊成两套衣服交叉（模型偶尔会违反规则把服装写进 page.tags）。
+    const scene = dressed.length ? stripOutfitTags(pageScene, outfitMap) : pageScene;
 
     // 本格人数词：从角色库条目的 tag / fields.sex 取性别，而不是从角色块里扒。
     // 角色块由 fields 拼装（sex/hair/eyes/... 有字段时只输出字段），
@@ -195,7 +255,7 @@ export function buildPanelShots(
     }
     if (shot) push(shot);
     for (const tag of panelTags) push(tag);
-    for (const tag of pageScene) push(tag);
+    for (const tag of scene) push(tag);
 
     let prompt = segments.join(', ');
     // 没有原生角色块时，外貌与着装只能并进 Base（老后端兼容路径）

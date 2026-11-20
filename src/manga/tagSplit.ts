@@ -29,19 +29,42 @@ function looksEnglish(text: string): boolean {
   return /[A-Za-z]/.test(text) && !/[\u3040-\u30ff\u3400-\u9fff]/.test(text);
 }
 
-/** 角色库条目 → 一条 character tag（分字段优先，字段全空才用整串）。 */
+/** 角色库条目 → 一条 character tag（分字段 + 整串 tag 合并去重）。 */
 export function characterTagOf(entry: BaiBaiCharacter): string {
   const fields = entry.fields ?? {};
-  const order: Array<keyof typeof fields> = ['sex', 'hair', 'eyes', 'skin', 'body', 'extra', 'outfit'];
-  const parts = order
-    .map(key => String(fields[key] ?? '').trim())
-    .filter(Boolean);
+  /**
+   * 分字段与整串 `tag` 是**互补**的，绝不能二选一。
+   *
+   * 柏宝绘的公开 API 文档写得很清楚：`tag` 是「可直接拿去出图的完整 tag 串——
+   * 推荐直接用这个」，`fields` 是「要自己挑着用时才需要」的分字段版本。
+   * 所以顺序是：**整串 tag 在前，分字段补齐它缺的部分**（去重）。
+   *
+   * 以前是「有任一 fields 就只用 fields」，于是 `tag` 里那份完整外貌会被整条丢掉
+   * —— 用户实测的「角色块里只剩衣服、柏宝绘显示没带上任何外貌」就是这么来的。
+   */
+  const fieldOrder: Array<keyof typeof fields> = ['sex', 'hair', 'eyes', 'skin', 'body', 'extra'];
+  const sources = [
+    String(entry.tag ?? '').trim(),
+    ...fieldOrder.map(key => String(fields[key] ?? '').trim()),
+    String(fields.outfit ?? '').trim(),
+  ];
+
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  for (const source of sources) {
+    if (!source) continue;
+    for (const raw of source.split(',')) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const key = piece.toLowerCase().replace(/\s+/g, ' ');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(piece);
+    }
+  }
   if (parts.length) return parts.join(', ');
 
-  const raw = String(entry.tag ?? '').trim();
-  if (raw) return raw;
-
-  // 库里有条目但字段全空——这是最常见的情况（条目是柏宝书/手动加的，还没填外貌）。
+  // 库里有条目但字段与 tag 全空——这是最常见的情况（条目是柏宝书/手动加的，还没填外貌）。
   // 以前这里直接 return ''，等于把这个人从画面里删掉。现在回落到条目描述，
   // 只要是英文就还能当外貌用；中文描述留给模型自己翻（它看得到库块里的原文）。
   for (const candidate of [String(entry.desc ?? '').trim(), String(entry.nl ?? '').trim()]) {

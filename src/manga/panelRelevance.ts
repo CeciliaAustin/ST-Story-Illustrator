@@ -7,6 +7,7 @@
  */
 
 import type { ComicPagePlan, BaiBaiCharacter } from '../types';
+import { characterTagOf } from './tagSplit';
 
 /** 构图词族：只有这些词的 tag 串不构成画面内容。 */
 const PANEL_FAMILY = new Set([
@@ -68,7 +69,9 @@ export function mergeCharacterTags(
 
   const extra: string[] = [];
   for (const character of sources.slice(0, 2)) {
-    for (const raw of String(character.tag ?? '').split(',')) {
+    // 用 characterTagOf 而不是 raw `tag`：柏宝绘角色库大多是分字段填的
+    //（sex/hair/eyes/outfit），`tag` 整串常是空的——只看 tag 会把外貌整条漏掉。
+    for (const raw of characterTagOf(character).split(',')) {
       const piece = raw.trim();
       if (!piece) continue;
       const key = bareTag(piece);

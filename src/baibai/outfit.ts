@@ -53,6 +53,25 @@ export function outfitNameKey(name: string, personaName = ''): string {
   return clean;
 }
 
+/**
+ * 服装串里混进来的人数词一律剥掉。
+ *
+ * 模型写 `cast[].outfit` 时常把主语也带上（`1girl, white shearling coat, ...`），
+ * 拼进角色块后就是「角色块说自己 1girl、Base 也说自己 1girl」；若这条落到
+ * Base 的兜底路径，更会变成「1girl 后面跟着一整串衣服、另一个 1boy 跟在后面」——
+ * 用户看到的正向词就长这样，一个外貌都没有。
+ * 人数与性别由人数词负责，不属于服装。
+ */
+const PEOPLE_TAG = /^(?:\d+\s*(?:girl|boy|other)s?|\d+\s*people|couple|solo|multiple girls|multiple boys)$/i;
+
+function cleanOutfit(raw: string): string {
+  return String(raw ?? '')
+    .split(',')
+    .map(x => x.trim())
+    .filter(x => x && !PEOPLE_TAG.test(x))
+    .join(', ');
+}
+
 /** 从角色库取某人的固定着装（英文 tag；中文固定着装不进 NAI）。 */
 export function libraryOutfitOf(name: string, library: readonly BaiBaiCharacter[]): string {
   const key = normalizeName(name);
@@ -60,7 +79,7 @@ export function libraryOutfitOf(name: string, library: readonly BaiBaiCharacter[
     const n = normalizeName(c.name);
     return n === key || (key.length >= 2 && (n.includes(key) || key.includes(n)));
   });
-  const outfit = firstLine(hit?.fields?.outfit ?? '');
+  const outfit = cleanOutfit(firstLine(hit?.fields?.outfit ?? ''));
   return outfit && !HAS_CJK.test(outfit) ? outfit.slice(0, MAX_OUTFIT_CHARS) : '';
 }
 
@@ -74,7 +93,7 @@ export function resolveOutfits(raw: unknown, personaName = ''): Map<string, Curr
   if (!raw) return out;
   const push = (rawName: unknown, rawOutfit: unknown): void => {
     const name = firstLine(typeof rawName === 'string' ? rawName : '');
-    let outfit = firstLine(typeof rawOutfit === 'string' ? rawOutfit : '');
+    let outfit = cleanOutfit(firstLine(typeof rawOutfit === 'string' ? rawOutfit : ''));
     if (!name || !outfit || HAS_CJK.test(outfit)) return;
     if (outfit.length > MAX_OUTFIT_CHARS) outfit = outfit.slice(0, MAX_OUTFIT_CHARS);
     const key = outfitNameKey(name, personaName);
@@ -120,7 +139,7 @@ function bareTag(value: string): string {
  */
 export function appendOutfit(tag: string, outfit: string): string {
   const base = String(tag ?? '').trim();
-  const pieces = String(outfit ?? '')
+  const pieces = cleanOutfit(outfit)
     .split(',')
     .map(x => x.trim())
     .filter(Boolean);

@@ -46,6 +46,7 @@ import { hasStoryContent } from '../manga/panelRelevance';
 import { composePagePrompt, findCastShortfall, buildDeclarativePageNl } from '../manga/pageCompose';
 import { pageSlotsFor } from '../manga/pageSlots';
 import { buildPanelShots } from '../manga/panelShot';
+import { expandPanels } from '../manga/panelExpand';
 import { assemblePageBlob } from '../manga/pageAssemble';
 import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
 import {
@@ -498,6 +499,50 @@ async function runComic(
     }
   }
 
+  // 格数体检：「三格却只出一格」的第二个根因。
+  // 逐格出图时**格子数 = panels 的条数**，而 panels 是模型写的：它把三格写进
+  // 一个 subject，代码就只有一张图可出（实测 expectedPanelCount 3 / rendered 1，
+  // pageSlots 只剩一条）。规则里写着「必须正好 N 条」它也会漏，所以这里先重问一次。
+  const wantPanels = Math.max(1, boardPlan.panelCount);
+  const shortPage = plan.data.find(p => (p.panels ?? []).length < wantPanels);
+  if (shortPage) {
+    const got = (shortPage.panels ?? []).length;
+    console.warn(
+      `[ST-Story-Illustrator] 第 ${shortPage.pageIndex + 1} 页只排了 ${got} 格（应为 ${wantPanels} 格），重问一次分镜。`,
+    );
+    plan = await generateComicPlan({
+      scene: sceneFromSegment(segment),
+      characters: characters.characters,
+      ...comicBlocks,
+      options: {
+        ...planOptions,
+        extraInstruction:
+          `上一版第 ${shortPage.pageIndex + 1} 页的 panels 只有 ${got} 条，而这一页固定 ${wantPanels} 格。` +
+          `panels 必须正好 ${wantPanels} 条，一条就是一张图——把「谁在做什么」按镜头切面拆成 ${wantPanels} 个瞬间，` +
+          '每格写自己的 shot / subject / characters / nl，不要把三格内容塞进一条 subject。' +
+          '仍是同一时刻、同一地点、同一件事，只是镜头在不同位置（谁的脸、谁的手、哪个道具、空间关系）。',
+      },
+      caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
+      promptOverrides: deps.fullSettings.promptOverrides,
+    });
+    if (!plan.ok || !plan.data) throw new Error(plan.error ?? '分镜计划生成失败。');
+  }
+
+  // 重问过还少格：代码补齐（不编新事件，只把镜头推近）。
+  // 宁可三格里有两格是同一画面的不同景别，也不要用户要三格只拿到一格。
+  for (const page of plan.data) {
+    const before = (page.panels ?? []).length;
+    if (before >= wantPanels) continue;
+    page.panels = expandPanels(page, wantPanels);
+    recordNotice({
+      mode: 'comic',
+      floor,
+      text:
+        `第 ${page.pageIndex + 1} 页模型只排了 ${before} 格（这一页固定 ${wantPanels} 格），` +
+        `已按同一瞬间的镜头切面补到 ${wantPanels} 格。补出来的格是同一画面的推近，不是新剧情。`,
+    });
+  }
+
   // 整本漫画用同一套出图方案，只在开始前切一次
   await ensureModeOutPlan('comic', deps.fullSettings);
 
@@ -588,8 +633,24 @@ async function runComic(
     const slots = pageSlotsFor(board.layout, shotPage.panels.length, { whitespace: whitespaceIntent });
     const shots = buildPanelShots(shotPage, slots, characters.characters, {
       nativeCharacters: comicNativeCharacters,
+      selectedText: segment.text,
       ...(personaName ? { personaName } : {}),
     });
+
+    // 一页下来一个角色块都没有：正向词里就只剩 page.tags 的场景与衣服，
+    // 柏宝绘的「角色（柏宝绘角色库）」会是空的，脸全靠 NAI 自由发挥。
+    // 这不是能静默过去的降级——说出来，用户才知道该去补角色库还是换名字。
+    if (shots.length && shots.every(shot => shot.characters.length === 0)) {
+      recordNotice({
+        mode: 'comic',
+        floor,
+        text: characters.characters.length
+          ? `第 ${page.pageIndex + 1} 页没带上任何角色外貌：分镜里这一页的每一格都没点名到角色库里的条目，`
+            + '整页只有场景与服装。把这一页重画一次；仍这样就检查角色库的名字与分镜里写的人名是否一致。'
+          : `第 ${page.pageIndex + 1} 页没带上任何角色外貌：柏宝绘角色库是空的。`
+            + '先在柏宝绘里把角色存进角色库（或让柏宝书挂上），再重画这一页。',
+      });
+    }
 
     const panelPaths: string[] = [];
     const panelPrompts: string[] = [];

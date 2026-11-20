@@ -234,11 +234,23 @@ describe('panelNlBody：每格都要有可画的信息', () => {
 });
 
 describe('characterTagOf 仍然是单一来源', () => {
-  it('分字段优先', () => {
+  /**
+   * 柏宝绘文档：`tag` 是「可直接拿去出图的完整串」，`fields` 是分字段版。
+   * 所以整串在前，分字段补漏——既不会丢 tag 独有的内容，也不会把同一句写两遍。
+   */
+  it('完整串在前，分字段补它没有的项，重复不叠加', () => {
     expect(characterTagOf({
       name: 'x',
-      tag: 'raw',
-      fields: { sex: '1girl', hair: 'long black hair' },
-    } as BaiBaiCharacter)).toBe('1girl, long black hair');
+      tag: '1girl, long black hair',
+      fields: { sex: '1girl', hair: 'long black hair', eyes: 'red eyes' },
+    } as BaiBaiCharacter)).toBe('1girl, long black hair, red eyes');
+  });
+
+  it('tag 为空时完全靠分字段', () => {
+    expect(characterTagOf({
+      name: 'x',
+      tag: '',
+      fields: { sex: '1boy', hair: 'short silver white hair' },
+    } as BaiBaiCharacter)).toBe('1boy, short silver white hair');
   });
 });
