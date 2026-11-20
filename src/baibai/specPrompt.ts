@@ -19,6 +19,11 @@
  */
 
 import { getContext } from '../host/sillytavern';
+import {
+  BAIBAI_DEFAULT_JAILBREAK,
+  BAIBAI_DEFAULT_SPEC,
+  BAIBAI_DEFAULT_THINKING,
+} from './baiBaiDefaults';
 
 const SETTINGS_KEY = 'baibai_image';
 
@@ -54,6 +59,43 @@ export function parsePromptSet(raw: unknown): BaiBaiPromptSet {
     jailbreak: str(prompts.jailbreak),
     spec: str(prompts.naiV5Spec) || str(prompts.naiSpec),
     thinking: str(prompts.naiV5Thinking) || str(prompts.naiThinking),
+  };
+}
+
+/**
+ * 在用户值之上补柏宝绘的内置兜底（**这才是柏宝绘实际在跑的那三份**）。
+ *
+ * 柏宝绘设置页留空 ≠ 不写规则：它自己会回落到 DEFAULT_NAI_V5_SPEC /
+ * DEFAULT_NAI_V5_THINKING / DEFAULT_JAILBREAK_PROMPT（见柏宝绘 autoTag/prompt.ts 的
+ * `(options.prompts?.naiV5Spec ?? '').trim() || DEFAULT_NAI_V5_SPEC`）。
+ * 我们以前只读用户值，留空就整段不发 —— 于是"走柏宝绘的提示词和思维链"实际上从没发生过，
+ * 模型只看到我们自己那份紧凑协议：没有 Base / 角色块的分工硬边界，没有服装视觉指纹，
+ * 没有"库中字段逐字照抄"，人物自然每次都不一样。
+ *
+ * 这里逐字用柏宝绘的内置文本补齐，等价于柏宝绘自己那一趟。
+ */
+export function resolvePromptSet(raw: unknown): BaiBaiPromptSet {
+  const user = parsePromptSet(raw);
+  return {
+    jailbreak: user.jailbreak || BAIBAI_DEFAULT_JAILBREAK,
+    spec: user.spec || BAIBAI_DEFAULT_SPEC,
+    thinking: user.thinking || BAIBAI_DEFAULT_THINKING,
+  };
+}
+
+/** 本次是用户自定义的，还是回落到柏宝绘内置的那份？（给界面显示用） */
+export interface PromptSetSource {
+  jailbreak: 'user' | 'builtin';
+  spec: 'user' | 'builtin';
+  thinking: 'user' | 'builtin';
+}
+
+export function promptSetSource(raw: unknown): PromptSetSource {
+  const user = parsePromptSet(raw);
+  return {
+    jailbreak: user.jailbreak ? 'user' : 'builtin',
+    spec: user.spec ? 'user' : 'builtin',
+    thinking: user.thinking ? 'user' : 'builtin',
   };
 }
 
@@ -106,13 +148,21 @@ export function buildSpecPreamble(set: BaiBaiPromptSet, options: { nl: boolean }
   return `${body}\n\n${CONTRACT_PRIORITY}`;
 }
 
-/** 读当前柏宝绘设置里的提示词（每次现读，用户改了立刻生效）。 */
+/**
+ * 读当前柏宝绘设置里的提示词（每次现读，用户改了立刻生效）。
+ * 用户留空的格子由柏宝绘内置文本补齐 —— 与柏宝绘自己那一趟完全一致。
+ */
 export function readPromptSet(): BaiBaiPromptSet {
   const ctx = getContext();
-  return parsePromptSet(ctx.extensionSettings?.[SETTINGS_KEY]);
+  return resolvePromptSet(ctx.extensionSettings?.[SETTINGS_KEY]);
 }
 
-/** 直接拿到可前置的规范文本；用户没写就是空串。 */
+/** 本次是用户自定义的，还是回落到柏宝绘内置的那份？（给界面显示用） */
+export function readPromptSetSource(): PromptSetSource {
+  return promptSetSource(getContext().extensionSettings?.[SETTINGS_KEY]);
+}
+
+/** 直接拿到可前置的规范文本；用户没写就是柏宝绘内置那份。 */
 export function specPreambleFor(nl: boolean): string {
   return buildSpecPreamble(readPromptSet(), { nl });
 }

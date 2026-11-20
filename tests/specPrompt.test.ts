@@ -14,9 +14,16 @@ import {
   expandNlSections,
   parsePromptSet,
   readPromptSet,
+  readPromptSetSource,
+  resolvePromptSet,
   specPreambleFor,
   withSpecPreamble,
 } from '../src/baibai/specPrompt';
+import {
+  BAIBAI_DEFAULT_JAILBREAK,
+  BAIBAI_DEFAULT_SPEC,
+  BAIBAI_DEFAULT_THINKING,
+} from '../src/baibai/baiBaiDefaults';
 import { initSTEnvironment } from '../src/host/sillytavern';
 
 /** 柏宝绘那份设置的**内层**（parsePromptSet 收到的就是 extensionSettings['baibai_image']）。 */
@@ -108,7 +115,8 @@ describe('readPromptSet：真的从柏宝绘设置里读', () => {
 
   it('拼出来的前言能直接压在 system 前面', () => {
     const text = specPreambleFor(true);
-    expect(text.startsWith('# NOVELAI V5')).toBe(true);
+    // 破限词在最前（柏宝绘的顺序），规范紧随其后
+    expect(text.indexOf('# NOVELAI V5')).toBeGreaterThan(0);
     expect(text).toContain('本任务的输出信封');
   });
 
@@ -121,6 +129,39 @@ describe('readPromptSet：真的从柏宝绘设置里读', () => {
     expect(spec).toBeLessThan(contract);
     // 思维链必须在协议之后：它是「输出前检查清单」，离输出越近越生效
     expect(thinking).toBeGreaterThan(contract);
+  });
+});
+
+describe('resolvePromptSet：留空 = 柏宝绘内置那份（不是没有规则）', () => {
+  it('三格全空 → 用柏宝绘的三份内置文本', () => {
+    const set = resolvePromptSet({});
+    expect(set.spec).toBe(BAIBAI_DEFAULT_SPEC);
+    expect(set.thinking).toBe(BAIBAI_DEFAULT_THINKING);
+    expect(set.jailbreak).toBe(BAIBAI_DEFAULT_JAILBREAK);
+  });
+
+  it('用户填了就整份用用户的，不拼接', () => {
+    const set = resolvePromptSet(innerSettings({ naiV5Spec: '我的规范' }));
+    expect(set.spec).toBe('我的规范');
+    // 其余两格仍回落内置
+    expect(set.thinking).toBe(BAIBAI_DEFAULT_THINKING);
+  });
+
+  it('内置规范里带着 Base / 角色块的硬边界条款（这是人物画对的前提）', () => {
+    expect(BAIBAI_DEFAULT_SPEC).toContain('Do not put one character');
+    expect(BAIBAI_DEFAULT_THINKING).toContain('第二层｜逐张图槽位块');
+    expect(BAIBAI_DEFAULT_THINKING).toContain('Base 块与角色块的分工是硬边界');
+  });
+
+  it('界面能看出这一格是谁的文本', async () => {
+    (globalThis as unknown as Record<string, unknown>).getContext = () => ({
+      chat: [],
+      extensionSettings: rawSettings({ naiV5Thinking: '我的思维链' }),
+    });
+    await initSTEnvironment();
+    const src = readPromptSetSource();
+    expect(src.thinking).toBe('user');
+    expect(src.spec).toBe('builtin');
   });
 });
 

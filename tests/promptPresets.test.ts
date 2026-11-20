@@ -51,10 +51,11 @@ describe('内置提示词目录', () => {
 });
 
 describe('三套 theater 提示词', () => {
-  it('状态栏单格带 cast 与 characters 契约', () => {
+  it('状态栏单格走柏宝绘原文：只有 characters 契约，不再夹带自己的 cast 规则', () => {
     const { system } = buildTheaterPrompt({ kind: 'status', characterName: '甲', body: '正文', shots: 1 });
-    expect(system).toContain('"cast"');
     expect(system).toContain('"characters"');
+    // D 是柏宝绘内置 system 的逐字副本：它不要求 cast，服装由角色库/柏宝书提供。
+    expect(system).not.toContain('"cast"');
     expect(system).not.toContain('{{');
   });
 
@@ -68,13 +69,13 @@ describe('三套 theater 提示词', () => {
     const safe = buildTheaterPrompt({
       kind: 'manga', characterName: '甲', body: '正文', shots: 1, mangaSafe: true, dialogue: true,
     }).system;
-    expect(safe).toContain('必须能公开发布');
+    expect(safe).toContain('能公开发布');
     expect(safe).toContain('"lines"');
 
     const unsafe = buildTheaterPrompt({
       kind: 'manga', characterName: '甲', body: '正文', shots: 1, mangaSafe: false, dialogue: false,
     }).system;
-    expect(unsafe).not.toContain('必须能公开发布');
+    expect(unsafe).not.toContain('能公开发布');
     expect(unsafe).not.toContain('"lines"');
   });
 

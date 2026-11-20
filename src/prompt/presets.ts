@@ -20,6 +20,14 @@
  */
 
 import { renderCompact, renderTemplate } from './template';
+import {
+  STATUS_SINGLE,
+  STATUS_MANY,
+  BONUS_SINGLE,
+  BONUS_MANY,
+  MANGA_SINGLE,
+  MANGA_MANY,
+} from './theaterDocs';
 
 export type PromptDocId = 'illustration' | 'comic' | 'status' | 'bonus' | 'manga';
 export type PromptVariant = 'single' | 'many';
@@ -134,68 +142,6 @@ const COMIC = `你是一位漫画分镜编辑。你要输出的是**一页漫画
 
 【输出约束】最多 {{maxPages}} 页；每页只取选段里一个连续瞬间，不连续的内容拆到不同页。{{#dialogue}}dialogue 只写这一瞬间里真的说过的话，按原文顺序，可只留一两句关键的、允许某格没有台词；宁可少写也不要编对白或拼凑相隔很远的台词。{{/dialogue}}{{^dialogue}}本次不要输出 dialogue 字段。{{/dialogue}}
 {{#noChinese}}除台词外的辅助中文一律不要输出。{{/noChinese}}`;
-
-const STATUS_SINGLE = `读一段角色扮演正文，把「这一楼最要紧的那一个画面」翻成一张插画，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，这一楼发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}}
-tags 里写互动词（couple / kiss / hug）与人数（1boy, 1girl 等）。
-${COMMON_RULES}
-景别只写 close-up / upper body / medium shot 里的一个（卡片是偏半身的构图，不要写 full body 或 wide shot）。
-没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。`;
-
-const STATUS_MANY = `读一段角色扮演正文，把这一楼发生的事挑成 {{count}} 个先后画面，像一条小分镜，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，这一楼讲了一件什么事",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}}]}
-panels 按正文的时间顺序排列：第一格是这一楼的开头，最后一格是落点。
-每一格必须是不同的瞬间：换动作、换位置、换张力。不许重复或拆格凑数；没那么多就少给几格（至少 1 格）。
-${COMMON_RULES}
-每格景别只写 close-up / upper body / medium shot 里的一个，相邻两格不要一样（卡片是偏半身构图，不要写 full body 或 wide shot）。
-没有角色出场时输出 {"title":"","cast":[],"panels":[]}。`;
-
-const BONUS_LINES = '"lines":[{"speaker":"说话角色名（照抄正文里的叫法）；旁白写「旁白」","text":"中文，20 字以内"}]';
-
-const BONUS_SINGLE = `读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag"{{#nl}},"nl":"English, 1-2 sentences"{{/nl}},${BONUS_LINES}}
-题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。
-每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。
-每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。只画一个画面。
-彩蛋不是正文的延续：不要接着正文里刚发生的事画。
-${COMMON_RULES}
-${SPEECH_ROOM_RULE}`;
-
-const BONUS_MANY = `读一段角色扮演正文，忘掉它的剧情，只为其中的角色设计一个「平行宇宙彩蛋」：一段与正文剧情无关的架空小片段，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，以「彩蛋：」开头",${CAST_SCHEMA},"characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag"{{#nl}},"nl":"English, 1-2 sentences"{{/nl}},${BONUS_LINES},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名","act":"English danbooru phrases: what THIS character is doing"}],"mood":"中文，6 字以内","tags":"10-16 个英文 danbooru 短 tag"{{#nl}},"nl":"English, 1-2 sentences"{{/nl}},"lines":[{"speaker":"说话角色名；旁白写「旁白」","text":"中文，20 字以内"}]}]}
-题材、场景、基调完全自由发挥：温馨日常、热血战斗、悬疑惊悚、虐心催泪、史诗冒险、荒诞搞笑都可以。唯一硬要求：角色必须是正文里的那几位，性格照旧。
-每次都换花样：别落在咖啡店、甜品店这类用滥的套路里。
-每格给 2~4 条 lines（对话/旁白），短句符合口吻；旁白 speaker 写「旁白」。把彩蛋拆成最多 {{count}} 个先后画面（panels），按时间顺序，每格不同瞬间。
-彩蛋不是正文的延续：不要接着正文里刚发生的事画。
-${COMMON_RULES}
-${SPEECH_ROOM_RULE}`;
-
-const MANGA_BASE_RULES =
-  '禁止写：黑白、网点、screentone、画风、角色外貌；也禁止 big head / chibi / super deformed 比例词（正常比例）。\n'
-  + '禁止写 speech bubble / text / dialogue / caption / comic panel border —— 画面里不许出现任何文字、气泡或分格线。';
-
-const MANGA_SINGLE = `读一段角色扮演正文，把「这一楼最有画面的那一个瞬间」画成一格黑白漫画，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内，这一格发生了什么",${CAST_SCHEMA},"characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}{{#dialogue}},${BONUS_LINES}{{/dialogue}}}
-${COMMON_RULES}
-tags 里必须有一个景别，从这几类挑最合适的：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot / medium shot / from above / from below / from side / dutch angle。按内容挑，多格时相邻两格景别不同。
-**这一格必须画出正文里那个具体动作发生的场面**：谁、在哪里、正在做什么。除景别与表情外，至少要有一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall / kneeling on the floor）和一条地点 tag（bedroom / classroom / street / outdoors …）。只有外貌、人数、表情的图会变成一张与剧情无关的头像。
-${MANGA_BASE_RULES}
-{{#dialogue}}每格给 1~3 条 lines：台词用中文短句、符合角色口吻，必须是正文里真的说过、或那一刻自然会说的话；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。
-${SPEECH_ROOM_RULE}{{/dialogue}}
-{{#safe}}这一格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写、走光。挑能放到台面上的瞬间，用表情、留白、构图表达张力。tags 与 act 里不许出现 nude / nipples / underwear / sex 这类词。{{/safe}}
-没有角色出场时输出 {"title":"","cast":[],"characters":[],"mood":"","tags":"","nl":""}。`;
-
-const MANGA_MANY = `读一段角色扮演正文，把这一楼发生的事挑成最多 {{count}} 个先后画面，像一页黑白漫画的分格，只输出一个 JSON 对象。
-格式：{"title":"中文，14 字以内",${CAST_SCHEMA},"panels":[{"title":"中文，14 字以内，这一格发生了什么","characters":[{"name":"出场角色名（照抄正文里的叫法）","act":"English danbooru phrases: what THIS character is doing this frame"}],"mood":"中文，6 字以内","tags":"10-20 个英文 danbooru 短 tag，逗号分隔"{{#nl}},"nl":"English, 1-2 sentences describing this frame"{{/nl}}{{#dialogue}},${BONUS_LINES}{{/dialogue}}}]}
-panels 按时间顺序排列；每一格必须是不同的瞬间（换动作、位置、张力），不许重复或拆格凑数，没那么多就少给几格。
-${COMMON_RULES}
-tags 里必须有一个景别：extreme close-up / close-up / upper body / cowboy shot / full body / wide shot 等；相邻两格景别不同。
-**每一格都要画出正文里那一刻的场面**：谁、在哪里、正在做什么。除景别与表情外，每格至少一条「与场景互动的动作」tag（sitting on the bed / holding an umbrella / leaning against the wall）和一条地点 tag。只写外貌与人数的图会变成一页与剧情无关的头像。
-${MANGA_BASE_RULES}
-{{#dialogue}}每格给 1~3 条 lines：中文短句、符合角色口吻，按时间顺序连起来要能读懂这一楼发生了什么；旁白的 speaker 写「旁白」。台词由本地画成气泡叠在图上，**绝对不要写进 tags 或 nl**。
-${SPEECH_ROOM_RULE}{{/dialogue}}
-{{#safe}}每格必须能公开发布：衣着完整，不画裸露、性行为、内衣特写；用表情、留白、构图表达张力，tags 与 act 里不许出现 NSFW 词。{{/safe}}
-没有角色出场时输出 {"title":"","cast":[],"panels":[]}。`;
 
 export const PROMPT_DOCS: readonly PromptDoc[] = [
   {

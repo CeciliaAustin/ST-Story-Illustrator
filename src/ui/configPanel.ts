@@ -13,7 +13,7 @@ import {
   moneySavingHint,
   type OutConfigSnapshot,
 } from '../baibai/planConfig';
-import { readPromptSet } from '../baibai/specPrompt';
+import { readPromptSet, readPromptSetSource } from '../baibai/specPrompt';
 import { switchBaiBaiPlan } from '../baibai/planSwitch';
 import {
   listSharedChannelInfos,
@@ -761,17 +761,21 @@ function renderComicSettings(): HTMLElement {
  */
 function renderPromptSource(): HTMLElement {
   const set = readPromptSet();
+  const src = readPromptSetSource();
   const block = section(
     '读剧情用的提示词',
     '柏宝绘 → 设置 →「自定义提示词」里的 NAI 规范与思维链，会被一并压进我们读剧情的请求'
-    + '（和柏宝绘自己出图时一样）。留空就用插件自带的精简规则。',
+    + '（和柏宝绘自己出图时一样）。留空不是没有规则：柏宝绘会用它内置的那一份，我们也照用同一份——'
+    + '这样两边画同一个角色才会是同一张脸。',
   );
   const box = document.createElement('div');
   box.className = 'sti-config-eplist';
+  const label = (kind: 'user' | 'builtin', len: number) =>
+    kind === 'user' ? `你的自定义 · ${len} 字` : `柏宝绘内置 · ${len} 字`;
   const rows: Array<[string, string]> = [
-    ['NAI 规范', set.spec ? `已接入 · ${set.spec.length} 字` : '未填写 · 用插件内置精简规则'],
-    ['思维链', set.thinking ? `已接入 · ${set.thinking.length} 字` : '未填写'],
-    ['破限词', set.jailbreak ? `已接入 · ${set.jailbreak.length} 字` : '未填写'],
+    ['NAI 规范', label(src.spec, set.spec.length)],
+    ['思维链', label(src.thinking, set.thinking.length)],
+    ['破限词', label(src.jailbreak, set.jailbreak.length)],
   ];
   for (const [label, value] of rows) {
     const row = document.createElement('div');
