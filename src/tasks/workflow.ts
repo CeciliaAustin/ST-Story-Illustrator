@@ -16,6 +16,7 @@ import type {
   VisualProfile,
   BaiBaiCharacter,
   ComicPagePlan,
+  PanelLayout,
   BbiStatusInfo,
   StoryIllustratorSettings,
 } from '../types';
@@ -36,11 +37,12 @@ import { buildLibraryBlock, buildCastBlock, readCastContext } from '../theater/l
 import { splitSegments, characterPromptsFromLibrary } from '../manga/tagSplit';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { resolvePanelsPerPage } from '../manga/panelPlan';
-import { resolveLayoutStyle, resolvePanelCount } from '../manga/layoutStyle';
-import { buildStyleGeneration, stripLegacyLayoutTags } from '../manga/stylePrompt';
+import { resolveLayoutStyle, resolvePanelCount, resolveWhitespaceIntent } from '../manga/layoutStyle';
+import { buildBoardGeneration } from '../manga/stylePrompt';
+import { enforcePanelPrompt } from '../manga/boardPrompt';
 import { resolveSourceDialogue, reconcileDialogueWithSource } from '../manga/sourceDialogue';
 import { hasStoryContent } from '../manga/panelRelevance';
-import { composePagePrompt, findCastShortfall, panelNlContentOnly } from '../manga/pageCompose';
+import { composePagePrompt, findCastShortfall, buildBoardNl } from '../manga/pageCompose';
 import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
 import {
   buildManwaTag,
@@ -350,6 +352,8 @@ async function runComic(
   const comicStyle = resolveLayoutStyle(modeSettings);
   const comicPanelCount = resolvePanelCount(modeSettings);
   const comicWhitespace = modeSettings.comicWhitespace ?? 'auto';
+  // 留白偏好归一成具体意图（auto 时按风格默认）——版面判定要用它区分 inset / unframed
+  const whitespaceIntent = resolveWhitespaceIntent(comicWhitespace, comicStyle);
   // 固定格数取新字段；旧字段只做兼容兜底（UI 现在两个都写）
   const fixedPanels = comicPanelCount === 'auto' ? 0 : comicPanelCount;
   // 台词 100% 原文：从用户选段里逐字抽出候选句，出图后按引用回填，LLM 不得改写
@@ -387,10 +391,18 @@ async function runComic(
     ...(comicCast ? { castBlock: comicCast } : {}),
   };
 
+  // 版面先落成柏宝绘四档：规划层与出图层必须用同一个答案。
+  // 否则 LLM 按 auto 自由排（可能给 4 格），出图却是 inset 三格——图与计划必然对不上。
+  const boardPlan = buildBoardGeneration({
+    style: comicStyle,
+    panelCount: comicPanelCount,
+    whitespace: comicWhitespace,
+  });
+
   const planOptions = {
     panelMode: true,
-    panelLayout: layout,
-    pageType: modeSettings.comicPageType ?? 'auto',
+    panelLayout: boardPlan.layout,
+    pageType: boardPlan.pageType,
     // 漫画页必须有对白：这是它区别于「一张插画」的一半信息量
     dialogue: true,
     dialoguePolicy,
@@ -403,7 +415,9 @@ async function runComic(
     charPrompts: comicNativeCharacters,
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
-    panelsPerPage: fixedPanels || resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
+    // 格数以版面解析结果为准：inset/unframed 最多三格、regular 由 koma 定，
+    // 让模型按"这一档真的能画几格"来排，而不是按用户填的数字硬塞。
+    panelsPerPage: boardPlan.panelCount,
     // 新版面系统三维度（老设置经 adapter 迁移而来，不覆盖用户偏好）
     layoutStyle: comicStyle,
     layoutPanelCount: comicPanelCount,
@@ -500,10 +514,6 @@ async function runComic(
   // 整本漫画用同一套出图方案，只在开始前切一次
   await ensureModeOutPlan('comic', deps.fullSettings);
 
-  // 用户钉死的档位优先：自动档才让每页自己的 layout 说了算。
-  // （模型偶尔会无视规则写别的档，硬钉是唯一可靠的做法）
-  const pinnedLayout = layout === 'auto' ? undefined : layout;
-
   // 划线锚点：**每页都挂在同一处**，多页自然按顺序叠在选段后面
   const mesTextEl = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
   const inlineAnchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : undefined;
@@ -527,34 +537,42 @@ async function runComic(
   // 的正文卡片负责，插在划线处。两条链路从此各走各的，谁也不会顶掉谁。
   for (const page of plan.data) {
     if (ctx.signal.aborted) return;
-    const pageLayout = pinnedLayout ?? page.layout;
     ctx.report({ stage: 'generating', page: page.pageIndex + 1, totalPages });
 
-    // 钉死档位时，连 nl 的版面句也按钉死的那一档生成：
-    // 否则 nl 说「白底特写」、tag 却是 2koma，模型只能二选一，图必然拧巴。
-    const pageForCompose: ComicPagePlan = { ...page, layout: pageLayout };
+    // 版面（柏宝绘四档）在规划前就算好了，规划层与出图层共用同一个答案。
+    // 构图词由这一档决定：hero_insets + 大面积留白 → inset（白底居中 + 四周留白 + 特写格），
+    // 它的词表里**没有 koma**，所以"三条等宽横带"在结构上不可能再出现。
+    const board = boardPlan;
+    if (board.note) recordNotice({ mode: 'comic', floor, text: board.note });
+
+    const pageForCompose: ComicPagePlan = { ...page, layout: board.layout as PanelLayout };
     const composed = composePagePrompt(pageForCompose, characters.characters, {
       nativeCharacters: comicNativeCharacters,
       selectedText: segment.text,
       ...(personaName ? { personaName } : {}),
     });
 
-    // ★ 新版面系统真正驱动出图词：
-    // 用户选的风格/格数/留白直接产出构图 tag + 版面 NL，不再经旧四档词表。
-    // 先剥掉模型写进 page.tags 的旧构图词（split screen / 无条件 koma / white background），
-    // 只保留「画面内容」tag；再由 buildStyleGeneration 注入与新选择一致的词。
-    // 实测 A/B/C 的错词（3koma+split screen、one-or-two）就是在这一步被替换掉的。
-    const styleGen = buildStyleGeneration({
-      style: comicStyle,
-      panelCount: comicPanelCount,
-      whitespace: comicWhitespace,
-    });
-    const contentTags = stripLegacyLayoutTags(composed.prompt);
-    const finalPrompt = [...styleGen.tags, contentTags].filter(Boolean).join(', ');
-    // nl 只用「各格画面内容」+ 新风格骨架句；旧档的首句/留白句不再拼进来
-    const panelContent = panelNlContentOnly(pageForCompose);
+    // 发送侧确定性纠偏：删掉模型写进去的冲突分格词（3koma / split screen / 空 tag），
+    // 把这一档必需的构图词（带权重）补到最前面，白底档再清一遍场景词。
+    // 模型写不写对不重要——发出去的那一串一定是干净的。
+    const enforced = enforcePanelPrompt(
+      composed.prompt,
+      board.layout,
+      board.koma ? { koma: board.koma } : {},
+    );
+    const finalPrompt = enforced.prompt;
+    // nl 的第一句由代码按档 + 页型写死（原版措辞），后面接各格画面内容 + 连续性收束。
     const finalNl = wantComicNl
-      ? `${styleGen.nl}${panelContent ? ` ${panelContent}` : ''}`
+      ? buildBoardNl(
+        {
+          layout: board.layout,
+          pageType: board.pageType,
+          panelCount: board.panelCount,
+          whitespace: whitespaceIntent,
+          ...(board.diagonal ? { diagonal: true } : {}),
+        },
+        pageForCompose,
+      )
       : '';
     // 台词 100% 原文：把 LLM 引用（sourceIndex / 逐字命中）回填成选段里的原字，
     // 匹配不上的一律丢弃——宁可这一页少一句气泡，也不许模型改写原文。
@@ -614,9 +632,10 @@ async function runComic(
     // 图库不再多出「ST创作_带字」烧录副本；改台词 / 挪气泡 / 换形态都在显示层做，
     // 不用重出图。台词与当时的版面元数据一起存进 artifact，显示层按它重放——
     // 合成失败就显示无字原图，绝不升级成生成失败。
-    // 格数元数据优先用用户钉死的新格数；否则跟随本页 panels。
-    const panelCount = fixedPanels || page.panels.length;
-    const pageType = modeSettings.comicPageType ?? 'auto';
+    // 格数/页型元数据以 **这一页实际下发的版面** 为准（board 是出图词的唯一真源），
+    // 不再用设置里的旧字段——否则显示层按一套数、图里是另一套。
+    const panelCount = board.panelCount;
+    const pageType = board.pageType;
     // 固定格数 QC：LLM 给的实际格数与用户要求不一致就记下来（记日志不静默吞）
     const expectedPanelCount = fixedPanels || undefined;
     const renderedPanelCount = page.panels.length;
@@ -657,9 +676,12 @@ async function runComic(
         ...(characterName ? { characterName } : {}),
         pageTitle: page.title,
         // 版面元数据：显示层合成气泡要按「当时下发的格位」排，不能按今天的设置猜
-        layout: pageLayout,
+        layout: board.layout,
         pageType,
         panelCount,
+        // 柏宝绘四档 + 等分格数：重画/审计要看得出这一页当时走的是哪一档
+        boardLayout: board.layout,
+        ...(board.koma ? { boardKoma: board.koma } : {}),
         panelTitles: composed.panelTitles,
         // 新版面系统：把 LLM 的视觉方向 + 已校验几何随图存档。
         // 显示层气泡与「版面设计」预览都以这份 slots 为真源，不再按 layout+count 猜格位。

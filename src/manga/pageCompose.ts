@@ -12,17 +12,26 @@ import { characterPromptsFromLibrary, ensurePageCast, resolveCastNames } from '.
 import { declaredPeople } from './peopleCount';
 import { appendOutfit, outfitOf, resolveOutfits } from '../baibai/outfit';
 import type { BbiTagCharacter } from '../baibai/bbiTag';
+import {
+  boardAreaLeads,
+  boardNlHead,
+  reconcileHeadcount,
+  UNFRAMED_CLOSER,
+  type BoardLayout,
+  type BoardPageType,
+} from './boardPrompt';
 
-/** 四档版面的总述句（与 enforcePanelPrompt 的档位同义，供 nl 兜底用）。 */
+/** 四档版面的总述句（与 boardPrompt 的档位同义，供旧路径兜底用）。 */
 export const LAYOUT_NL_HEAD: Record<PanelLayout, string> = {
   regular:
     'A two-panel comic page: one canvas split horizontally by a thin black border, read from top to bottom.',
   irregular:
     'An irregular comic page: unequally sized panels separated by thin black gutters, read from top to bottom.',
+  // 白底档的留白是"四周大量留白"，不是 narrow margins——写反了模型就把人物撑满整页
   inset:
-    'A manga page on a white background: an unframed character illustration in the center with narrow white margins, plus one or two small close-up panels with thin black borders.',
+    'A manga page on a white background: a single unframed character illustration in the center with generous empty white space around it, plus small close-up panels with thin black borders.',
   unframed:
-    'A manga page on a white background: the main unframed illustration fills the page with narrow white margins, plus narrow close-up panels with thin black borders.',
+    'A manga page on a white background: the main unframed illustration fills the page, plus narrow close-up panels with thin black borders.',
 };
 
 /**
@@ -144,8 +153,13 @@ export function buildPageNl(page: ComicPagePlan): string {
  * 若沿用 buildPageNl，旧档的 "one or two small panels" / "narrow margins"
  * 会和新骨架句并存、互相打架——这正是实测 B/C 只出一格的词层根因之一。
  */
-export function panelNlContentOnly(page: ComicPagePlan): string {
-  const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
+export function panelNlContentOnly(
+  page: ComicPagePlan,
+  board?: { layout: BoardLayout; pageType: BoardPageType; panelCount: number },
+): string {
+  const leads = board
+    ? boardAreaLeads(board.layout, board.pageType, page.panels?.length || board.panelCount)
+    : (AREA_LEAD[page.layout] ?? AREA_LEAD.regular);
   const parts: string[] = [];
   page.panels?.forEach((panel, index) => {
     const body = panelNlBody(panel);
@@ -154,6 +168,32 @@ export function panelNlContentOnly(page: ComicPagePlan): string {
     parts.push(lead.endsWith('shows') ? `${lead} ${body}` : `${lead}, ${body}`);
   });
   return parts.join(' ');
+}
+
+/** 一页必须是「同一个连续瞬间」：这是本插件与"拼盘式多格"的分界线。 */
+export const CONTINUOUS_INSTANT_NOTE =
+  'All panels capture the same continuous instant from different camera angles and shot distances.';
+
+/**
+ * 整页 nl：版面首句（代码定，柏宝绘原版措辞）+ 各格画面内容 + 连续性收束。
+ *
+ * 出图链路的唯一入口——版面完全由 board 决定，模型只负责"每一格画什么"。
+ * 这样"选了主图+特写却出来三条横带"在结构上就不可能发生：
+ * 该档的构图词里根本没有 koma。
+ */
+export function buildBoardNl(
+  board: { layout: BoardLayout; pageType: BoardPageType; panelCount: number; whitespace?: 'compact' | 'balanced' | 'airy' | 'dramatic'; diagonal?: boolean },
+  page: ComicPagePlan,
+): string {
+  const head = boardNlHead({
+    layout: board.layout,
+    pageType: board.pageType,
+    panelCount: page.panels?.length || board.panelCount,
+    ...(board.whitespace ? { whitespace: board.whitespace } : {}),
+    ...(board.diagonal ? { diagonal: true } : {}),
+  });
+  const body = panelNlContentOnly(page, board);
+  return [head, body, CONTINUOUS_INSTANT_NOTE].filter(Boolean).join(' ');
 }
 
 /** 整页台词：页级优先，没有就从各格合并（上限 4 条由解析层保证）。 */
@@ -342,7 +382,13 @@ export function composePagePrompt(
     : [...outfitMap.values()].map(item => item.outfit);
   const bareBase = merged.toLowerCase().replace(/\s+/g, ' ');
   const extraTags = fallbackOutfits.filter(o => !bareBase.includes(o.toLowerCase()));
-  const prompt = extraTags.length ? `${merged}, ${extraTags.join(', ')}` : merged;
+  const withOutfits = extraTags.length ? `${merged}, ${extraTags.join(', ')}` : merged;
+  // ★ 人数词纠偏：人数词是模型写的，它经常把性别数错（实测：1boy + 1girl 写成 2girls）。
+  // 角色块是确定信息（每个人自己带 1girl / 1boy），以它为准重算 Base 的人数词。
+  // 没有角色块时不动——那时候人数词是唯一线索。
+  const prompt = dressed.length
+    ? reconcileHeadcount(withOutfits, dressed.map(block => block.tag))
+    : withOutfits;
   // 各格 nl 是分镜的全部信息量（哪一格是什么镜头、谁在哪里、留白在哪）：
   // 只要有一格真的写了 nl / shot / subject，就用「按格拼出来的」，
   // 而不是模型那句笼统的 page.nl（它经常只是版面首句的复述）。

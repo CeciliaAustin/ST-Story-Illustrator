@@ -1,191 +1,157 @@
 /**
- * ST-Story-Illustrator — 新风格 → 出图词（确定性，纯函数）
+ * ST-Story-Illustrator — 风格 / 格数 / 留白 → 柏宝绘四档版面（纯函数）
  *
- * 为什么需要这一层：
- * 版面系统有「新风格（comicStyle）/格数（comicPanelCount）/留白（comicWhitespace）」
- * 三个独立维度，但旧出图链路把它们经 layoutStyleToLegacy 拍回旧四档，再取
- * PANEL_TAGS_BY_LAYOUT 的词表。结果是：
- * - 用户选「开放拼版」→ 旧档 irregular → 注入 `1.5::split screen::`（把不等大拼版
- *   压成竖切屏）—— 这正是实测 A；
- * - 用户选「主图+特写固定三格」→ 旧档 inset → NL 写「one or two small panels」
- *   + tag 里没有数字 → 模型只画一格 —— 实测 B/C；
- * - 无条件 `3koma / multiple views / white background` 与留白要求互相打架。
+ * UI 的三个维度（风格、格数、留白）是"用户想要什么"，柏宝绘原版只有四档
+ * （regular / irregular / inset / unframed）是"NAI 真的画得出来什么"。
+ * 这一层就是两者之间唯一的映射点——**不造词、不改权重**，只用原版验证过的构图词。
  *
- * 这一层让「用户选了什么」直接决定「发给图像 API 的词」，只做三件事：
- * 1. 按风格挑一组不冲突的构图词；
- * 2. 用户钉死格数时，用明确的英文数字句表达 N 个独立 panel（不是靠 koma 猜）；
- * 3. 把留白意图写成几何描述，而不是让模型自由发挥。
- *
- * 纯函数：不读 DOM、不发请求，可直接单测。旧的 panelEnforce 逻辑保持不动，
- * 由调用方（workflow）决定走新链路还是旧链路——老 artifact 的重画不受影响。
+ * 关键纪律（来自实测与文档坑清单）：
+ * - `3koma`/`4koma` 是"等分 N 格"的语义，**只有 classic_grid 能用**。
+ *   在"主图+特写"上写它，NAI 会画成 N 条等宽横带（用户实测的截图就是这个）。
+ * - "主图+特写"对应两档：
+ *   · 要**大量留白** → inset（白底 + 居中主图 + 四周留白 + 带框特写格）；
+ *   · 要**铺满** → unframed（白底 + 主画铺到页底 + 特写格，白边窄）。
+ *   两档的留白要求正好相反，选错就一边是"空得离谱"、一边是"挤成一团"。
+ * - 格数不成立时降级并说明，不硬凑（inset 最多 1 主 + 2 特写 = 3 格）。
  */
 
-import type {
-  ComicLayoutStyle,
-  ComicPanelCount,
-  ComicWhitespacePreference,
-  ComicWhitespaceIntent,
-} from '../types';
-import { defaultWhitespaceForStyle, normalizeLayoutStyle, normalizePanelCount } from './layoutStyle';
+import type { ComicLayoutStyle, ComicPanelCount, ComicWhitespacePreference } from '../types';
+import { normalizeLayoutStyle, normalizePanelCount, resolveWhitespaceIntent } from './layoutStyle';
+import {
+  boardNlHead,
+  PANEL_TAGS_BY_LAYOUT,
+  regularKomaTag,
+  type BoardLayout,
+  type BoardPageType,
+} from './boardPrompt';
 
-/** 归一化留白偏好 → 具体意图（auto 时按风格默认）。 */
-export function resolveWhitespaceIntent(
-  pref: ComicWhitespacePreference | undefined,
-  style: ComicLayoutStyle,
-): ComicWhitespaceIntent {
-  return pref && pref !== 'auto' ? pref : defaultWhitespaceForStyle(style);
+export interface BoardResolution {
+  layout: BoardLayout;
+  pageType: BoardPageType;
+  /** regular 档的等分格数（其他档由 nl 表达，不用 koma 词） */
+  koma?: 2 | 3 | 4;
+  /** 这一页实际几格 */
+  panelCount: number;
+  /** 斜切风格：没有专属档，靠 nl 补一句 */
+  diagonal?: boolean;
+  /** 与用户所选格数不一致时的可读说明（写进运行提示，不静默） */
+  note?: string;
 }
 
-/**
- * 每种风格的构图 tag —— 只放「真正需要、且不与其他词冲突」的少量词。
- * 关键纪律（任务书 §6.3）：
- * - 不放 split screen（会把开放拼版压成竖切屏）；
- * - 不放无条件 multiple views / 3koma（不是几何约束，还会和白底档打架）；
- * - 不放 white background 当布局（它会盖掉留白几何）；
- * - 固定格数的数字句由 buildPanelCountTag 单独给，不混在里面。
- */
-const STYLE_TAGS: Record<ComicLayoutStyle, readonly string[]> = {
-  classic_grid: ['comic page layout', 'panel layout'],
-  open_montage: ['comic page layout', 'asymmetric layout'],
-  diagonal_panels: ['comic page layout', 'dynamic diagonal composition'],
-  hero_insets: ['comic page layout'],
-  freeform: ['comic page layout'],
-};
-
-/**
- * 固定格数时明确注入的构图词。
- * 用 koma 只是「辅助提醒」，真正保证靠 NL 的数字句 + 存档 slots（见报告限制说明）。
- * hero_insets 固定三格 = one main + two insets，绝不写 "one or two"。
- */
-export function buildPanelCountTag(count: ComicPanelCount): string[] {
+function fixedCount(style: ComicLayoutStyle, count: ComicPanelCount): number {
   const n = normalizePanelCount(count);
-  if (n === 'auto') return [];
-  return [`${n}koma`];
-}
-
-/** 风格 + 格数 → 构图 tag（去重、顺序稳定）。 */
-export function styleCompositionTags(
-  style: ComicLayoutStyle,
-  count: ComicPanelCount,
-): string[] {
-  const s = normalizeLayoutStyle(style);
-  const out = [...STYLE_TAGS[s], ...buildPanelCountTag(count)];
-  return [...new Set(out)];
-}
-
-const COUNT_WORD: Record<number, string> = { 2: 'two', 3: 'three', 4: 'four' };
-
-/** 数字词的英文（NL 用），auto 返回空串。 */
-function countWord(count: ComicPanelCount | number): string {
-  const n = typeof count === 'number' ? count : normalizePanelCount(count);
-  return n === 'auto' ? '' : (COUNT_WORD[n] ?? String(n));
-}
-
-/**
- * 每种风格的版面骨架句（英文，明确几何）。
- * 全部用 "exactly N separate panels" 钉死格数——这是图像模型相对最能听懂的说法；
- * 每格的角色/镜头由各格 nl 分区描述，这里只管版面和留白。
- */
-function layoutSentence(style: ComicLayoutStyle, count: ComicPanelCount): string {
-  const s = normalizeLayoutStyle(style);
-  const n = normalizePanelCount(count);
-  const num = countWord(count);
-
-  if (n === 'auto') {
-    switch (s) {
-      case 'classic_grid':
-        return 'A comic page divided into a clear grid of separate panels with thin gutters between them, read from top to bottom.';
-      case 'open_montage':
-        return 'An asymmetric comic page of unequally sized separate panels with a clear main panel and smaller ones, generous empty negative space between them.';
-      case 'diagonal_panels':
-        return 'A comic page of separately bordered panels cut with diagonal edges, arranged so the reading path stays clear, with empty negative space around them.';
-      case 'hero_insets':
-        return 'A comic page with one large main panel and a few smaller bordered inset panels floating apart from it on wide empty negative space; the insets are separate framed areas, never details drawn inside the main panel.';
-      case 'freeform':
-      default:
-        return 'A comic page with a clear main panel and a few smaller secondary panels separated by empty negative space, read in an obvious order.';
-    }
-  }
-
-  const exactly = `Exactly ${num} separate panels on this comic page, each in its own clearly bounded area.`;
-  switch (s) {
+  if (n !== 'auto') return n;
+  switch (style) {
     case 'classic_grid':
-      return `${exactly} The ${num} panels are arranged in a tidy regular grid and separated by thin black gutters.`;
-    case 'open_montage':
-      return `${exactly} The panels are unequal in size with one dominant main panel; the smaller panels are different sizes and do not line up in a simple vertical column. Thin black gutters separate them.`;
-    case 'diagonal_panels':
-      return `${exactly} The panels have slanted / diagonal edges (parallelograms or trapezoids), not all upright rectangles, separated by clear gutters, with an obvious reading order.`;
-    case 'hero_insets':
-      return `${exactly} One large main panel plus ${countWord(n - 1)} smaller bordered inset panels (exactly ${num} panels in total). The inset panels float on the empty space around the main panel with a wide clean gap; they are separate framed panels, never small details inside the main picture.`;
-    case 'freeform':
+      return 2;
     default:
-      return `${exactly} One panel is the clear visual focus and the others are smaller, separated by empty negative space and read in an obvious order.`;
+      return 3;
   }
 }
 
-const WHITESPACE_SENTENCE: Record<ComicWhitespaceIntent, string> = {
-  compact: 'Keep gutters narrow and use only slim outer margins; the panels fill most of the page.',
-  balanced: 'Use moderate gutters and moderate outer margins so the panels breathe without floating too far apart.',
-  airy: 'Leave wide gutters and large clean outer margins; keep obvious empty negative space between the panels and around the page edges — do not push every panel to the border.',
-  dramatic: 'Reserve a large area of completely empty negative space around the main panel as a dramatic pause; keep that area clean and do not fill it with any panel or character.',
-};
-
 /**
- * 生成整页版面 NL 骨架句（风格 + 格数 + 留白）。
- * 这就是发给图像 API 的 nl 第一句：先钉版面与格数，再钉留白，其余画面细节由各格 nl 补充。
+ * 解析成「这一页用哪一档、哪种页型、几格」。
+ *
+ * 留白维度只在 hero_insets 上改变档位（inset ↔ unframed）：
+ * 这两档都叫"主图+特写"，唯一区别就是主图四周留多少白。
  */
-export function styleLayoutNl(
-  style: ComicLayoutStyle,
-  count: ComicPanelCount,
-  whitespace: ComicWhitespacePreference,
-): string {
-  const s = normalizeLayoutStyle(style);
-  const intent = resolveWhitespaceIntent(whitespace, s);
-  return `${layoutSentence(s, count)} ${WHITESPACE_SENTENCE[intent]}`;
-}
-
-export interface StyleGenerationInput {
+export function resolveBoard(input: {
   style: ComicLayoutStyle;
   panelCount: ComicPanelCount;
   whitespace: ComicWhitespacePreference;
-}
+}): BoardResolution {
+  const style = normalizeLayoutStyle(input.style);
+  const whitespace = resolveWhitespaceIntent(input.whitespace, style);
+  const wanted = fixedCount(style, input.panelCount);
 
-/**
- * 一次性产出某风格下这页应追加的构图词与版面 NL。
- * 调用方把它们与「画面内容 tag / 各格 nl / 角色块」拼起来即可，无需再走旧四档词表。
- */
-export function buildStyleGeneration(input: StyleGenerationInput): {
-  tags: string[];
-  nl: string;
-} {
-  return {
-    tags: styleCompositionTags(input.style, input.panelCount),
-    nl: styleLayoutNl(input.style, input.panelCount, input.whitespace),
-  };
-}
-
-/**
- * 从一段 prompt 里剥掉旧四档的冲突构图词，避免新旧两套词并存时模型取到错的那个。
- * 只认独立逗号段（带权重写法的整段一起删），不碰人物/场景/动作词。
- */
-const CONFLICT_TAGS: readonly string[] = [
-  'multiple views', 'split screen', '2koma', '3koma', '4koma',
-  'comic page', 'comic panel', 'panel layout', 'manga', 'comic',
-  'white background', 'asymmetric layout', 'dynamic diagonal composition',
-];
-
-function bareTagOf(segment: string): string {
-  return segment.replace(/^\s*[\d.]+::/, '').replace(/^\s*::/, '')
-    .replace(/::\s*$/, '').trim().toLowerCase();
-}
-
-export function stripLegacyLayoutTags(prompt: string): string {
-  const kept: string[] = [];
-  for (const raw of String(prompt ?? '').split(',')) {
-    const text = raw.trim();
-    if (!text) continue;
-    if (CONFLICT_TAGS.includes(bareTagOf(text))) continue;
-    kept.push(text);
+  if (style === 'classic_grid') {
+    const n = (wanted === 4 ? 4 : wanted === 3 ? 3 : 2) as 2 | 3 | 4;
+    return { layout: 'regular', pageType: 'auto', koma: n, panelCount: n };
   }
-  return kept.join(', ');
+
+  if (style === 'open_montage') {
+    const n = Math.min(4, Math.max(2, wanted));
+    // 诚实说明：不等格拼版在原版规则里是「排版要满、白边要窄」，
+    // 留白维度对它不起作用。要大片留白只能走白底档（主图+特写）。
+    const wantAir = whitespace === 'airy' || whitespace === 'dramatic';
+    return {
+      layout: 'irregular',
+      pageType: 'auto',
+      panelCount: n,
+      ...(wantAir
+        ? { note: '「开放拼版」本身是铺满页面的不等格拼版，四周不会留大片白边；想要大面积留白请改选「主图+特写」并把留白设成平衡以下。' }
+        : {}),
+    };
+  }
+
+  if (style === 'diagonal_panels') {
+    const n = Math.min(4, Math.max(2, wanted));
+    return { layout: 'irregular', pageType: 'auto', panelCount: n, diagonal: true };
+  }
+
+  if (style === 'hero_insets') {
+    // 留白多 → inset（白底居中 + 四周留白）；留白少 → unframed（主画铺底）
+    const wantAir = whitespace === 'airy' || whitespace === 'dramatic';
+    if (wantAir) {
+      const note = wanted >= 4
+        ? `「主图+特写」最多只能三格（一张主图 + 两个特写格），已按三格出图；要四格请改用「经典网格」。`
+        : undefined;
+      return {
+        layout: 'inset',
+        pageType: 'auto',
+        panelCount: Math.min(3, Math.max(2, wanted)),
+        ...(note ? { note } : {}),
+      };
+    }
+    const note = wanted >= 4
+      ? '铺满版式最多三格（主画 + 一到两个特写格），已按三格出图；要四格请改用「经典网格」。'
+      : undefined;
+    const n = Math.min(3, Math.max(2, wanted));
+    return {
+      layout: 'unframed',
+      pageType: n >= 3 ? 'a' : 'b',
+      panelCount: n,
+      ...(note ? { note } : {}),
+    };
+  }
+
+  // freeform：没有钉死风格，用最通用的不等格拼版承载
+  const n = Math.min(4, Math.max(2, wanted));
+  return { layout: 'irregular', pageType: 'auto', panelCount: n };
+}
+
+/** 这一档这一格数该注入的构图词（带权重，原样）。 */
+export function boardTagsFor(board: BoardResolution): string[] {
+  if (board.layout === 'regular') {
+    const n = board.koma ?? 2;
+    return ['1.4::multiple views::', regularKomaTag(n), '1.5::split screen::'];
+  }
+  return [...PANEL_TAGS_BY_LAYOUT[board.layout]];
+}
+
+export interface BoardGeneration extends BoardResolution {
+  tags: string[];
+  /** nl 的版面首句（原版措辞，按档 + 页型 + 格数） */
+  nlHead: string;
+}
+
+/**
+ * 一次性产出这一页该注入的构图词与版面首句。
+ * 出图时再走 `enforcePanelPrompt` 做删禁词/补缺词，两道合起来才是确定性的。
+ */
+export function buildBoardGeneration(input: {
+  style: ComicLayoutStyle;
+  panelCount: ComicPanelCount;
+  whitespace: ComicWhitespacePreference;
+}): BoardGeneration {
+  const board = resolveBoard(input);
+  const whitespace = resolveWhitespaceIntent(input.whitespace, normalizeLayoutStyle(input.style));
+  const nlHead = boardNlHead({
+    layout: board.layout,
+    pageType: board.pageType,
+    panelCount: board.panelCount,
+    whitespace,
+    ...(board.diagonal ? { diagonal: true } : {}),
+  });
+  return { ...board, tags: boardTagsFor(board), nlHead };
 }
