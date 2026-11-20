@@ -37,8 +37,10 @@ import { splitSegments, characterPromptsFromLibrary } from '../manga/tagSplit';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { resolvePanelsPerPage } from '../manga/panelPlan';
 import { resolveLayoutStyle, resolvePanelCount } from '../manga/layoutStyle';
+import { buildStyleGeneration, stripLegacyLayoutTags } from '../manga/stylePrompt';
+import { resolveSourceDialogue, reconcileDialogueWithSource } from '../manga/sourceDialogue';
 import { hasStoryContent } from '../manga/panelRelevance';
-import { composePagePrompt, findCastShortfall } from '../manga/pageCompose';
+import { composePagePrompt, findCastShortfall, panelNlContentOnly } from '../manga/pageCompose';
 import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
 import {
   buildManwaTag,
@@ -339,6 +341,16 @@ async function runComic(
   const characterName = segment.messages.find(m => !m.isUser)?.speaker ?? '';
   // 版面档位：默认「自动」，由模型按每页剧情挑（用户钉死则以用户为准）
   const layout = modeSettings.comicLayout ?? 'auto';
+  // 新版面三维度：用户 UI 选的「风格 / 格数 / 留白」。它们直接驱动出图词——
+  // 不再经 layoutStyleToLegacy 拍回旧四档，否则「开放拼版」会被旧词表的
+  // split screen 压成竖切屏、「固定三格」会退回 one-or-two 只画一格。
+  const comicStyle = resolveLayoutStyle(modeSettings);
+  const comicPanelCount = resolvePanelCount(modeSettings);
+  const comicWhitespace = modeSettings.comicWhitespace ?? 'auto';
+  // 固定格数取新字段；旧字段只做兼容兜底（UI 现在两个都写）
+  const fixedPanels = comicPanelCount === 'auto' ? 0 : comicPanelCount;
+  // 台词 100% 原文：从用户选段里逐字抽出候选句，出图后按引用回填，LLM 不得改写
+  const sourceDialogue = resolveSourceDialogue(segment.text);
   const dialoguePolicy = modeSettings.comicDialoguePolicy ?? deps.fullSettings.dialoguePolicy ?? 'auto';
   const showComposite = modeSettings.comicShowComposite !== false;
   // 这套漫画方案要不要写自然语言（读剧情与出图必须是同一个答案）
@@ -388,11 +400,13 @@ async function runComic(
     charPrompts: comicNativeCharacters,
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
-    panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
+    panelsPerPage: fixedPanels || resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
     // 新版面系统三维度（老设置经 adapter 迁移而来，不覆盖用户偏好）
-    layoutStyle: resolveLayoutStyle(modeSettings),
-    layoutPanelCount: resolvePanelCount(modeSettings),
-    layoutWhitespace: modeSettings.comicWhitespace ?? 'auto',
+    layoutStyle: comicStyle,
+    layoutPanelCount: comicPanelCount,
+    layoutWhitespace: comicWhitespace,
+    // 台词只从这些原文候选里引用，禁止 LLM 现编 / 改写
+    sourceDialogue,
   };
 
   let plan = await generateComicPlan({
@@ -521,23 +535,35 @@ async function runComic(
       selectedText: segment.text,
       ...(personaName ? { personaName } : {}),
     });
-    const enforced = enforceForGeneration({
-      prompt: composed.prompt,
-      nl: composed.nl,
-      panelMode: true,
-      panelLayout: pageLayout,
-      chibiOn: false,
-      storyImage: false,
-      panelsPerPage: resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage),
+
+    // ★ 新版面系统真正驱动出图词：
+    // 用户选的风格/格数/留白直接产出构图 tag + 版面 NL，不再经旧四档词表。
+    // 先剥掉模型写进 page.tags 的旧构图词（split screen / 无条件 koma / white background），
+    // 只保留「画面内容」tag；再由 buildStyleGeneration 注入与新选择一致的词。
+    // 实测 A/B/C 的错词（3koma+split screen、one-or-two）就是在这一步被替换掉的。
+    const styleGen = buildStyleGeneration({
+      style: comicStyle,
+      panelCount: comicPanelCount,
+      whitespace: comicWhitespace,
     });
+    const contentTags = stripLegacyLayoutTags(composed.prompt);
+    const finalPrompt = [...styleGen.tags, contentTags].filter(Boolean).join(', ');
+    // nl 只用「各格画面内容」+ 新风格骨架句；旧档的首句/留白句不再拼进来
+    const panelContent = panelNlContentOnly(pageForCompose);
+    const finalNl = wantComicNl
+      ? `${styleGen.nl}${panelContent ? ` ${panelContent}` : ''}`
+      : '';
+    // 台词 100% 原文：把 LLM 引用（sourceIndex / 逐字命中）回填成选段里的原字，
+    // 匹配不上的一律丢弃——宁可这一页少一句气泡，也不许模型改写原文。
+    const dialogue = reconcileDialogueWithSource(composed.dialogue, sourceDialogue);
 
     const pageStartedAt = Date.now();
     let result;
     try {
       result = await baiBaiAdapter.generate(
         {
-          prompt: enforced.prompt,
-          ...(wantComicNl && enforced.nl ? { nl: enforced.nl } : {}),
+          prompt: finalPrompt,
+          ...(finalNl ? { nl: finalNl } : {}),
           ...(composed.characters.length ? { characters: composed.characters } : {}),
           ...(characterName ? { character: characterName } : {}),
           size: 'portrait',
@@ -551,8 +577,8 @@ async function runComic(
       recordImageLog({
         mode: 'comic', floor, source: 'api',
         plan: readOutConfig().activePlanName,
-        prompt: enforced.prompt,
-        ...(enforced.nl ? { nl: enforced.nl } : {}),
+        prompt: finalPrompt,
+        ...(finalNl ? { nl: finalNl } : {}),
         size: 'portrait',
         status: 'error',
         error: message,
@@ -570,8 +596,8 @@ async function runComic(
       source: 'api',
       plan: readOutConfig().activePlanName,
       model: activePlanModel(),
-      prompt: enforced.prompt,
-      ...(enforced.nl ? { nl: enforced.nl } : {}),
+      prompt: finalPrompt,
+      ...(finalNl ? { nl: finalNl } : {}),
       ...(composed.characters.length ? { characters: composed.characters } : {}),
       size: 'portrait',
       ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
@@ -585,8 +611,23 @@ async function runComic(
     // 图库不再多出「ST创作_带字」烧录副本；改台词 / 挪气泡 / 换形态都在显示层做，
     // 不用重出图。台词与当时的版面元数据一起存进 artifact，显示层按它重放——
     // 合成失败就显示无字原图，绝不升级成生成失败。
-    const panelCount = resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage) || page.panels.length;
+    // 格数元数据优先用用户钉死的新格数；否则跟随本页 panels。
+    const panelCount = fixedPanels || page.panels.length;
     const pageType = modeSettings.comicPageType ?? 'auto';
+    // 固定格数 QC：LLM 给的实际格数与用户要求不一致就记下来（记日志不静默吞）
+    const expectedPanelCount = fixedPanels || undefined;
+    const renderedPanelCount = page.panels.length;
+    if (expectedPanelCount && renderedPanelCount !== expectedPanelCount) {
+      console.warn(
+        `[ST-Story-Illustrator] 第 ${page.pageIndex + 1} 页：用户要求 ${expectedPanelCount} 格，` +
+        `分镜计划只给了 ${renderedPanelCount} 格。整页一次出图的格数由模型遵循提示词，无法程序级保证。`,
+      );
+      recordNotice({
+        mode: 'comic', floor,
+        text: `第 ${page.pageIndex + 1} 页分镜只规划了 ${renderedPanelCount} 格（你选的是 ${expectedPanelCount} 格）。` +
+          '这一页格数可能不对，可以在提示词面板改词后重画，或换更稳定的模型。',
+      });
+    }
 
     const artifact: VisualArtifact = {
       id: createArtifactId(),
@@ -600,9 +641,9 @@ async function runComic(
       ...(inlineAnchor ? { textAnchor: inlineAnchor } : {}),
       pageIndex: page.pageIndex,
       imagePath: rawPath,
-      prompt: enforced.prompt,
-      ...(enforced.nl ? { nl: enforced.nl } : {}),
-      ...(showComposite && composed.dialogue.length ? { dialogue: composed.dialogue } : {}),
+      prompt: finalPrompt,
+      ...(finalNl ? { nl: finalNl } : {}),
+      ...(showComposite && dialogue.length ? { dialogue } : {}),
       metadata: {
         // 重画要靠它还原「当时画的是谁」：没有角色块，重画一次就换人
         ...(composed.characters.length ? { characters: composed.characters } : {}),
@@ -621,6 +662,14 @@ async function runComic(
         ...(page.layoutPlan ? { layoutPlan: page.layoutPlan } : {}),
         // 每格出场的人：显示层靠它把台词反查到正确的格（说话人证据 > 模型写的格号）
         panelCast: page.panels.map(panel => (panel.characters ?? []).map(c => c.name).filter(Boolean)),
+        // 用户实际选择的版面三维（出图词就是按这三个生成的，供审计/重放）
+        comicStyle,
+        comicPanelCount,
+        comicWhitespace,
+        // 格数 QC：不相等时不允许把这页静默当成功
+        ...(expectedPanelCount !== undefined
+          ? { expectedPanelCount, renderedPanelCount, panelCountMatched: renderedPanelCount === expectedPanelCount }
+          : {}),
         ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),
       },
       createdAt: Date.now(),

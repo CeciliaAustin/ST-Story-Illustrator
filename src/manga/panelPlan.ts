@@ -186,6 +186,11 @@ function clamp01(v: unknown): number | undefined {
 export interface NormalizedDialogue extends ComicDialogue {
   x?: number;
   y?: number;
+  /** 原文台词候选序号（台词 100% 引用）；出图前由 sourceDialogue 回填成逐字原文。 */
+  sourceIndex?: number;
+  /** 模型自带的 text 只作定位，回填时用于逐字命中原文。 */
+  quote?: string;
+  exactText?: string;
 }
 
 export function normalizeDialogueItems(value: unknown): NormalizedDialogue[] {
@@ -214,6 +219,14 @@ export function normalizeDialogueItems(value: unknown): NormalizedDialogue[] {
     const x = clamp01(item.x);
     const y = clamp01(item.y);
 
+    // 台词引用字段：原文回填的依据，必须原样保留。
+    // quote / exactText 不 trim 内部、不截断，否则逐字命中会失败。
+    const sourceIndex = typeof item.sourceIndex === 'number' && Number.isInteger(item.sourceIndex)
+      && item.sourceIndex >= 0 && item.sourceIndex < 64
+      ? (item.sourceIndex as number) : undefined;
+    const quote = typeof item.quote === 'string' ? item.quote
+      : typeof item.exactText === 'string' ? item.exactText : undefined;
+
     // 第几格。约定是 1 起，但模型看到 panels[].index 是 0 起，写成 0 很常见——
     // 这里把 0 也收下，由合成阶段统一判断整份是 0 起还是 1 起。
     const panelRaw = typeof item.panel === 'string' ? Number(item.panel) : item.panel;
@@ -236,6 +249,8 @@ export function normalizeDialogueItems(value: unknown): NormalizedDialogue[] {
       ...(y !== undefined ? { y } : {}),
       ...(dir ? { dir } : {}),
       ...(mood ? { mood } : {}),
+      ...(sourceIndex !== undefined ? { sourceIndex } : {}),
+      ...(quote ? { quote } : {}),
       text,
     });
   }

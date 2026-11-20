@@ -38,6 +38,7 @@ import {
   type PanelRuleOptions,
 } from './panelPlan';
 import { buildLayoutDirective } from './layoutDirective';
+import { sourceDialogueBlock } from './sourceDialogue';
 
 // ============================================================
 // 通用：从 LLM 输出里提取 JSON
@@ -345,6 +346,8 @@ export interface ComicPlanOptions {
   layoutStyle?: ComicLayoutStyle;
   layoutPanelCount?: ComicPanelCount;
   layoutWhitespace?: ComicWhitespacePreference;
+  /** 原文台词候选（台词 100% 引用，LLM 只能引用不能改写）。 */
+  sourceDialogue?: import('./sourceDialogue').SourceDialogueLine[];
 }
 
 export function buildComicSystemPrompt(
@@ -394,12 +397,17 @@ export function buildComicUserPrompt(
   scene: SceneInput,
   characters: BaiBaiCharacter[],
   extraInstruction?: string,
-  blocks: IllustrationContextBlocks = {},
+  blocks: IllustrationContextBlocks & {
+    sourceDialogue?: import('./sourceDialogue').SourceDialogueLine[];
+  } = {},
 ): string {
   const parts: string[] = [];
   if (blocks.outfitBlock) parts.push(blocks.outfitBlock);
   if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push('【剧情（据此排分镜）】\n' + scene.selectedText);
+  // 台词 100% 原文：把逐字候选清单交给模型，只允许引用序号，不许自带 text
+  const dialogueBlock = sourceDialogueBlock(blocks.sourceDialogue ?? []);
+  if (dialogueBlock) parts.push(dialogueBlock);
   if (scene.floorText) parts.push('【所在楼层全文】\n' + scene.floorText);
   if (scene.previousText) parts.push('【前文（仅补充）】\n' + scene.previousText);
   if (scene.nextText) parts.push('【后文（仅补充）】\n' + scene.nextText);

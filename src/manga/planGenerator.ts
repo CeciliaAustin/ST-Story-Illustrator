@@ -189,6 +189,7 @@ export async function generateComicPlan(
     {
       ...(input.bookBlock ? { bookBlock: input.bookBlock } : {}),
       ...(input.outfitBlock ? { outfitBlock: input.outfitBlock } : {}),
+      ...(input.options.sourceDialogue ? { sourceDialogue: input.options.sourceDialogue } : {}),
     },
   );
   try {

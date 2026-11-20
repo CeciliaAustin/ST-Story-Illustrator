@@ -493,6 +493,34 @@ function attachBubbleOverlay(card: HTMLElement, img: HTMLImageElement, artifact:
   });
 }
 
+/**
+ * 台词/气泡位置改动后，立即重绘这一张卡的气泡（不整楼重挂、不闪屏）。
+ *
+ * 根因：灯箱 onSave 以前调 mountFloor，但那函数是增量挂载——卡片还在 DOM、
+ * data-sti-src（无字原图路径）也没变，于是被判为「没过期」直接跳过，气泡不重合成。
+ * 用户看到的就是「灯箱里明明改好了、关掉却还是旧的，退出聊天重进才对」。
+ *
+ * 这里只处理目标卡片：撤销旧 blob、先把 <img> 退回无字原图，再按最新 artifact
+ * 重新合成一遍。其它卡片与 DOM 结构完全不动，所以不会闪。
+ */
+export function refreshComicCard(floor: number, artifactId: string): void {
+  const mes = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  const card = mes.querySelector<HTMLElement>(`[data-sti-artifact-id="${artifactId}"]`);
+  if (!card) return;
+  const artifact = getArtifacts(floor).find(a => a.id === artifactId);
+  if (!artifact || artifact.mode !== 'comic') return;
+  const img = card.querySelector<HTMLImageElement>('img.sti-card-image');
+  if (!img) return;
+
+  // 撤销这张卡上一轮的带字 blob，并把图先退回无字原图
+  revokeCardOverlay(card);
+  card.removeAttribute('data-sti-bubbled');
+  img.src = comicBaseImageOf(artifact);
+  // 用最新的 dialogue 重新合成（读的是刚写回的 artifact）
+  attachBubbleOverlay(card, img, artifact);
+}
+
 /** 打开某一页漫画的灯箱（气泡开关 / 台词编辑 / 移动定位 / 下载）。 */
 function openComicCardLightbox(floor: number, artifactId: string, alt: string): void {
   const latest = getArtifacts(floor).find(a => a.id === artifactId);
@@ -512,11 +540,13 @@ function openComicCardLightbox(floor: number, artifactId: string, alt: string): 
       editComicPrompt(floor, artifactId);
     },
     onSave: async items => {
-      // 写回 artifact（台词 + 手动钉的位置一起存），立即重挂卡片；
+      // 写回 artifact（台词 + 手动钉的位置一起存）；
       // 落盘走防抖保存，不 await —— 否则点一下气泡要等 1.5s 才有反馈。
       updateArtifact(floor, artifactId, { dialogue: items ?? [] });
       void saveChatSafe();
-      mountFloor(floor);
+      // 关键：不能用 mountFloor——它是增量挂载，卡片还在 DOM 且图路径没变就会被
+      // 判为没过期而跳过，气泡仍是旧的。这里精准重绘这一张卡，关灯箱即可见。
+      refreshComicCard(floor, artifactId);
       const fresh = getArtifacts(floor).find(a => a.id === artifactId);
       if (!fresh) return null;
       return comicOverlayPlan(fresh, settings);

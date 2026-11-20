@@ -4756,7 +4756,7 @@ const ILLUSTRATION = `你是一位专业的图像提示词（tag）编辑。你�
 {{/hasFlags}}`;
 const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布上一页漫画**的分镜计划：整页由 NovelAI 一次画成多格版面，而不是每格单独出一张图。
 只输出一个 JSON 对象，不要解释文字、不要 Markdown 代码围栏。
-结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","beat":{"timeScope":"这一瞬间的定格时间(同一时刻/紧邻动作)","location":"地点","event":"正在发生的一件事","continuityNote":"一句说明为什么这几格属于同一瞬间"},"layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"整页 nl（可省略：各格 nl 优先）"{{/nl}},"dialogue":[{"text":"中文台词","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","composition":"single|single_detail|duo|duo_detail|object|environment_detail|split_scene","shot":"wide shot|medium shot|close-up|extreme close-up","subject":"这一格的信息点(一句中文：读者要看到什么)","characters":[{"name":"角色","act":"English danbooru phrases: 这一格在做什么","look":"English 外貌短语，仅角色库里没有的人填"}],"mood":"氛围"{{#nl}},"nl":"English，一句 20~35 词：镜头距离 + 谁在画面哪一侧 + 在做什么 + 空白留在哪"{{/nl}}}]}],"cast":[{"name":"角色名","outfit":"English danbooru phrases: 这一批的当前着装，版型+主色+关键配件"}]}
+结构：{"pages":[{"pageIndex":0,"title":"页标题(中文短语)","beat":{"timeScope":"这一瞬间的定格时间(同一时刻/紧邻动作)","location":"地点","event":"正在发生的一件事","continuityNote":"一句说明为什么这几格属于同一瞬间"},"layout":"regular|irregular|inset|unframed","tags":"整页共用英文 tag，逗号分隔"{{#nl}},"nl":"整页 nl（可省略：各格 nl 优先）"{{/nl}},"dialogue":[{"sourceIndex":"【本页可选台词原文】里的序号(整数)","text":"可省略，仅定位用","speaker":"说话人名字","panel":1,"area":"tl|tr|bl|br","dir":"v","mood":"whisper"}],"panels":[{"index":0,"title":"这一格画了什么(中文短语)","composition":"single|single_detail|duo|duo_detail|object|environment_detail|split_scene","shot":"wide shot|medium shot|close-up|extreme close-up","subject":"这一格的信息点(一句中文：读者要看到什么)","characters":[{"name":"角色","act":"English danbooru phrases: 这一格在做什么","look":"English 外貌短语，仅角色库里没有的人填"}],"mood":"氛围"{{#nl}},"nl":"English，一句 20~35 词：镜头距离 + 谁在画面哪一侧 + 在做什么 + 空白留在哪"{{/nl}}}]}],"cast":[{"name":"角色名","outfit":"English danbooru phrases: 这一批的当前着装，版型+主色+关键配件"}]}
 硬要求：
 1. **一页 = 一个连续的瞬间（one continuous beat）**：先在 beat 里定格选段中一个时刻/一件事，整页所有格只从这一个瞬间里取镜头切面（全景/某人眼睛/交叠的手/关键物件），连起来像镜头在同一件事上移动。**严禁**从选段里挑几个互不相连的时刻拼成剧情摘要（早上→晚上、房间→街道、争吵→和好都不许）；前后文只用来理解人物和代词，不得扩成本页事件。
 1a. **台词也必须连续**：只取本页这一瞬间里、按原文顺序说过的话，可只截一句/半句/关键短语，允许某格无台词；不编对白、不把旁白改成角色台词、不把相隔很远的台词凑一页。
@@ -4772,7 +4772,7 @@ const COMIC = `你是一位漫画分镜编辑。你要输出的是**一张画布
 5c. **每格人物数量由该格镜头决定**：单人、双人、双人局部、纯物件都对；绝不要把「本页所有出场人物」复制进每一格。只有某一格**明确写了两人同框**时，这两人才都要有外貌：角色库里没有的那位（常是「你」）要给 look 字段（英文外貌短语，从角色参考/人设摘要取）；只出现一个人的格不需要给第二个人补词。
 5d. **page.tags 写主画面的人数**：描述主视觉格里实际有几个人（1girl / 1boy / 2girls / couple），不要把全页各格出现过的人都数进去；单人局部格、物件格的 tags 不要硬塞两人。
 6. panels 数组只用来标「每一格画了什么」：{{#fixedPanels}}**每页固定 {{panelsPerPage}} 格**——panels 必须正好 {{panelsPerPage}} 条，nl 必须按 {{panelsPerPage}} 格分区写，版面也必须真的切出 {{panelsPerPage}} 格。{{/fixedPanels}}{{^fixedPanels}}2~4 条，title 是中文短标题（会印在卡片上），格数必须与 nl 里描述的一致；**版面必须真的切出这么多格**——说 three panels 就要画三格，不能拿两格模板套四段内容。{{/fixedPanels}}
-7. dialogue 是中文口语台词，最多 4 条、每条 20 字内，不写旁白；台词不许写进 tags 或 nl。panel 字段是这句出现在第几格（1 起，按阅读顺序）——气泡只会画在那**一格**里，所以必须与该格 characters 里说话的人对得上；对不上就别写这句。speaker 写说话人名字（照抄 characters 里的名字）：它不会被画进气泡，只用来定位，写对了气泡才会贴着说话的人。
+7. dialogue 台词**必须从【本页可选台词原文】里引用，逐字 100% 复刻，禁止改写/纠错/缩写/合并/翻译/补标点**：每条用 sourceIndex 填原文序号，text 字段可省略（写了也只作定位，最终画的是原文那一句）。本页最多 4 条；引用不到的就少写或留空，绝不自编台词。panel 字段是这句出现在第几格（1 起，按阅读顺序）——气泡只会画在那**一格**里，必须与该格 characters 里说话的人对得上；对不上就别引用这句。speaker 写说话人名字（照抄 characters 里的名字）：它不会被画进气泡，只用来定位。台词不许写进 tags 或 nl。
 8. tags / nl 里绝对不允许出现 speech bubble、text、english text、dialogue、caption —— 画面里不能有字。
 9. 有台词的页，nl 里要让人物偏下、格内上方留出干净空间给气泡；人物头顶顶到页边时气泡只能盖在脸上。**但不要为了留白把有地点、有道具、有互动的页改成白底档**——那等于把剧情发生的世界删掉，只让人偏下就够了。
 {{#hasRule}}
@@ -6813,18 +6813,6 @@ function resolvePanelsPerPage(layout, value) {
   if (normalizeLayoutChoice(layout) === "auto") return 0;
   return normalizePanelLayout(layout) === "regular" ? 2 : 0;
 }
-function panelTagsForCount(layout, count) {
-  const kind = normalizePanelLayout(layout);
-  if (count >= 2 && count <= 4) {
-    const base = PANEL_TAGS_BY_LAYOUT[kind];
-    const koma = `1.4::${count}koma::`;
-    if (base.some((tag) => /\d+koma/.test(tag))) {
-      return base.map((tag) => /\d+koma/.test(tag) ? koma : tag);
-    }
-    return [...base, koma];
-  }
-  return PANEL_TAGS_BY_LAYOUT[kind];
-}
 function normalizePanelLayout(v) {
   return v === "irregular" || v === "inset" || v === "unframed" ? v : "regular";
 }
@@ -6854,6 +6842,8 @@ function normalizeDialogueItems(value) {
     const area = PANEL_BUBBLE_AREAS.includes(areaRaw) ? areaRaw : void 0;
     const x = clamp01(item.x);
     const y = clamp01(item.y);
+    const sourceIndex = typeof item.sourceIndex === "number" && Number.isInteger(item.sourceIndex) && item.sourceIndex >= 0 && item.sourceIndex < 64 ? item.sourceIndex : void 0;
+    const quote = typeof item.quote === "string" ? item.quote : typeof item.exactText === "string" ? item.exactText : void 0;
     const panelRaw = typeof item.panel === "string" ? Number(item.panel) : item.panel;
     const panel = typeof panelRaw === "number" && Number.isFinite(panelRaw) && panelRaw >= 0 && panelRaw <= 8 ? Math.round(panelRaw) : void 0;
     const dirRaw = typeof item.dir === "string" ? item.dir.trim().toLowerCase() : "";
@@ -6868,30 +6858,13 @@ function normalizeDialogueItems(value) {
       ...y !== void 0 ? { y } : {},
       ...dir ? { dir } : {},
       ...mood ? { mood } : {},
+      ...sourceIndex !== void 0 ? { sourceIndex } : {},
+      ...quote ? { quote } : {},
       text
     });
   }
   return items;
 }
-const UNFRAMED_NL_PORTRAIT = "An asymmetric three-scene manga page on a white background: the top 20% of the page is a narrow horizontal panel with a thin black border showing a simple close-up of one face, below the top strip, the main illustration fills the rest of the page with no border and no frame — the characters are drawn large, filling most of the illustration area with only narrow white margins around them, directly on the white page, blending into the white space, with one arm extending past the page edge — and the bottom right area has a floating panel with a thin black border, about 65% of the page width and 27% of the page height, showing a close-up detail of the same moment. Only the top and bottom-right scenes have panel borders, and no rectangular border surrounds the characters.";
-const PANEL_NL_SENTENCE = {
-  regular: {
-    portrait: "The canvas is divided into two equal panels, one above the other, separated by a thin black gutter.",
-    landscape: "The canvas is split into two panels side by side, separated by a thin black gutter."
-  },
-  irregular: {
-    portrait: "The canvas is divided into panels of unequal size — one large main panel with smaller panels below it — separated by thin black gutters.",
-    landscape: "The canvas is divided into panels of unequal size — one large main panel with narrower panels beside it — separated by thin black gutters."
-  },
-  inset: {
-    portrait: "A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one in the bottom right corner — show close-up details of the same moment, each small panel floating on the white page with a wide clean white gap between it and the main illustration, never touching the characters.",
-    landscape: "A manga page on a white background: an unframed character illustration occupies the center with generous white space around it, and small panels framed by thin black borders — one across the top, one along the right edge — show close-up details of the same moment, each small panel floating on the white page with a wide clean white gap between it and the main illustration, never touching the characters."
-  },
-  unframed: {
-    portrait: UNFRAMED_NL_PORTRAIT,
-    landscape: UNFRAMED_NL_PORTRAIT
-  }
-};
 const UNFRAMED_PAGE_SPECS = {
   a: {
     nlHeadline: "An asymmetric three-scene manga page on a white background: a narrow bordered panel across the top 20% shows a simple close-up of one face, the main illustration fills the rest of the page, and a floating bordered panel sits in the bottom right area.",
@@ -6918,11 +6891,6 @@ const UNFRAMED_PAGE_SPECS = {
     overlapMax: 0.25
   }
 };
-function unframedNlSentence(pageType) {
-  if (pageType === "auto") return PANEL_NL_SENTENCE.unframed.portrait;
-  const spec = UNFRAMED_PAGE_SPECS[pageType];
-  return `${spec.nlHeadline} The characters are drawn large, filling most of the illustration area, directly on the white page, blending into the white space, with one arm extending past the page edge. Only the inset panel(s) have thin black borders, and no rectangular border surrounds the characters.`;
-}
 const DIALOGUE_POLICY_TEXT = {
   auto: "只挑最关键的话；没有值得说的就整个字段省略，不要硬凑",
   always: "每张图必须至少写 1 条：安静镜头用拟声词顶上（「咚！」「……」都算），不许省略",
@@ -7338,6 +7306,91 @@ function buildLayoutDirective(input) {
   );
   return lines.join("\n");
 }
+const QUOTE_PAIRS = [
+  ["「", "」"],
+  ["『", "』"],
+  ["“", "”"],
+  ["‘", "’"],
+  ['"', '"'],
+  ["「", "」"]
+];
+const MIN_LEN = 2;
+const MAX_LEN = 120;
+function meaningful(text) {
+  const trimmed = text.trim();
+  return trimmed.length >= MIN_LEN && trimmed.length <= MAX_LEN && /[^\s，。,.!！?？、；;：:]/.test(trimmed);
+}
+function speakerBefore(source, quoteStart) {
+  const before = source.slice(Math.max(0, quoteStart - 24), quoteStart);
+  const m = before.match(
+    /([^\s「」『』“”‘’，。！？!?\n]{1,12}?)\s*(?:低声|轻声|笑着|笑道|冷声|柔声|缓缓|突然|连忙|立即|又|才|也|便)?\s*(?:说道|说|道|问|答|喊|开口|嘟囔|呢喃)[:：，,]?\s*$/
+  );
+  return m ? m[1] : void 0;
+}
+function resolveSourceDialogue(rawText) {
+  const source = String(rawText ?? "");
+  if (!source.trim()) return [];
+  const found = [];
+  const claimed = [];
+  for (const [open, close2] of QUOTE_PAIRS) {
+    let from = 0;
+    while (from < source.length) {
+      const openAt = source.indexOf(open, from);
+      if (openAt < 0) break;
+      const closeAt = source.indexOf(close2, openAt + open.length);
+      if (closeAt < 0) break;
+      const text = source.slice(openAt + open.length, closeAt);
+      const span = [openAt, closeAt + close2.length];
+      if (meaningful(text) && !claimed.some(([a, b]) => a < span[1] && span[0] < b)) {
+        found.push({ start: openAt, text, ...speakerBefore(source, openAt) ? { speaker: speakerBefore(source, openAt) } : {} });
+        claimed.push(span);
+      }
+      from = closeAt + close2.length;
+    }
+  }
+  if (found.length === 0) {
+    for (const line of source.split(/\r?\n/)) {
+      const text = line.trim();
+      if (meaningful(text)) found.push({ start: source.indexOf(text), text });
+    }
+  }
+  return found.sort((a, b) => a.start - b.start).slice(0, 16).map((item, i) => ({ index: i, ...item }));
+}
+function exactMatch(text, lines) {
+  const a = text.trim();
+  if (!a) return void 0;
+  return lines.find((line) => {
+    const b = line.text.trim();
+    return a === b || a.includes(b) || b.includes(a);
+  });
+}
+function reconcileDialogueWithSource(dialogue, lines) {
+  if (!Array.isArray(dialogue) || !dialogue.length) return [];
+  const out = [];
+  for (const item of dialogue) {
+    if (!item || typeof item.text !== "string") continue;
+    const raw = item;
+    let line;
+    if (typeof raw.sourceIndex === "number" && Number.isInteger(raw.sourceIndex)) {
+      line = lines[raw.sourceIndex];
+    }
+    if (!line) line = exactMatch(raw.quote ?? raw.exactText ?? raw.text, lines);
+    if (!line) continue;
+    const { sourceIndex: _si, quote: _q, exactText: _e, ...rest } = raw;
+    out.push({ ...rest, text: line.text });
+  }
+  return out;
+}
+function sourceDialogueBlock(lines) {
+  if (!lines.length) return "";
+  const list = lines.map((l) => `${l.index}: ${l.speaker ? `[${l.speaker}] ` : ""}${l.text}`).join("\n");
+  return [
+    "【本页可选台词原文（逐字引用，禁止改写/纠错/缩写/合并/翻译）】",
+    list,
+    "dialogue 里每条用 sourceIndex 引用上面的序号；text 字段可省略（写了也只作定位，最终以这里的原文为准）。",
+    "只能引用本段确实出现的话；没有合适的就少写或留空，绝对不要自己编台词。"
+  ].join("\n");
+}
 function extractJson(text) {
   const raw = stripThinkingBlocks(String(text ?? ""));
   if (!raw.trim()) return null;
@@ -7533,6 +7586,8 @@ function buildComicUserPrompt(scene, characters, extraInstruction, blocks = {}) 
   if (blocks.outfitBlock) parts.push(blocks.outfitBlock);
   if (blocks.bookBlock) parts.push(blocks.bookBlock);
   parts.push("【剧情（据此排分镜）】\n" + scene.selectedText);
+  const dialogueBlock = sourceDialogueBlock(blocks.sourceDialogue ?? []);
+  if (dialogueBlock) parts.push(dialogueBlock);
   if (scene.floorText) parts.push("【所在楼层全文】\n" + scene.floorText);
   if (scene.previousText) parts.push("【前文（仅补充）】\n" + scene.previousText);
   if (scene.nextText) parts.push("【后文（仅补充）】\n" + scene.nextText);
@@ -7600,7 +7655,8 @@ async function generateComicPlan(input) {
     input.options.extraInstruction,
     {
       ...input.bookBlock ? { bookBlock: input.bookBlock } : {},
-      ...input.outfitBlock ? { outfitBlock: input.outfitBlock } : {}
+      ...input.outfitBlock ? { outfitBlock: input.outfitBlock } : {},
+      ...input.options.sourceDialogue ? { sourceDialogue: input.options.sourceDialogue } : {}
     }
   );
   try {
@@ -9400,6 +9456,20 @@ function attachBubbleOverlay(card, img, artifact) {
     }
   });
 }
+function refreshComicCard(floor, artifactId) {
+  const mes = document.querySelector(`.mes[mesid="${floor}"]`);
+  if (!mes) return;
+  const card = mes.querySelector(`[data-sti-artifact-id="${artifactId}"]`);
+  if (!card) return;
+  const artifact = getArtifacts(floor).find((a) => a.id === artifactId);
+  if (!artifact || artifact.mode !== "comic") return;
+  const img = card.querySelector("img.sti-card-image");
+  if (!img) return;
+  revokeCardOverlay(card);
+  card.removeAttribute("data-sti-bubbled");
+  img.src = comicBaseImageOf(artifact);
+  attachBubbleOverlay(card, img, artifact);
+}
 function openComicCardLightbox(floor, artifactId, alt) {
   const latest = getArtifacts(floor).find((a) => a.id === artifactId);
   if (!latest) return;
@@ -9419,7 +9489,7 @@ function openComicCardLightbox(floor, artifactId, alt) {
     onSave: async (items) => {
       updateArtifact(floor, artifactId, { dialogue: items ?? [] });
       void saveChatSafe();
-      mountFloor(floor);
+      refreshComicCard(floor, artifactId);
       const fresh = getArtifacts(floor).find((a) => a.id === artifactId);
       if (!fresh) return null;
       return comicOverlayPlan(fresh, settings2);
@@ -10301,186 +10371,109 @@ class TaskQueue {
     (_b = (_a = this.options).onStatusChange) == null ? void 0 : _b.call(_a, task, status);
   }
 }
-function bareTagOf(segment) {
-  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+function resolveWhitespaceIntent(pref, style) {
+  return pref && pref !== "auto" ? pref : defaultWhitespaceForStyle(style);
 }
-function isPlainSegment(segment) {
-  const text = segment.trim();
-  if (!text) return false;
-  if (!text.includes("::")) return true;
-  return /^[\d.]+\s*::.*::\s*$/.test(text);
+const STYLE_TAGS = {
+  classic_grid: ["comic page layout", "panel layout"],
+  open_montage: ["comic page layout", "asymmetric layout"],
+  diagonal_panels: ["comic page layout", "dynamic diagonal composition"],
+  hero_insets: ["comic page layout"],
+  freeform: ["comic page layout"]
+};
+function buildPanelCountTag(count) {
+  const n = normalizePanelCount(count);
+  if (n === "auto") return [];
+  return [`${n}koma`];
 }
-const PANEL_FAMILY$1 = [
+function styleCompositionTags(style, count) {
+  const s = normalizeLayoutStyle(style);
+  const out = [...STYLE_TAGS[s], ...buildPanelCountTag(count)];
+  return [...new Set(out)];
+}
+const COUNT_WORD = { 2: "two", 3: "three", 4: "four" };
+function countWord(count) {
+  const n = typeof count === "number" ? count : normalizePanelCount(count);
+  return n === "auto" ? "" : COUNT_WORD[n] ?? String(n);
+}
+function layoutSentence(style, count) {
+  const s = normalizeLayoutStyle(style);
+  const n = normalizePanelCount(count);
+  const num2 = countWord(count);
+  if (n === "auto") {
+    switch (s) {
+      case "classic_grid":
+        return "A comic page divided into a clear grid of separate panels with thin gutters between them, read from top to bottom.";
+      case "open_montage":
+        return "An asymmetric comic page of unequally sized separate panels with a clear main panel and smaller ones, generous empty negative space between them.";
+      case "diagonal_panels":
+        return "A comic page of separately bordered panels cut with diagonal edges, arranged so the reading path stays clear, with empty negative space around them.";
+      case "hero_insets":
+        return "A comic page with one large main panel and a few smaller bordered inset panels floating apart from it on wide empty negative space; the insets are separate framed areas, never details drawn inside the main panel.";
+      case "freeform":
+      default:
+        return "A comic page with a clear main panel and a few smaller secondary panels separated by empty negative space, read in an obvious order.";
+    }
+  }
+  const exactly = `Exactly ${num2} separate panels on this comic page, each in its own clearly bounded area.`;
+  switch (s) {
+    case "classic_grid":
+      return `${exactly} The ${num2} panels are arranged in a tidy regular grid and separated by thin black gutters.`;
+    case "open_montage":
+      return `${exactly} The panels are unequal in size with one dominant main panel; the smaller panels are different sizes and do not line up in a simple vertical column. Thin black gutters separate them.`;
+    case "diagonal_panels":
+      return `${exactly} The panels have slanted / diagonal edges (parallelograms or trapezoids), not all upright rectangles, separated by clear gutters, with an obvious reading order.`;
+    case "hero_insets":
+      return `${exactly} One large main panel plus ${countWord(n - 1)} smaller bordered inset panels (exactly ${num2} panels in total). The inset panels float on the empty space around the main panel with a wide clean gap; they are separate framed panels, never small details inside the main picture.`;
+    case "freeform":
+    default:
+      return `${exactly} One panel is the clear visual focus and the others are smaller, separated by empty negative space and read in an obvious order.`;
+  }
+}
+const WHITESPACE_SENTENCE = {
+  compact: "Keep gutters narrow and use only slim outer margins; the panels fill most of the page.",
+  balanced: "Use moderate gutters and moderate outer margins so the panels breathe without floating too far apart.",
+  airy: "Leave wide gutters and large clean outer margins; keep obvious empty negative space between the panels and around the page edges — do not push every panel to the border.",
+  dramatic: "Reserve a large area of completely empty negative space around the main panel as a dramatic pause; keep that area clean and do not fill it with any panel or character."
+};
+function styleLayoutNl(style, count, whitespace) {
+  const s = normalizeLayoutStyle(style);
+  const intent = resolveWhitespaceIntent(whitespace, s);
+  return `${layoutSentence(s, count)} ${WHITESPACE_SENTENCE[intent]}`;
+}
+function buildStyleGeneration(input) {
+  return {
+    tags: styleCompositionTags(input.style, input.panelCount),
+    nl: styleLayoutNl(input.style, input.panelCount, input.whitespace)
+  };
+}
+const CONFLICT_TAGS = [
   "multiple views",
+  "split screen",
   "2koma",
   "3koma",
   "4koma",
-  "split screen",
-  "3格漫画",
-  "三场景漫画构图",
-  "非对称漫画页面布局",
-  "开放分镜漫画构图",
-  "无边框中央插画",
-  "第二场景周围没有长方形画框",
-  "主场景周围没有长方形包围",
-  "人物自然融入白色空间"
+  "comic page",
+  "comic panel",
+  "panel layout",
+  "manga",
+  "comic",
+  "white background",
+  "asymmetric layout",
+  "dynamic diagonal composition"
 ];
-const PANEL_FORBIDDEN_BY_LAYOUT = {
-  regular: ["3koma", "4koma"],
-  irregular: ["2koma", "3koma", "4koma"],
-  inset: ["2koma", "3koma", "4koma", "split screen"],
-  unframed: ["multiple views", "2koma", "3koma", "4koma", "split screen"]
-};
-const SCENE_ANCHOR_TAGS = ["indoors", "outdoors", "interior", "exterior"];
-const SCENE_LOCATION_TAGS = [
-  "dorm room",
-  "bedroom",
-  "classroom",
-  "street",
-  "city",
-  "bathroom",
-  "kitchen",
-  "office",
-  "living room",
-  "study",
-  "corridor",
-  "rooftop"
-];
-const INSET_SCENE_TAGS = [
-  "indoors",
-  "outdoors",
-  "dorm room",
-  "bedroom",
-  "classroom",
-  "street",
-  "city",
-  "scenery",
-  "bed",
-  "single bed",
-  "bedsheets",
-  "rumpled bedsheets",
-  "blanket",
-  "pillow",
-  "desk",
-  "wooden desk",
-  "table",
-  "bookshelf",
-  "shelf",
-  "window",
-  "curtain",
-  "glass jar",
-  "paper cranes",
-  "wooden floor",
-  "floor",
-  "sunlight from window",
-  "side lighting",
-  "warm colors",
-  "backlighting",
-  "afternoon",
-  "morning",
-  "evening",
-  "night",
-  "sunset",
-  "sunrise",
-  "depth of field",
-  "shallow depth of field"
-];
-function enforcePanelPrompt(prompt, layout, panelsPerPage = 0) {
-  const kind = normalizePanelLayout(layout);
-  const source = String(prompt ?? "").trim();
-  if (!source) return { prompt: source, removed: [], added: [] };
-  const count = resolvePanelsPerPage(kind, panelsPerPage);
-  const forbidden = new Set(PANEL_FORBIDDEN_BY_LAYOUT[kind]);
-  if (count >= 2 && count <= 4) {
-    const wanted = `${count}koma`;
-    for (const k of ["2koma", "3koma", "4koma"]) {
-      if (k === wanted) forbidden.delete(k);
-      else forbidden.add(k);
-    }
-  } else if (kind === "regular" && count >= 3) {
-    forbidden.add("2koma");
-  }
-  const stripScene = kind === "inset" || kind === "unframed";
-  const sceneLimit = kind === "unframed";
-  let locationKept = 0;
+function bareTagOf(segment) {
+  return segment.replace(/^\s*[\d.]+::/, "").replace(/^\s*::/, "").replace(/::\s*$/, "").trim().toLowerCase();
+}
+function stripLegacyLayoutTags(prompt) {
   const kept = [];
-  const removed = [];
-  const present = /* @__PURE__ */ new Set();
-  for (const segment of source.split(",")) {
-    const text = segment.trim();
+  for (const raw of String(prompt ?? "").split(",")) {
+    const text = raw.trim();
     if (!text) continue;
-    const bare = bareTagOf(text);
-    present.add(bare);
-    if (!PANEL_FAMILY$1.includes(bare)) {
-      if (sceneLimit && isPlainSegment(text)) {
-        if (SCENE_ANCHOR_TAGS.includes(bare)) {
-          kept.push(text);
-          continue;
-        }
-        if (SCENE_LOCATION_TAGS.includes(bare)) {
-          if (locationKept < 2) {
-            locationKept += 1;
-            kept.push(text);
-            continue;
-          }
-          removed.push(text);
-          continue;
-        }
-        if (INSET_SCENE_TAGS.includes(bare)) {
-          removed.push(text);
-          continue;
-        }
-        kept.push(text);
-        continue;
-      }
-      if (stripScene && isPlainSegment(text) && INSET_SCENE_TAGS.includes(bare)) {
-        removed.push(text);
-        continue;
-      }
-      kept.push(text);
-      continue;
-    }
-    if (isPlainSegment(text) && forbidden.has(bare)) {
-      removed.push(text);
-      continue;
-    }
+    if (CONFLICT_TAGS.includes(bareTagOf(text))) continue;
     kept.push(text);
   }
-  const missing = panelTagsForCount(kind, count).filter((tag) => !present.has(bareTagOf(tag)));
-  return { prompt: [...missing, ...kept].join(", "), removed, added: missing };
-}
-function decidePanelInjection(input) {
-  const layout = input.chibiOn ? "regular" : normalizePanelLayout(input.panelLayout);
-  return { enabled: true, layout };
-}
-function isMostlyChinese(text) {
-  const cjk = (text.match(/[\u3400-\u9fff\uf900-\ufaff]/g) ?? []).length;
-  if (!cjk) return false;
-  return cjk > (text.match(/[a-zA-Z]/g) ?? []).length;
-}
-const PANEL_NL_MARK = /\b(?:panels?|gutters?|inset|main image|main illustration|split screen|two-panel|comic page)\b/i;
-function applyPanelToNl(nl, layout, orientation = "portrait", pageType = "auto") {
-  const kind = normalizePanelLayout(layout);
-  const text = String(nl ?? "").trim();
-  if (!text) return text;
-  if (isMostlyChinese(text) || PANEL_NL_MARK.test(text)) return nl;
-  const sentence = kind === "unframed" ? unframedNlSentence(normalizePanelPageType(pageType)) : PANEL_NL_SENTENCE[kind][orientation === "landscape" ? "landscape" : "portrait"];
-  return `${sentence} ${text}`;
-}
-function enforceForGeneration(input) {
-  const decision = decidePanelInjection({
-    panelLayout: input.panelLayout,
-    chibiOn: input.chibiOn
-  });
-  const enforced = enforcePanelPrompt(input.prompt, decision.layout, input.panelsPerPage ?? 0);
-  return {
-    prompt: enforced.prompt,
-    nl: applyPanelToNl(input.nl, decision.layout, input.orientation, input.pageType),
-    applied: true,
-    layout: decision.layout,
-    removed: enforced.removed,
-    added: enforced.added
-  };
+  return kept.join(", ");
 }
 const PANEL_FAMILY = /* @__PURE__ */ new Set([
   "multiple views",
@@ -10602,6 +10595,18 @@ function buildPageNl(page) {
   if (!wrote) {
     parts.push("All panels capture the same continuous instant from different camera angles and shot distances — a main view plus close details of the same moment — with generous empty negative space left on the page.");
   }
+  return parts.join(" ");
+}
+function panelNlContentOnly(page) {
+  var _a;
+  const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
+  const parts = [];
+  (_a = page.panels) == null ? void 0 : _a.forEach((panel, index2) => {
+    const body = panelNlBody(panel);
+    if (!body) return;
+    const lead = leads[Math.min(index2, leads.length - 1)];
+    parts.push(lead.endsWith("shows") ? `${lead} ${body}` : `${lead}, ${body}`);
+  });
   return parts.join(" ");
 }
 function collectPageDialogue(page) {
@@ -11141,6 +11146,11 @@ async function runComic(task, ctx, deps) {
   const modeSettings = resolveModeSettings(deps.fullSettings, "comic");
   const characterName = ((_a = segment.messages.find((m) => !m.isUser)) == null ? void 0 : _a.speaker) ?? "";
   const layout = modeSettings.comicLayout ?? "auto";
+  const comicStyle = resolveLayoutStyle(modeSettings);
+  const comicPanelCount = resolvePanelCount(modeSettings);
+  const comicWhitespace = modeSettings.comicWhitespace ?? "auto";
+  const fixedPanels = comicPanelCount === "auto" ? 0 : comicPanelCount;
+  const sourceDialogue = resolveSourceDialogue(segment.text);
   const dialoguePolicy = modeSettings.comicDialoguePolicy ?? deps.fullSettings.dialoguePolicy ?? "auto";
   const showComposite = modeSettings.comicShowComposite !== false;
   const wantComicNl = nlForMode(deps.fullSettings, "comic");
@@ -11180,11 +11190,13 @@ async function runComic(task, ctx, deps) {
     charPrompts: comicNativeCharacters,
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
-    panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
+    panelsPerPage: fixedPanels || resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
     // 新版面系统三维度（老设置经 adapter 迁移而来，不覆盖用户偏好）
-    layoutStyle: resolveLayoutStyle(modeSettings),
-    layoutPanelCount: resolvePanelCount(modeSettings),
-    layoutWhitespace: modeSettings.comicWhitespace ?? "auto"
+    layoutStyle: comicStyle,
+    layoutPanelCount: comicPanelCount,
+    layoutWhitespace: comicWhitespace,
+    // 台词只从这些原文候选里引用，禁止 LLM 现编 / 改写
+    sourceDialogue
   };
   let plan = await generateComicPlan({
     scene: sceneFromSegment(segment),
@@ -11273,20 +11285,23 @@ async function runComic(task, ctx, deps) {
       selectedText: segment.text,
       ...personaName ? { personaName } : {}
     });
-    const enforced = enforceForGeneration({
-      prompt: composed.prompt,
-      nl: composed.nl,
-      panelLayout: pageLayout,
-      chibiOn: false,
-      panelsPerPage: resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage)
+    const styleGen = buildStyleGeneration({
+      style: comicStyle,
+      panelCount: comicPanelCount,
+      whitespace: comicWhitespace
     });
+    const contentTags = stripLegacyLayoutTags(composed.prompt);
+    const finalPrompt = [...styleGen.tags, contentTags].filter(Boolean).join(", ");
+    const panelContent = panelNlContentOnly(pageForCompose);
+    const finalNl = wantComicNl ? `${styleGen.nl}${panelContent ? ` ${panelContent}` : ""}` : "";
+    const dialogue = reconcileDialogueWithSource(composed.dialogue, sourceDialogue);
     const pageStartedAt = Date.now();
     let result;
     try {
       result = await baiBaiAdapter.generate(
         {
-          prompt: enforced.prompt,
-          ...wantComicNl && enforced.nl ? { nl: enforced.nl } : {},
+          prompt: finalPrompt,
+          ...finalNl ? { nl: finalNl } : {},
           ...composed.characters.length ? { characters: composed.characters } : {},
           ...characterName ? { character: characterName } : {},
           size: "portrait",
@@ -11302,8 +11317,8 @@ async function runComic(task, ctx, deps) {
         floor,
         source: "api",
         plan: readOutConfig().activePlanName,
-        prompt: enforced.prompt,
-        ...enforced.nl ? { nl: enforced.nl } : {},
+        prompt: finalPrompt,
+        ...finalNl ? { nl: finalNl } : {},
         size: "portrait",
         status: "error",
         error: message,
@@ -11319,8 +11334,8 @@ async function runComic(task, ctx, deps) {
       source: "api",
       plan: readOutConfig().activePlanName,
       model: activePlanModel(),
-      prompt: enforced.prompt,
-      ...enforced.nl ? { nl: enforced.nl } : {},
+      prompt: finalPrompt,
+      ...finalNl ? { nl: finalNl } : {},
       ...composed.characters.length ? { characters: composed.characters } : {},
       size: "portrait",
       ...typeof result.seed === "number" ? { seed: result.seed } : {},
@@ -11329,8 +11344,20 @@ async function runComic(task, ctx, deps) {
       durationMs: Date.now() - pageStartedAt
     });
     if (!rawPath) continue;
-    const panelCount = resolvePanelsPerPage(pageLayout, modeSettings.comicPanelsPerPage) || page.panels.length;
+    const panelCount = fixedPanels || page.panels.length;
     const pageType = modeSettings.comicPageType ?? "auto";
+    const expectedPanelCount = fixedPanels || void 0;
+    const renderedPanelCount = page.panels.length;
+    if (expectedPanelCount && renderedPanelCount !== expectedPanelCount) {
+      console.warn(
+        `[ST-Story-Illustrator] 第 ${page.pageIndex + 1} 页：用户要求 ${expectedPanelCount} 格，分镜计划只给了 ${renderedPanelCount} 格。整页一次出图的格数由模型遵循提示词，无法程序级保证。`
+      );
+      recordNotice({
+        mode: "comic",
+        floor,
+        text: `第 ${page.pageIndex + 1} 页分镜只规划了 ${renderedPanelCount} 格（你选的是 ${expectedPanelCount} 格）。这一页格数可能不对，可以在提示词面板改词后重画，或换更稳定的模型。`
+      });
+    }
     const artifact = {
       id: createArtifactId(),
       taskId: task.id,
@@ -11343,9 +11370,9 @@ async function runComic(task, ctx, deps) {
       ...inlineAnchor ? { textAnchor: inlineAnchor } : {},
       pageIndex: page.pageIndex,
       imagePath: rawPath,
-      prompt: enforced.prompt,
-      ...enforced.nl ? { nl: enforced.nl } : {},
-      ...showComposite && composed.dialogue.length ? { dialogue: composed.dialogue } : {},
+      prompt: finalPrompt,
+      ...finalNl ? { nl: finalNl } : {},
+      ...showComposite && dialogue.length ? { dialogue } : {},
       metadata: {
         // 重画要靠它还原「当时画的是谁」：没有角色块，重画一次就换人
         ...composed.characters.length ? { characters: composed.characters } : {},
@@ -11364,6 +11391,12 @@ async function runComic(task, ctx, deps) {
         ...page.layoutPlan ? { layoutPlan: page.layoutPlan } : {},
         // 每格出场的人：显示层靠它把台词反查到正确的格（说话人证据 > 模型写的格号）
         panelCast: page.panels.map((panel) => (panel.characters ?? []).map((c) => c.name).filter(Boolean)),
+        // 用户实际选择的版面三维（出图词就是按这三个生成的，供审计/重放）
+        comicStyle,
+        comicPanelCount,
+        comicWhitespace,
+        // 格数 QC：不相等时不允许把这页静默当成功
+        ...expectedPanelCount !== void 0 ? { expectedPanelCount, renderedPanelCount, panelCountMatched: renderedPanelCount === expectedPanelCount } : {},
         ...typeof result.seed === "number" ? { seed: result.seed } : {}
       },
       createdAt: Date.now()

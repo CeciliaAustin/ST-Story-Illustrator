@@ -136,6 +136,26 @@ export function buildPageNl(page: ComicPagePlan): string {
   return parts.join(' ');
 }
 
+/**
+ * 只取「各格画面内容」的 nl，不带旧四档的版面首句与留白收束句。
+ *
+ * 新版面系统出图时，版面骨架句由 stylePrompt.styleLayoutNl 统一生成
+ * （风格/格数/留白直接驱动），这里只负责把每一格自己的镜头内容按阅读顺序拼出来。
+ * 若沿用 buildPageNl，旧档的 "one or two small panels" / "narrow margins"
+ * 会和新骨架句并存、互相打架——这正是实测 B/C 只出一格的词层根因之一。
+ */
+export function panelNlContentOnly(page: ComicPagePlan): string {
+  const leads = AREA_LEAD[page.layout] ?? AREA_LEAD.regular;
+  const parts: string[] = [];
+  page.panels?.forEach((panel, index) => {
+    const body = panelNlBody(panel);
+    if (!body) return;
+    const lead = leads[Math.min(index, leads.length - 1)];
+    parts.push(lead.endsWith('shows') ? `${lead} ${body}` : `${lead}, ${body}`);
+  });
+  return parts.join(' ');
+}
+
 /** 整页台词：页级优先，没有就从各格合并（上限 4 条由解析层保证）。 */
 export function collectPageDialogue(page: ComicPagePlan): ComicDialogue[] {
   if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
