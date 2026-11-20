@@ -465,7 +465,7 @@ function renderAutomationSettings(): HTMLElement {
   group.appendChild(tip);
 
   const rows: Array<[CreationMode, string, string]> = [
-    ['illustration', '正文插图（柏宝绘卡片）', '往正文插 <bbi_image> tag 再点卡片出图：与柏宝绘自己的图一模一样（能重绘、改词、进请求历史），刷新不丢。'],
+    ['illustration', '正文插图', '划线选段 → 走柏宝绘的出图接口画这一张（同一个后端、同一套方案、同样进请求历史与图库），但不往正文写 tag：柏宝绘自己的 tag 一个字都不碰，重绘/改词/删除都在图上那颗按钮里。'],
     ['comic', '正文漫画分镜', '按一页一张图出多格版面，还要先跑一次读剧情。每页都算一次出图，最贵，默认关。'],
     ['chibi-status', 'QQ 人状态栏', '楼层底部一张卡片，按剧情时间顺序排出几格。'],
     ['chibi-bonus', 'QQ 人彩蛋', '与正文无关的平行小片段；勾上后按下面的概率触发。'],

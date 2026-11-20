@@ -1,6 +1,16 @@
 /**
  * ST-Story-Illustrator — 正文生图 tag（与柏宝绘原生卡片对接）
  *
+ * ⚠️ 现状：**正文插图已经不再走这条路**（见 tasks/workflow.ts 的 runIllustration）。
+ * 原因是写 tag 等于跟柏宝绘抢同一块正文：它扫到已有 tag 会跳过整楼，
+ * 用户点「重新生成本楼」时又会 stripImageTags 把整楼 tag 一起清掉。
+ * 现在插画改调它的公开出图 API（bridge.generateImage），正文一个字都不碰。
+ *
+ * 本模块保留两样还有用的东西：
+ * - `promptHash`：与柏宝绘逐字节一致的哈希，配套 `waitImages` 等旧链路；
+ * - 下面那套 tag 组装/插入能力：留给将来真要写 tag 的场景，别再给插画用。
+ *
+ * 原始设计说明（历史，仍适用于“确实要写 tag”的场合）：
  * 为什么不再自己写 markdown 图片：
  * - 柏宝绘的楼层卡片（重绘 / 改词 / 下载 / 删除 / 灯箱）只认正文里的 `<bbi_image>` tag，
  *   自己插 `![](url)` 既没有那些操作，刷新后也只剩一张裸图。

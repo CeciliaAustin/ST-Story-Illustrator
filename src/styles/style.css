@@ -109,7 +109,8 @@
 }
 
 /* 漫画卡悬浮操作组：右上角小圆钮，hover 淡显（柏宝绘 bbi-figure__actions 同款）。 */
-.sti-inline-card.is-comic {
+.sti-inline-card.is-comic,
+.sti-inline-card.is-figure {
   position: relative;
 }
 .sti-figure-actions {
@@ -123,7 +124,7 @@
   transition: opacity 0.15s ease;
   z-index: 3;
 }
-.sti-inline-card.is-comic:hover .sti-figure-actions,
+.sti-inline-card:is(.is-comic, .is-figure):hover .sti-figure-actions,
 .sti-figure-actions:focus-within {
   opacity: 1;
 }
@@ -155,7 +156,7 @@
 @keyframes sti-spin {
   to { transform: rotate(360deg); }
 }
-.sti-inline-card.is-comic .sti-card-status {
+.sti-inline-card:is(.is-comic, .is-figure) .sti-card-status {
   padding: 2px 10px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.55);
@@ -2665,11 +2666,11 @@
 /* ── 触屏设备：漫画卡的操作键不能靠 hover（手机上根本没有 hover，
       以前 opacity: 0 = 永远看不见，用户找不到删除键） ── */
 @media (hover: none), (pointer: coarse) {
-  .sti-inline-card.is-comic .sti-figure-actions {
+  .sti-inline-card:is(.is-comic, .is-figure) .sti-figure-actions {
     opacity: 0.66;
     gap: 8px;
   }
-  .sti-inline-card.is-comic .sti-figure-fab {
+  .sti-inline-card:is(.is-comic, .is-figure) .sti-figure-fab {
     width: 34px;
     height: 34px;
   }

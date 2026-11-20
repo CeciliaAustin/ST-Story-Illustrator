@@ -20,6 +20,7 @@ import { comicOverlayPlan, comicBaseImageOf } from '../manga/bubbleOverlay';
 import { compositeDialogue } from '../manga/bubbleComposite';
 import { openLightbox, openComicLightbox, closeLightbox } from './lightbox';
 import { rerollComicPage } from '../manga/rerollPage';
+import { rerollIllustration } from '../tasks/rerollIllustration';
 import { saveImageFile } from './saveImage';
 import { openPromptDialog } from './promptDialog';
 import { confirmDialog } from './confirm';
@@ -66,9 +67,14 @@ const MODE_LABELS: Record<CreationMode, string> = {
 /**
  * 一条作品在当前正文下该不该显示（纯函数，便于单测）。
  *
- * 行内漫画的「锚点」就是正文里那一条 `<bbi_manwa>`：
- * tag 不在了 = 这一页已被移出正文（用户手动删掉，或走删除键），不该再显示。
- * 只有显式标过 `inlineFallback` 的老数据（上线前没写 tag 的那批）才能无锚点行内插入。
+ * 行内作品有两种锚点，判定完全不同：
+ * - **漫画页的锚点就是正文里那一条 `<bbi_manwa>`**：tag 不在了 = 这一页已被移出正文
+ *   （用户手动删掉，或走删除键），不该再显示。只有显式标过 `inlineFallback` 的老数据
+ *   （上线前没写 tag 的那批）才能无锚点行内插入。
+ * - **正文插画的锚点在 `textAnchor`，正文里没有 tag**（`anchorKind === 'text'`）：
+ *   它从不上写正文，存在与否只由 artifact 自己决定。这类作品以前被误判成
+ *   「没有 tag = 已删除」而整批不显示。
+ *
  * trailing 作品本来就不在正文里（挂在楼末），照常显示。
  */
 export function isArtifactVisible(
@@ -76,10 +82,18 @@ export function isArtifactVisible(
   tagIds: ReadonlySet<string>,
 ): boolean {
   if (artifact.mountMode === 'inline') {
+    if (artifact.metadata?.anchorKind === 'text') return true;
     if (tagIds.has(artifact.id)) return true;
     return artifact.metadata?.inlineFallback === true;
   }
   return true;
+}
+
+/** 这条行内作品是否需要正文里的 tag 才能显示（漫画要、插画不要）。 */
+export function needsBodyTag(
+  artifact: Pick<VisualArtifact, 'mountMode' | 'metadata'>,
+): boolean {
+  return artifact.mountMode === 'inline' && artifact.metadata?.anchorKind !== 'text';
 }
 
 export function mountFloor(floor: number): void {
@@ -152,11 +166,11 @@ export function mountFloor(floor: number): void {
     }
   }
 
-  // 正文里的 tag 已经各自归位；行内挂载只服务「当时就没写进正文」的老卡
-  // （新逻辑下 inline 作品没 tag 就不显示，所以这里只放行 inlineFallback。）
+  // 正文里的 tag 已经各自归位；剩下的行内作品**自己就是锚点**：
+  // 正文插画按 textAnchor 定位、上线前的老卡按 inlineFallback 兜底，都不需要正文 tag。
   for (const artifact of visible) {
     if (artifact.mountMode !== 'inline') continue;
-    if (artifact.metadata?.inlineFallback !== true) continue;
+    if (needsBodyTag(artifact)) continue; // 漫画：锚点就是正文 tag，上面那圈已经挂过了
     if (!missing(artifact.id)) continue;
     mountInline(mes, floor, artifact);
   }
@@ -328,11 +342,14 @@ function mountTrailing(mes: HTMLElement, floor: number, artifacts: VisualArtifac
 
 function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HTMLElement {
   const card = document.createElement('div');
-  // 漫画卡单独一个类：它要长得像柏宝绘的楼层卡（图即卡片，无边框无底色）
+  // 漫画卡与插画卡都单独标一个类：它们要长得像柏宝绘的楼层卡（图即卡片，无边框无底色）
   const comic = inline && artifact.mode === 'comic';
+  // 插画卡：正文里没有 tag，图与操作全归本插件（见 runIllustration 的注释）
+  const figure = inline && artifact.mode === 'illustration';
   card.className = [
     inline ? INLINE_CLASS : 'sti-floor-card',
     ...(comic ? ['is-comic'] : []),
+    ...(figure ? ['is-figure'] : []),
   ].join(' ');
   card.setAttribute(MOUNTED_ATTR, String(floor));
   card.setAttribute('data-sti-artifact-id', artifact.id);
@@ -362,6 +379,7 @@ function buildCard(artifact: VisualArtifact, floor: number, inline: boolean): HT
     // 只显示简短自然语言描述，不再显示插画 tag / 模式标签（用户不想要那些 tag）
     caption.appendChild(document.createTextNode(artifact.nl ? artifact.nl.slice(0, 80) : ''));
     if (caption.textContent) card.appendChild(caption);
+    if (figure) card.appendChild(buildIllustrationActions(artifact, floor));
   }
 
   return card;
@@ -510,6 +528,150 @@ function editComicPrompt(floor: number, artifactId: string): void {
 
 function imgAlt(artifact: VisualArtifact): string {
   return `${MODE_LABELS[artifact.mode] || artifact.mode} 作品`;
+}
+
+// ============================================================
+// 正文插画操作（重画 / 改词 / 下载 / 删除）
+// ============================================================
+
+/**
+ * 插画卡的悬浮操作组。
+ *
+ * 为什么需要：正文插画不再写 `<bbi_image>`，也就没有柏宝绘卡片上的那几个键了。
+ * 用户的「这张不满意，再画一次」不能跟着一起失去，所以这里补上同样的四件事。
+ */
+function buildIllustrationActions(artifact: VisualArtifact, floor: number): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'sti-figure-actions';
+
+  const make = (label: string, icon: 'redraw' | 'download' | 'edit' | 'trash'): HTMLButtonElement => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sti-figure-fab';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.innerHTML = svgIcon(icon);
+    btn.addEventListener('click', e => e.stopPropagation());
+    return btn;
+  };
+
+  const status = document.createElement('span');
+  status.className = 'sti-card-status';
+
+  const edit = make('改提示词', 'edit');
+  edit.title = '改这张图的提示词（正向词 / nl）并重画';
+  edit.addEventListener('click', () => editIllustrationPrompt(floor, artifact.id));
+
+  const redraw = make('重画这张', 'redraw');
+  redraw.title = '同一套提示词、换一个种子重画';
+  redraw.addEventListener('click', () => {
+    if (redraw.disabled) return;
+    redraw.disabled = true;
+    redraw.classList.add('is-busy');
+    status.textContent = '';
+    void (async () => {
+      try {
+        const result = await rerollIllustration(floor, artifact.id);
+        if (!result.ok) {
+          status.textContent = result.message ?? '重画失败。';
+          redraw.disabled = false;
+          redraw.classList.remove('is-busy');
+          return;
+        }
+        mountFloor(floor); // 图换了，旧卡因 data-sti-src 过期会被换掉
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+        redraw.disabled = false;
+        redraw.classList.remove('is-busy');
+      }
+    })();
+  });
+
+  const download = make('下载这张图', 'download');
+  download.addEventListener('click', () => {
+    const img = document.querySelector<HTMLImageElement>(
+      `.mes[mesid="${floor}"] [data-sti-artifact-id="${artifact.id}"] img`,
+    );
+    void saveImageFile(img?.src ?? artifact.imagePath, `illustration_${Date.now().toString(36)}.png`);
+  });
+
+  const remove = make('删除这张图', 'trash');
+  remove.classList.add('sti-figure-fab--danger');
+  remove.title = '从这一楼删掉这张图（正文不动，柏宝绘那边的 tag 也不动）';
+  remove.addEventListener('click', () => {
+    if (remove.disabled) return;
+    remove.disabled = true;
+    void (async () => {
+      try {
+        const done = await requestDeleteIllustration(floor, artifact.id);
+        if (!done) remove.disabled = false;
+      } catch (err) {
+        remove.disabled = false;
+        status.textContent = err instanceof Error ? err.message : String(err);
+      }
+    })();
+  });
+
+  wrap.append(edit, redraw, download, remove, status);
+  return wrap;
+}
+
+/** 改词面板：摊开这张图当时发出去的正向词 + nl + 角色块，改完就地重画。 */
+function editIllustrationPrompt(floor: number, artifactId: string): void {
+  const artifact = getArtifacts(floor).find(a => a.id === artifactId);
+  if (!artifact) return;
+  const characters = Array.isArray(artifact.metadata?.characters)
+    ? (artifact.metadata.characters as Array<{ name: string; tag: string; nl?: string }>)
+      .filter(c => c && typeof c.name === 'string' && typeof c.tag === 'string')
+      .map(c => ({ name: c.name, tag: c.tag, ...(c.nl ? { nl: c.nl } : {}) }))
+    : [];
+  openPromptDialog({
+    prompt: artifact.prompt ?? '',
+    nl: artifact.nl ?? '',
+    ...(characters.length ? { characters } : {}),
+    onApply: async (prompt, nl, nextCharacters) => {
+      const result = await rerollIllustration(floor, artifactId, {
+        prompt,
+        nl,
+        ...(nextCharacters.length ? { characters: nextCharacters } : {}),
+      });
+      if (result.ok) mountFloor(floor);
+      return result;
+    },
+    onDelete: () => requestDeleteIllustration(floor, artifactId),
+  });
+}
+
+/**
+ * 删除一张正文插画：撤卡片 → 删数据 → 落盘。
+ *
+ * 正文一个字都不动（这张图从来没写进正文）；柏宝绘那边的 tag 也不动——
+ * 它不是我们的东西。图库里的图片文件保留，随时能从柏宝绘图库找回来。
+ */
+export async function deleteIllustration(floor: number, artifactId: string): Promise<boolean> {
+  const card = document.querySelector<HTMLElement>(
+    `.mes[mesid="${floor}"] [data-sti-artifact-id="${artifactId}"]`,
+  );
+  if (card) {
+    revokeCardOverlay(card);
+    card.remove();
+  }
+  const removed = removeArtifact(floor, artifactId);
+  if (!removed) return false;
+  await saveChatSafe();
+  mountFloor(floor);
+  return true;
+}
+
+/** 带确认的删除（卡片按钮 / 改词面板共用一套文案）。 */
+export async function requestDeleteIllustration(floor: number, artifactId: string): Promise<boolean> {
+  const ok = await confirmDialog({
+    title: '删除这张图？',
+    message: '这张插画会从这一楼里删掉，正文与柏宝绘自己的图片不受影响。酒馆图库里的图片文件不会被删。',
+    confirmText: '删除这张图',
+  });
+  if (!ok) return false;
+  return deleteIllustration(floor, artifactId);
 }
 
 // ============================================================

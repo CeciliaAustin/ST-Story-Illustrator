@@ -56,14 +56,6 @@ import {
 } from '../baibai/manwaTag';
 import { mountFloor } from '../ui/floorCards';
 import { waitForBaiBaiImages } from '../baibai/waitImages';
-import {
-  buildBbiTag,
-  insertImageTag,
-  triggerCardGenerate,
-  waitForEntry,
-  replaceEntryPath,
-  promptHash,
-} from '../baibai/bbiTag';
 import { mountTheater } from '../theater/mount';
 import { recordImageLog, recordLlmError, recordNotice } from '../log/imageLog';
 import { saveSet, newSetId } from '../theater/store';
@@ -198,67 +190,74 @@ async function runIllustration(
 
   ctx.report({ stage: 'generating' });
 
-  // 正文插图**不切方案**：柏宝绘卡片用的就是用户自己选的那套。
+  // 正文插图**不切方案**：出图用的就是用户自己选的那套。
   // 以前这里会切到「正文插画」的模式方案，配合小剧场切走不切回，
   // 结果「选了 QQ 人，正文插图也跟着变 Q 版」。正文是用户的主画面，
   // 方案归用户管，插件不插手。
 
-  // 图片不再由本插件直接出、也不写 markdown：
-  // 写一条柏宝绘的 <bbi_image> tag 进正文，点卡片上的「生成图片」，其余全交给柏宝绘
-  // ——显示与它自己出的图一模一样（重绘/改词/下载/删除/灯箱），刷新后仍在，
-  // 请求也会进它的「请求历史」页。
-  const tag = buildBbiTag({
-    prompt,
-    // 方案不要 nl 时，即便模型自作主张写了也不写进 tag：柏宝绘不会用它，
-    // 却会留在正文里被后续「改词」看到，误导以为这张图带自然语言。
-    ...(wantNl && plan.data.nl ? { nl: plan.data.nl } : {}),
-    ...(plan.data.negative ? { negative: plan.data.negative } : {}),
-    ...(dressedCharacters.length ? { characters: dressedCharacters } : {}),
-    size: plan.data.size === 'landscape' ? 'landscape' : 'portrait',
-  });
-  const hash = promptHash(tag);
-  const inserted = await insertImageTag({
-    floor,
-    chatId: task.chatId,
-    swipeId: segment.messages[0]?.swipeId ?? 0,
-    ...(segment.messages[0]?.sendDate ? { sendDate: segment.messages[0].sendDate } : {}),
-    tag,
-    anchorText: segment.text.slice(0, 120),
-  });
-  if (!inserted.ok) throw new Error(insertFailureMessage(inserted.reason));
-  if (inserted.position === 'appended') {
-    // 兜底发生时要吭声：用户看到的是「图跑到最下面」，不说一句会以为是 bug。
-    recordNotice({
+  // 正文插图**不往正文里写 tag**（这一条是这次改的核心）。
+  //
+  // 以前写一条 <bbi_image> 再点它的卡片出图，看起来最省事，实际是在跟柏宝绘
+  // 抢同一块正文：它扫到已有 tag 就整楼跳过（自动模式），用户点「重新生成本楼」
+  // 时它又会 stripImageTags 把整楼 tag 一起清掉——我们那张跟着消失，序号也被重排。
+  // 现在改调它的公开 API：同一个后端、同一套方案、同一道并发闸门、同样进
+  // 「请求历史」与图库，但正文一个字都不碰。两边的命名空间彻底分开，
+  // 物理上不存在「被替换」这件事。
+  const galleryCharacter = segment.messages.find(m => !m.isUser)?.speaker ?? readPersonaName();
+  const imageStartedAt = Date.now();
+  let imagePath = '';
+  let seed: number | undefined;
+  try {
+    const result = await baiBaiAdapter.generate(
+      {
+        prompt,
+        // 方案不要 nl 时，即便模型自作主张写了也不发：柏宝绘不会用它，
+        // 白白占掉 tag 权重，还会让「改词」面板显示一段其实没生效的描述。
+        ...(wantNl && plan.data.nl ? { nl: plan.data.nl } : {}),
+        ...(plan.data.negative ? { negative: plan.data.negative } : {}),
+        ...(dressedCharacters.length ? { characters: dressedCharacters } : {}),
+        ...(galleryCharacter ? { character: galleryCharacter } : {}),
+        size: plan.data.size === 'landscape' ? 'landscape' : 'portrait',
+        save: true,
+      },
+      pickProfile(deps.fullSettings.profiles ?? [], 'illustration') ?? fallbackProfile('illustration'),
+    );
+    imagePath = result.path ?? result.dataUrl ?? '';
+    if (typeof result.seed === 'number') seed = result.seed;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    recordImageLog({
       mode: 'illustration',
       floor,
-      text: '没能在正文里定位到你划线的那段原文（可能选段被改过，或这一楼已有图片 tag），'
-        + '这张图已追加到本楼末尾。',
+      source: 'api',
+      plan: readOutConfig().activePlanName,
+      model: activePlanModel(),
+      prompt,
+      ...(plan.data.nl ? { nl: plan.data.nl } : {}),
+      ...(plan.data.negative ? { negative: plan.data.negative } : {}),
+      size: plan.data.size ?? 'portrait',
+      status: 'error',
+      error: message,
+      durationMs: Date.now() - imageStartedAt,
     });
+    throw new Error(`柏宝绘出图失败：${message}`);
   }
-
-  const triggered = await triggerCardGenerate(floor, inserted.seq);
-  if (!triggered.ok) throw new Error(cardFailureMessage(triggered));
-
-  // 等结果落库：拿到路径才好记进 artifact（也顺手把失败暴露出来）
-  const imageStartedAt = Date.now();
-  const waited = await waitForEntry(floor, segment.messages[0]?.swipeId ?? 0, hash, inserted.seq);
-  if (!waited.ok) console.warn('[ST-Story-Illustrator] 插画结果未取到：', waited.reason, waited.message);
   recordImageLog({
     mode: 'illustration',
     floor,
-    source: 'card',
+    source: 'api',
     plan: readOutConfig().activePlanName,
     model: activePlanModel(),
     prompt,
     ...(plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
     size: plan.data.size ?? 'portrait',
-    ...(waited.ok && typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
-    status: waited.ok ? 'ok' : 'error',
-    ...(waited.ok ? {} : { error: waited.message ?? waited.reason }),
+    ...(seed !== undefined ? { seed } : {}),
+    status: imagePath ? 'ok' : 'error',
+    ...(imagePath ? {} : { error: '柏宝绘没有返回图片（后端可能未配置）。' }),
     durationMs: Date.now() - imageStartedAt,
   });
-  const imagePath = waited.ok ? waited.entry.path : '';
+  if (!imagePath) throw new Error('柏宝绘没有返回图片：请到柏宝绘设置里确认出图后端已配置。');
 
   const mesTextEl = document.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
   const anchor = mesTextEl ? buildAnchor(segment.text, extractPlainText(mesTextEl), 0) : undefined;
@@ -270,22 +269,24 @@ async function runIllustration(
     sourceFloors: segment.floorIds,
     anchorFloor: floor,
     // 记下这一版正文是第几条 swipe：换 swipe 后显示层据此隐藏属于别的 swipe 的作品，
-    // 而 message.extra 本身不会随 swipe 重置（否则旧漫画会挂在新正文上）。
+    // 而 message.extra 本身不会随 swipe 重置（否则旧图会挂在新正文上）。
     swipeId: getSwipeId(floor),
-    // 图片已经是正文内容（柏宝绘卡片），不再注入本插件卡片，避免重复与多余的说明文字
-    mountMode: 'trailing',
+    // 这张图由本插件自己挂（正文里没有它的 tag）：位置靠 textAnchor，
+    // 存在与否靠 artifact 本身，正文里一个字符都不留。
+    mountMode: 'inline',
     ...(anchor ? { textAnchor: anchor } : {}),
     imagePath,
     prompt,
     ...(plan.data.nl ? { nl: plan.data.nl } : {}),
     ...(plan.data.negative ? { negative: plan.data.negative } : {}),
+    ...(seed !== undefined ? { seed } : {}),
     metadata: {
-      embeddedInBody: true,
-      bbiTag: tag,
-      bbiHash: hash,
-      bbiSlotSeq: inserted.seq,
-      ...(waited.ok ? { bbiGenerationId: waited.entry.generationId } : {}),
-      ...(waited.ok && typeof waited.entry.seed === 'number' ? { seed: waited.entry.seed } : {}),
+      // 显示层据此判定「这张不需要正文 tag 也能显示」（漫画的锚点才是 tag）
+      anchorKind: 'text',
+      source: 'baibai-api',
+      ...(dressedCharacters.length ? { characters: dressedCharacters } : {}),
+      ...(galleryCharacter ? { galleryCharacter } : {}),
+      ...(seed !== undefined ? { seed } : {}),
     },
     createdAt: Date.now(),
   };
@@ -294,26 +295,6 @@ async function runIllustration(
 
   mountFloor(floor);
   ctx.report({ stage: 'completed' });
-}
-
-/** 插入失败时的可读原因。 */
-function insertFailureMessage(reason: string): string {
-  switch (reason) {
-    case 'chat-changed': return '排队期间切换了聊天，已放弃写入（不覆盖别人的编辑）。';
-    case 'floor-changed': return '排队期间楼层内容变了，已放弃写入。';
-    case 'swipe-changed': return '排队期间楼层滑动到了别的版本，已放弃写入。';
-    case 'save-failed': return '正文写入后保存聊天失败，已回滚。';
-    default: return '无法写入正文（SillyTavern 上下文不可用）。';
-  }
-}
-
-/** 卡片触发失败时的可读原因。 */
-function cardFailureMessage(result: { reason: string; message?: string }): string {
-  if (result.reason === 'blocked') return result.message || '柏宝绘未配置出图后端。';
-  if (result.reason === 'no-card') {
-    return '正文已写入 tag，但楼层卡片没有出现。请确认柏宝绘已启用（它负责把 tag 显示成卡片）。';
-  }
-  return '正文已写入 tag，但没能自动点开柏宝绘的「生成图片」，请在楼层卡片上手动点一下。';
 }
 
 // ============================================================
