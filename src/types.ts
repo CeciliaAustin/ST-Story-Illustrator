@@ -270,6 +270,10 @@ export interface StoryIllustration {
 // 漫画分镜类型
 // ============================================================
 
+/**
+ * 旧版四档版面（deprecated adapter，保留给老设置/老 artifact 与出图规则复用）。
+ * 新代码请用 `ComicLayoutStyle`；两者通过 `migrateLayoutChoice` / `layoutStyleToLegacy` 互通。
+ */
 export type PanelLayout = 'regular' | 'irregular' | 'inset' | 'unframed';
 /**
  * 版面档位或「自动」。
@@ -279,6 +283,118 @@ export type PanelLayout = 'regular' | 'irregular' | 'inset' | 'unframed';
  * 落到具体某一页时永远是 PanelLayout 里的四档之一。
  */
 export type PanelLayoutChoice = PanelLayout | 'auto';
+
+// ============================================================
+// 新版面系统（版面系统扩展指导 §1 / §4）
+//
+// 三个独立维度：用户选风格 → 用户选格数 → LLM 设计具体几何。
+// 风格是「视觉语言」，生成模式（整页一次 / 确定性合成）是另一回事，不可混为一谈。
+// ============================================================
+
+/** 用户可选择的版面风格。 */
+export type ComicLayoutStyle =
+  | 'classic_grid'
+  | 'open_montage'
+  | 'diagonal_panels'
+  | 'hero_insets'
+  | 'freeform';
+
+/** 格数独立于风格；'auto' 交给 LLM 按 beat 决定。 */
+export type ComicPanelCount = 2 | 3 | 4 | 'auto';
+
+/** 留白偏好。'auto' = 由版面风格决定（默认），用户偏好优先于风格默认。 */
+export type ComicWhitespacePreference = 'auto' | 'compact' | 'airy' | 'dramatic';
+
+/** 具体留白强度（校验/合成用，来自偏好或风格默认）。 */
+export type ComicWhitespaceIntent = 'compact' | 'balanced' | 'airy' | 'dramatic';
+
+/** 归一化坐标点（0..1）。 */
+export interface ComicPoint {
+  x: number;
+  y: number;
+}
+
+/** 一格的几何形状。rect 之外的都需 polygon 顶点表达，供 Canvas clip 使用。 */
+export type ComicPanelShape =
+  | 'rect'
+  | 'parallelogram'
+  | 'triangle'
+  | 'trapezoid'
+  | 'custom_polygon'
+  | 'floating_rect';
+
+/** 一格在页面中的角色（视觉主次）。 */
+export type ComicPanelRole = 'hero' | 'support' | 'detail' | 'reaction' | 'object';
+
+/** 格子边框样式。 */
+export type ComicPanelBorder = 'none' | 'thin' | 'rough';
+
+/** 格内的安全区 / 保留区（气泡、旁白、必须留空）。归一化坐标。 */
+export interface ComicSafeArea {
+  type: 'bubble' | 'caption' | 'keep_clear';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 一格的可执行几何（Layout Director 的输出，Stage B）。
+ * 坐标为 0..1 页面归一化；custom_polygon 顶点也必须落在 bounding box 内。
+ */
+export interface ComicPanelSlot {
+  panelIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  shape: ComicPanelShape;
+  polygon?: ComicPoint[];
+  zIndex: number;
+  role: ComicPanelRole;
+  border: ComicPanelBorder;
+  overlapAllowed: boolean;
+  safeAreas?: ComicSafeArea[];
+}
+
+/** Visual Director 输出：先理解剧情再定视觉方案（Stage A）。 */
+export interface ComicVisualDirection {
+  beatId: string;
+  visualFocus: string;
+  emotionalTone: string;
+  pageRhythm: string;
+  recommendedLayout: ComicLayoutStyle;
+  recommendedPanelCount: number;
+  reason: string;
+  whitespaceIntent: ComicWhitespaceIntent;
+  readingOrder: 'top_to_bottom' | 'left_to_right' | 'right_to_left';
+  visualMotif?: string;
+}
+
+/** Layout Director 输出：可执行几何 + 留白参数（Stage B）。 */
+export interface ComicLayoutPlan {
+  style: ComicLayoutStyle;
+  panelCount: number;
+  background: 'black' | 'white' | 'transparent' | 'scene';
+  whitespace: {
+    intent: ComicWhitespaceIntent;
+    outerMargin: number;
+    gutter: number;
+    reservedRegions: Array<{ x: number; y: number; width: number; height: number }>;
+  };
+  readingOrder: number[];
+  slots: ComicPanelSlot[];
+  designRationale: string;
+}
+
+/** 版面校验结果（Stage C，由代码判定，不让 LLM 自我宣布合格）。 */
+export interface ComicLayoutValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  /** 安全的确定性修复（clamp、排序修复）记录。 */
+  fixes: string[];
+}
 export type PanelPageType = 'auto' | 'a' | 'b' | 'c' | 'd';
 export type DialoguePolicy = 'auto' | 'always' | 'eager';
 export type PanelBubbleArea = 'tl' | 'tc' | 'tr' | 'ml' | 'mr' | 'bl' | 'bc' | 'br';
@@ -569,6 +685,16 @@ export interface ComicPagePlan {
    * 所有页必须穿同一套——代码逐字拼进每个角色块，这是服装一致性的硬约束。
    */
   outfits?: StatusOutfit[];
+  /**
+   * 新版面系统 Stage A 的视觉方向。老计划没有也可正常出图。
+   * 有它时 LLM 已先想清楚「这一页的视觉核心 + 页面节奏」再排格子。
+   */
+  direction?: ComicVisualDirection;
+  /**
+   * 新版面系统 Stage B 的可执行几何。老计划没有时由旧四档 layout 兜底。
+   * 气泡层与未来的确定性合成都以这份 slots 为唯一几何真源。
+   */
+  layoutPlan?: ComicLayoutPlan;
   /** 各格只作为「这一格画了什么」的内容索引，不再一格一张图。 */
   panels: ComicPanelPlan[];
 }
@@ -706,13 +832,28 @@ export interface ModeSettings {
   shots: number;
   // 模式特定选项
   illustrationMultiImage?: boolean;
+  /** @deprecated 旧四档版面，读取时迁移到 comicStyle；仍保留以免覆盖老用户偏好。 */
   comicLayout?: PanelLayoutChoice;
+  /**
+   * 新版面风格（版面系统扩展指导 §1.1）。缺省时由 comicLayout 迁移而来。
+   * 'freeform' 之外的值会约束 LLM 不得擅自换风格；'freeform' 才允许它推荐任意风格。
+   */
+  comicStyle?: ComicLayoutStyle;
+  /**
+   * 格数，独立于风格（§1.2）。缺省时由 comicPanelsPerPage 迁移而来。
+   * 'auto' 交给 LLM；固定 2/3/4 时计划必须有对应数量的 panel 与 slot。
+   */
+  comicPanelCount?: ComicPanelCount;
+  /**
+   * 留白偏好（§1.3）。'auto'（默认）= 由版面风格决定；
+   * 用户明确偏好 > 版面风格默认 > LLM 对剧情的判断 > 系统默认。
+   */
+  comicWhitespace?: ComicWhitespacePreference;
   comicPageType?: PanelPageType;
   comicMaxPages?: number;
   /**
    * 每页固定几格（0 = 跟随版面：规整档 2 格，其余档不约束）。
-   * 以前「切页」完全由模型决定：regular 档的构图词是 2koma，模型却可能写 3~4 段内容，
-   * 版面切不出来就只能挤成一格。现在这个值会同时管住提示词、构图词与 nl 首句。
+   * @deprecated 由 comicPanelCount 取代；保留给老设置与旧代码路径。
    */
   comicPanelsPerPage?: number;
   comicDialoguePolicy?: DialoguePolicy;

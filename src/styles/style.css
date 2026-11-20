@@ -2547,3 +2547,57 @@
   .sti-lightbox { width: 96vw; max-width: 96vw; max-height: 88dvh; top: 6dvh; }
   .sti-lightbox-toolbar { flex-wrap: wrap; gap: 6px; }
 }
+
+/* ============================================================
+   版面风格卡片 + 线框预览（版面系统扩展指导 §5）
+   ============================================================ */
+.sti-config-sublabel {
+  font-size: 0.86em;
+  opacity: 0.72;
+  margin: 6px 0 6px;
+  font-weight: 600;
+}
+
+.sti-style-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sti-style-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 9px 6px;
+  border: 1px solid var(--sti-border, rgba(128, 128, 128, 0.32));
+  border-radius: 8px;
+  background: var(--sti-card-bg, rgba(128, 128, 128, 0.06));
+  color: inherit;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color .15s, background .15s, transform .1s;
+  font: inherit;
+}
+
+.sti-style-card:hover { border-color: var(--sti-wire-stroke, #5b8dff); transform: translateY(-1px); }
+.sti-style-card.selected {
+  border-color: var(--sti-wire-stroke, #5b8dff);
+  background: rgba(91, 141, 255, 0.12);
+  box-shadow: 0 0 0 1px var(--sti-wire-stroke, #5b8dff) inset;
+}
+.sti-style-card .sti-layout-preview {
+  max-width: 100%;
+  height: auto;
+  border-radius: 3px;
+  overflow: visible;
+}
+.sti-style-card-name { font-size: 0.86em; font-weight: 600; line-height: 1.2; }
+.sti-style-card-hint { font-size: 0.72em; opacity: 0.6; line-height: 1.3; }
+
+@media (max-width: 700px) {
+  .sti-style-cards { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .sti-style-card { padding: 8px 4px; }
+  .sti-style-card .sti-layout-preview { width: 72px; height: 72px; }
+}

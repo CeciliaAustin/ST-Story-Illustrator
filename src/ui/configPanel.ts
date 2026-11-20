@@ -28,6 +28,9 @@ import {
   type StoryIllustratorSettings,
 } from '../types';
 import { buildStudioTabs, type StudioTab } from './studio';
+import { styleWireframe } from './layoutPreview';
+import { resolveLayoutStyle, normalizePanelCount } from '../manga/layoutStyle';
+import type { ComicLayoutStyle } from '../types';
 import { destroyWandMenu, injectWandMenu } from './wandMenu';
 import { clearImageLog, getImageLog, type ImageLogEntry } from '../log/imageLog';
 import { getRunStatus, runStatusText } from './runStatus';
@@ -630,6 +633,61 @@ function planSelectRow(mode: CreationMode): HTMLElement {
   );
 }
 
+const COMIC_STYLE_CARDS: Array<{ id: ComicLayoutStyle; name: string; hint: string }> = [
+  { id: 'classic_grid', name: '传统四格', hint: '纵向等宽 / 2×2，阅读节奏稳定' },
+  { id: 'open_montage', name: '开放拼版', hint: '大小格自由组合，主次分明' },
+  { id: 'diagonal_panels', name: '斜切分格', hint: '斜边制造动势，适合冲突与速度' },
+  { id: 'hero_insets', name: '主图 + 特写', hint: '大主画面 + 浮动细节格，大量留白' },
+  { id: 'freeform', name: '自由构图', hint: '由 AI 按剧情设计版面并先出预览' },
+];
+
+/**
+ * 版面风格卡片（带线框预览）。点卡片即选中；选完同步写 comicStyle 与旧 comicLayout，
+ * 让旧代码路径仍然读到合法值。格数与留白偏好由下面两个下拉独立控制。
+ */
+function styleCardChooser(current: ComicLayoutStyle): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'sti-style-cards';
+  const paint = (selected: ComicLayoutStyle): void => {
+    wrap.querySelectorAll<HTMLElement>('.sti-style-card').forEach(card => {
+      card.classList.toggle('selected', card.dataset.style === selected);
+    });
+  };
+  for (const item of COMIC_STYLE_CARDS) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'sti-style-card';
+    card.dataset.style = item.id;
+    if (item.id === current) card.classList.add('selected');
+    card.appendChild(styleWireframe(item.id, { size: 78, showOrder: false }));
+    const name = document.createElement('div');
+    name.className = 'sti-style-card-name';
+    name.textContent = item.name;
+    card.appendChild(name);
+    const hint = document.createElement('div');
+    hint.className = 'sti-style-card-hint';
+    hint.textContent = item.hint;
+    card.appendChild(hint);
+    card.addEventListener('click', () => {
+      patchSettings(st => {
+        st.modes['comic'].comicStyle = item.id;
+        // 同步旧字段，兼容还没迁移的读取路径（auto 没有对应旧枚举，落到 open_montage 语义的 irregular）
+        st.modes['comic'].comicLayout = item.id === 'freeform' ? 'auto' : legacyOf(item.id);
+        st.panelLayout = item.id === 'freeform' ? 'regular' : legacyOf(item.id);
+      });
+      paint(item.id);
+    });
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+
+function legacyOf(style: ComicLayoutStyle): 'regular' | 'irregular' | 'inset' {
+  if (style === 'classic_grid') return 'regular';
+  if (style === 'hero_insets') return 'inset';
+  return 'irregular';
+}
+
 /** ④ 正文漫画分镜 */
 function renderComicSettings(): HTMLElement {
   const s = getSettings(DEFAULT_SETTINGS);
@@ -643,25 +701,36 @@ function renderComicSettings(): HTMLElement {
   group.appendChild(head);
 
   const box = section('正文插图切成漫画格', '与三套小剧场并列；勾选「正文漫画分镜」时生效，图会按分镜插进正文。');
-  box.appendChild(selectRow(
-    '版面',
-    comic?.comicLayout ?? 'auto',
-    [['auto', '自动（按剧情挑，推荐）'], ['regular', '规整分格'], ['irregular', '斜切分镜'], ['inset', '主图 + 嵌入格'], ['unframed', '无边框融白']],
-    v => patchSettings(st => {
-      st.modes['comic'].comicLayout = v as StoryIllustratorSettings['modes']['comic']['comicLayout'];
-      // panelLayout 是旧字段（老设置页/兼容读），自动档落成 regular 免得别处读到脏值
-      st.panelLayout = (v === 'auto' ? 'regular' : v) as StoryIllustratorSettings['panelLayout'];
-    }),
-    '自动：写 tag 的模型读过这一段剧情，由它逐页决定用哪一档（动作戏给拼版、只有人的独白给白底特写）。'
-    + '看不懂这几档就留着自动。',
-  ));
+
+  // 新版面系统：带线框预览的风格卡片（§5）。老设置经 adapter 迁移，不覆盖用户偏好。
+  const currentStyle = resolveLayoutStyle(comic ?? {});
+  const styleLabel = document.createElement('div');
+  styleLabel.className = 'sti-config-sublabel';
+  styleLabel.textContent = '版面风格（点选，线框即版面示意）';
+  box.appendChild(styleLabel);
+  box.appendChild(styleCardChooser(currentStyle));
+
   box.appendChild(selectRow(
     '每页格数',
-    String(comic?.comicPanelsPerPage ?? 0),
-    [['0', '跟随版面'], ['2', '2 格'], ['3', '3 格'], ['4', '4 格']],
-    v => patchSettings(st => { st.modes['comic'].comicPanelsPerPage = Number(v); }),
-    '一页切几格。定死之后，提示词、构图词（2/3/4koma）与 nl 分区会一起对齐——'
-    + '以前是模型说几格就几格，规整档的 2koma 会把三四段内容压进两格。',
+    String(normalizePanelCount(comic?.comicPanelCount ?? comic?.comicPanelsPerPage ?? 0)),
+    [['auto', '自动（按剧情决定）'], ['2', '固定 2 格'], ['3', '固定 3 格'], ['4', '固定 4 格']],
+    v => patchSettings(st => {
+      const count = v === 'auto' ? 'auto' : Number(v) as 2 | 3 | 4;
+      st.modes['comic'].comicPanelCount = count;
+      st.modes['comic'].comicPanelsPerPage = count === 'auto' ? 0 : count;
+    }),
+    '格数独立于风格。固定后每页的 panels、版面 slots 与构图词（Nkoma）都会对齐；'
+    + '自动则交给 AI 按这一瞬间的信息量决定（仍是一页一次出图，格数为提示词引导，非硬保证）。',
+  ));
+  box.appendChild(selectRow(
+    '留白偏好',
+    comic?.comicWhitespace ?? 'auto',
+    [['auto', '由版面决定（推荐）'], ['compact', '紧凑'], ['airy', '舒展'], ['dramatic', '大面积留白']],
+    v => patchSettings(st => {
+      st.modes['comic'].comicWhitespace = v as StoryIllustratorSettings['modes']['comic']['comicWhitespace'];
+    }),
+    '留白默认跟着风格走（传统四格紧凑、主图+特写戏剧性），这里选了就以你的偏好为准。'
+    + '黑底页留黑、白底页留白，不按规定百分比硬填。',
   ));
   box.appendChild(selectRow(
     '最多页数',

@@ -194,9 +194,21 @@ export async function generateComicPlan(
   try {
     const raw = await caller(system, user);
     // 用户钉死了档位就跟随用户：模型漏写 layout 时，不能按格数猜成别的档
-    const parsed = parseComicPagePlan(raw, input.options.panelLayout === 'auto' || !input.options.panelLayout
+    const fallback = input.options.panelLayout === 'auto' || !input.options.panelLayout
       ? {}
-      : { fallbackLayout: normalizePanelLayout(input.options.panelLayout) });
+      : { fallbackLayout: normalizePanelLayout(input.options.panelLayout) };
+    // 新版面系统：把用户锁定的风格/格数作为 layout 校验硬约束（Step 3）
+    const constraints = input.options.layoutStyle
+      ? {
+          ...(input.options.layoutStyle !== 'freeform'
+            ? { styleLocked: true, expectedStyle: input.options.layoutStyle }
+            : { styleLocked: false }),
+          ...(input.options.layoutPanelCount && input.options.layoutPanelCount !== 'auto'
+            ? { expectedPanelCount: input.options.layoutPanelCount }
+            : {}),
+        }
+      : {};
+    const parsed = parseComicPagePlan(raw, { ...fallback, layoutConstraints: constraints });
     if (parsed.pages.length === 0) {
       return {
         ok: false,

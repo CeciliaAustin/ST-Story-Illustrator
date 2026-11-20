@@ -36,6 +36,7 @@ import { buildLibraryBlock, buildCastBlock, readCastContext } from '../theater/l
 import { splitSegments, characterPromptsFromLibrary } from '../manga/tagSplit';
 import { enforceForGeneration } from '../manga/panelEnforce';
 import { resolvePanelsPerPage } from '../manga/panelPlan';
+import { resolveLayoutStyle, resolvePanelCount } from '../manga/layoutStyle';
 import { hasStoryContent } from '../manga/panelRelevance';
 import { composePagePrompt, findCastShortfall } from '../manga/pageCompose';
 import { createArtifactId, appendArtifact, updateArtifact } from '../storage/repository';
@@ -388,6 +389,10 @@ async function runComic(
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
     panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
+    // 新版面系统三维度（老设置经 adapter 迁移而来，不覆盖用户偏好）
+    layoutStyle: resolveLayoutStyle(modeSettings),
+    layoutPanelCount: resolvePanelCount(modeSettings),
+    layoutWhitespace: modeSettings.comicWhitespace ?? 'auto',
   };
 
   let plan = await generateComicPlan({
@@ -610,6 +615,10 @@ async function runComic(
         pageType,
         panelCount,
         panelTitles: composed.panelTitles,
+        // 新版面系统：把 LLM 的视觉方向 + 已校验几何随图存档。
+        // 显示层气泡与「版面设计」预览都以这份 slots 为真源，不再按 layout+count 猜格位。
+        ...(page.direction ? { direction: page.direction } : {}),
+        ...(page.layoutPlan ? { layoutPlan: page.layoutPlan } : {}),
         // 每格出场的人：显示层靠它把台词反查到正确的格（说话人证据 > 模型写的格号）
         panelCast: page.panels.map(panel => (panel.characters ?? []).map(c => c.name).filter(Boolean)),
         ...(typeof result.seed === 'number' ? { seed: result.seed } : {}),

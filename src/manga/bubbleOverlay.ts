@@ -24,7 +24,7 @@ import type {
   PanelPageType,
 } from '../types';
 import { resolveModeSettings } from '../types';
-import { panelSlots, layoutNoGoZones } from './panelSlots';
+import { panelSlots, layoutNoGoZones, type PanelSlot } from './panelSlots';
 import type { PanelDialogueItem, PlanOptions } from './bubbleTypes';
 
 /** 从 artifact 元数据还原版面档位；脏数据一律回落 regular。 */
@@ -43,6 +43,28 @@ export function artifactPageTypeOf(artifact: VisualArtifact): PanelPageType {
 export function artifactPanelCountOf(artifact: VisualArtifact): number {
   const v = artifact.metadata?.panelCount;
   return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0;
+}
+
+/**
+ * 气泡排版的格位：优先用随图存档的 layoutPlan.slots（LLM 设计 + 代码校验过的真实几何），
+ * 老 artifact 没有时回落按 layout/count 推算的旧格位。
+ * 斜切格先用其 bounding box——气泡层的 polygon 精确碰撞在几何 compositor（Step 5）补。
+ */
+export function artifactSlotsOf(artifact: VisualArtifact): PanelSlot[] {
+  const plan = artifact.metadata?.layoutPlan;
+  const planObj = plan && typeof plan === 'object' && !Array.isArray(plan)
+    ? plan as { slots?: unknown } : null;
+  if (planObj && Array.isArray(planObj.slots) && planObj.slots.length) {
+    const slots = planObj.slots
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object' && !Array.isArray(s))
+      .map(s => {
+        const n = (v: unknown, d: number): number =>
+          typeof v === 'number' && Number.isFinite(v) ? v : d;
+        return { x: n(s.x, 0), y: n(s.y, 0), width: n(s.width, 0.3), height: n(s.height, 0.3) };
+      });
+    if (slots.length) return slots;
+  }
+  return panelSlots(artifactLayoutOf(artifact), artifactPanelCountOf(artifact), artifactPageTypeOf(artifact));
 }
 
 /** 台词坐标归一：模型/存储里可能混进越界或非有限值，统一夹回 0~1。 */
@@ -97,7 +119,7 @@ export function comicOverlayPlan(
   const layout = artifactLayoutOf(artifact);
   const pageType = artifactPageTypeOf(artifact);
   const panelCount = artifactPanelCountOf(artifact);
-  const slots = panelSlots(layout, panelCount, pageType);
+  const slots = artifactSlotsOf(artifact);
   const noGo = layoutNoGoZones(layout, pageType);
   const meta = artifact.metadata ?? {};
   const panelCast = Array.isArray(meta.panelCast)

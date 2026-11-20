@@ -237,8 +237,8 @@ let cachedAvailability = null;
 function compareVersions(a, b) {
   const parseVersion = (v) => {
     return v.split(".").map((part) => {
-      const num = parseInt(part, 10);
-      return isNaN(num) ? 0 : num;
+      const num2 = parseInt(part, 10);
+      return isNaN(num2) ? 0 : num2;
     });
   };
   const partsA = parseVersion(a);
@@ -847,10 +847,10 @@ function cleanMessageText(mes, options = {}) {
 }
 function decodeHtmlEntities(text) {
   text = text.replace(/&#(\d+);/g, (_, code) => {
-    const num = parseInt(code, 10);
-    if (num > 0 && num <= 1114111) {
+    const num2 = parseInt(code, 10);
+    if (num2 > 0 && num2 <= 1114111) {
       try {
-        return String.fromCodePoint(num);
+        return String.fromCodePoint(num2);
       } catch {
         return "";
       }
@@ -858,10 +858,10 @@ function decodeHtmlEntities(text) {
     return "";
   });
   text = text.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-    const num = parseInt(hex, 16);
-    if (num > 0 && num <= 1114111) {
+    const num2 = parseInt(hex, 16);
+    if (num2 > 0 && num2 <= 1114111) {
       try {
-        return String.fromCodePoint(num);
+        return String.fromCodePoint(num2);
       } catch {
         return "";
       }
@@ -1294,7 +1294,7 @@ function layoutWordsIn(text) {
 function asRecord(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? v : null;
 }
-function str$1(v, fallback = "") {
+function str$2(v, fallback = "") {
   return typeof v === "string" ? v : fallback;
 }
 function detectModelFamily(model) {
@@ -1310,14 +1310,14 @@ function parseEndpoints(raw) {
   for (const item of raw) {
     const e = asRecord(item);
     if (!e) continue;
-    const id = str$1(e.id).trim();
+    const id = str$2(e.id).trim();
     if (!id) continue;
-    const url = str$1(e.url).trim();
+    const url = str$2(e.url).trim();
     out.push({
       id,
-      name: str$1(e.name).trim() || id,
+      name: str$2(e.name).trim() || id,
       url,
-      hasKey: str$1(e.key).trim().length > 0
+      hasKey: str$2(e.key).trim().length > 0
     });
   }
   return out;
@@ -1328,13 +1328,13 @@ function parseArtists(raw) {
   for (const item of raw) {
     const a = asRecord(item);
     if (!a) continue;
-    const id = str$1(a.id).trim();
+    const id = str$2(a.id).trim();
     if (!id) continue;
     out.push({
       id,
-      name: str$1(a.name).trim() || id,
-      prompt: str$1(a.prompt).trim(),
-      quality: str$1(a.quality).trim()
+      name: str$2(a.name).trim() || id,
+      prompt: str$2(a.prompt).trim(),
+      quality: str$2(a.quality).trim()
     });
   }
   return out;
@@ -1348,21 +1348,21 @@ function parsePlans(raw, endpoints, artists = []) {
   for (const item of raw) {
     const p = asRecord(item);
     if (!p) continue;
-    const id = str$1(p.id).trim();
+    const id = str$2(p.id).trim();
     if (!id) continue;
-    const endpointId = str$1(p.endpointId).trim();
-    const artistId = str$1(p.artistId).trim();
+    const endpointId = str$2(p.endpointId).trim();
+    const artistId = str$2(p.artistId).trim();
     const artist = artistById.get(artistId);
     out.push({
       id,
-      name: str$1(p.name).trim() || "未命名方案",
-      model: str$1(p.model).trim(),
+      name: str$2(p.name).trim() || "未命名方案",
+      model: str$2(p.model).trim(),
       endpointId,
       endpointName: ((_a = byId.get(endpointId)) == null ? void 0 : _a.name) ?? (endpointId || "(未指定)"),
       // 柏宝绘里尺寸直接存成形如 "832×1216" 的字符串
-      portraitSize: str$1(p.portraitSize).trim(),
-      landscapeSize: str$1(p.landscapeSize).trim(),
-      modelFamily: detectModelFamily(str$1(p.model)),
+      portraitSize: str$2(p.portraitSize).trim(),
+      landscapeSize: str$2(p.landscapeSize).trim(),
+      modelFamily: detectModelFamily(str$2(p.model)),
       naturalLanguage: p.naturalLanguage === true,
       artistId,
       artistName: (artist == null ? void 0 : artist.name) ?? "",
@@ -1377,11 +1377,11 @@ function parseOutConfig(raw) {
   const endpoints = parseEndpoints(nai.endpoints);
   const artists = parseArtists(nai.artistPresets);
   const plans = parsePlans(nai.plans, endpoints, artists);
-  const activePlanId = str$1(nai.activePlanId).trim();
+  const activePlanId = str$2(nai.activePlanId).trim();
   const active = plans.find((p) => p.id === activePlanId) ?? plans[0];
   const activeEndpoint = endpoints.find((e) => e.id === (active == null ? void 0 : active.endpointId));
   return {
-    backend: str$1(settings2.defaultBackend, "nai"),
+    backend: str$2(settings2.defaultBackend, "nai"),
     endpoints,
     plans,
     activePlanId: (active == null ? void 0 : active.id) ?? "",
@@ -2236,7 +2236,7 @@ function slotIndexAt(slots, px, py) {
 }
 const BUSY_COLS = 20;
 const BUSY_ROWS = 28;
-function clamp01$2(v) {
+function clamp01$3(v) {
   return v <= 0 ? 0 : v >= 1 ? 1 : v;
 }
 function buildBusyGrid(data, width, height, cols = BUSY_COLS, rows = BUSY_ROWS) {
@@ -2275,9 +2275,9 @@ function buildBusyGrid(data, width, height, cols = BUSY_COLS, rows = BUSY_ROWS) 
     const mean = sum[k] / n;
     const variance = Math.max(0, sumSq[k] / n - mean * mean);
     const std = Math.sqrt(variance);
-    const density = clamp01$2((std - 0.04) * 2.8);
-    const darkness = clamp01$2((0.52 - mean) * 1.6);
-    const busy = clamp01$2(0.75 * density + 0.45 * darkness);
+    const density = clamp01$3((std - 0.04) * 2.8);
+    const darkness = clamp01$3((0.52 - mean) * 1.6);
+    const busy = clamp01$3(0.75 * density + 0.45 * darkness);
     cells.push(Math.round(busy * 1e3) / 1e3);
     total += busy;
   }
@@ -2290,10 +2290,10 @@ function buildBusyGrid(data, width, height, cols = BUSY_COLS, rows = BUSY_ROWS) 
 }
 function busyInRect(grid, rect) {
   if (!grid || !grid.cells.length) return 0;
-  const x0 = clamp01$2(Math.min(rect.x, rect.x + rect.width));
-  const y0 = clamp01$2(Math.min(rect.y, rect.y + rect.height));
-  const x1 = clamp01$2(Math.max(rect.x, rect.x + rect.width));
-  const y1 = clamp01$2(Math.max(rect.y, rect.y + rect.height));
+  const x0 = clamp01$3(Math.min(rect.x, rect.x + rect.width));
+  const y0 = clamp01$3(Math.min(rect.y, rect.y + rect.height));
+  const x1 = clamp01$3(Math.max(rect.x, rect.x + rect.width));
+  const y1 = clamp01$3(Math.max(rect.y, rect.y + rect.height));
   if (x1 <= x0 || y1 <= y0) return 0;
   const cw = 1 / grid.cols;
   const ch = 1 / grid.rows;
@@ -3223,7 +3223,20 @@ function artifactPanelCountOf(artifact) {
   const v = (_a = artifact.metadata) == null ? void 0 : _a.panelCount;
   return typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0;
 }
-function clamp01$1(v) {
+function artifactSlotsOf(artifact) {
+  var _a;
+  const plan = (_a = artifact.metadata) == null ? void 0 : _a.layoutPlan;
+  const planObj = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : null;
+  if (planObj && Array.isArray(planObj.slots) && planObj.slots.length) {
+    const slots = planObj.slots.filter((s) => !!s && typeof s === "object" && !Array.isArray(s)).map((s) => {
+      const n = (v, d) => typeof v === "number" && Number.isFinite(v) ? v : d;
+      return { x: n(s.x, 0), y: n(s.y, 0), width: n(s.width, 0.3), height: n(s.height, 0.3) };
+    });
+    if (slots.length) return slots;
+  }
+  return panelSlots(artifactLayoutOf(artifact), artifactPanelCountOf(artifact), artifactPageTypeOf(artifact));
+}
+function clamp01$2(v) {
   return typeof v === "number" && Number.isFinite(v) ? Math.round(Math.min(1, Math.max(0, v)) * 1e4) / 1e4 : void 0;
 }
 function comicBaseImageOf(artifact) {
@@ -3235,8 +3248,8 @@ function comicBaseImageOf(artifact) {
 function comicOverlayPlan(artifact, settings2) {
   const items = (artifact.dialogue ?? []).filter((item) => item && typeof item.text === "string" && item.text.trim()).map((item) => {
     const { x: rawX, y: rawY, ...rest } = item;
-    const x = clamp01$1(rawX);
-    const y = clamp01$1(rawY);
+    const x = clamp01$2(rawX);
+    const y = clamp01$2(rawY);
     return {
       ...rest,
       text: item.text.trim(),
@@ -3249,8 +3262,8 @@ function comicOverlayPlan(artifact, settings2) {
   const font = comic.comicBubbleFont ?? settings2.bubbleFont;
   const layout = artifactLayoutOf(artifact);
   const pageType = artifactPageTypeOf(artifact);
-  const panelCount = artifactPanelCountOf(artifact);
-  const slots = panelSlots(layout, panelCount, pageType);
+  artifactPanelCountOf(artifact);
+  const slots = artifactSlotsOf(artifact);
   const noGo = layoutNoGoZones(layout, pageType);
   const meta = artifact.metadata ?? {};
   const panelCast = Array.isArray(meta.panelCast) ? meta.panelCast.map(
@@ -3270,21 +3283,21 @@ function normalizeDialogueEdits(value) {
   const out = [];
   for (const raw of value.slice(0, 4)) {
     if (!raw || typeof raw !== "object") continue;
-    const rec = raw;
-    const text = typeof rec.text === "string" ? rec.text.trim().slice(0, 60) : "";
+    const rec2 = raw;
+    const text = typeof rec2.text === "string" ? rec2.text.trim().slice(0, 60) : "";
     if (!text) continue;
     const item = { text };
-    if (typeof rec.speaker === "string" && rec.speaker.trim()) item.speaker = rec.speaker.trim().slice(0, 16);
-    if (typeof rec.area === "string" && ["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].includes(rec.area)) {
-      item.area = rec.area;
+    if (typeof rec2.speaker === "string" && rec2.speaker.trim()) item.speaker = rec2.speaker.trim().slice(0, 16);
+    if (typeof rec2.area === "string" && ["tl", "tc", "tr", "ml", "mr", "bl", "bc", "br"].includes(rec2.area)) {
+      item.area = rec2.area;
     }
-    if (rec.dir === "v") item.dir = "v";
-    if (rec.mood === "shout" || rec.mood === "whisper") item.mood = rec.mood;
-    if (typeof rec.panel === "number" && Number.isFinite(rec.panel) && rec.panel >= 1) {
-      item.panel = Math.round(rec.panel);
+    if (rec2.dir === "v") item.dir = "v";
+    if (rec2.mood === "shout" || rec2.mood === "whisper") item.mood = rec2.mood;
+    if (typeof rec2.panel === "number" && Number.isFinite(rec2.panel) && rec2.panel >= 1) {
+      item.panel = Math.round(rec2.panel);
     }
-    const x = clamp01$1(rec.x);
-    const y = clamp01$1(rec.y);
+    const x = clamp01$2(rec2.x);
+    const y = clamp01$2(rec2.y);
     if (x !== void 0 && y !== void 0) {
       item.x = x;
       item.y = y;
@@ -3885,7 +3898,7 @@ function destroyPromptDialog() {
   }
 }
 const SETTINGS_KEY = "baibai_image";
-function str(v) {
+function str$1(v) {
   return typeof v === "string" ? v.trim() : "";
 }
 function parsePromptSet(raw) {
@@ -3893,9 +3906,9 @@ function parsePromptSet(raw) {
   const autoTag = settings2.autoTag && typeof settings2.autoTag === "object" ? settings2.autoTag : {};
   const prompts = autoTag.prompts && typeof autoTag.prompts === "object" ? autoTag.prompts : {};
   return {
-    jailbreak: str(prompts.jailbreak),
-    spec: str(prompts.naiV5Spec) || str(prompts.naiSpec),
-    thinking: str(prompts.naiV5Thinking) || str(prompts.naiThinking)
+    jailbreak: str$1(prompts.jailbreak),
+    spec: str$1(prompts.naiV5Spec) || str$1(prompts.naiSpec),
+    thinking: str$1(prompts.naiV5Thinking) || str$1(prompts.naiThinking)
   };
 }
 function expandNlSections(text, nl) {
@@ -4210,6 +4223,219 @@ async function switchBaiBaiPlan(planId, options = {}) {
     return force ? { ok: true, reason: "already", message: `面板上已经是「${target.name}」，无需再切。` } : { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
   }
   return { ok: true, reason: "switched", message: `已切到「${target.name}」。` };
+}
+const NS = "http://www.w3.org/2000/svg";
+const VB = 100;
+function svgEl(name, attrs) {
+  const el2 = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) el2.setAttribute(k, String(v));
+  return el2;
+}
+const ROLE_FILL = {
+  hero: "rgba(91, 141, 255, 0.20)",
+  support: "rgba(91, 141, 255, 0.10)",
+  detail: "rgba(255, 176, 91, 0.18)",
+  reaction: "rgba(160, 120, 255, 0.16)",
+  object: "rgba(120, 200, 160, 0.16)"
+};
+function defaultSlots(style) {
+  const base = (panelIndex, x, y, width, height, role = "support") => ({
+    panelIndex,
+    x,
+    y,
+    width,
+    height,
+    shape: "rect",
+    zIndex: panelIndex,
+    role,
+    border: "thin",
+    overlapAllowed: false
+  });
+  switch (style) {
+    case "classic_grid":
+      return [
+        base(0, 0.06, 0.04, 0.88, 0.2, "hero"),
+        base(1, 0.06, 0.28, 0.88, 0.2),
+        base(2, 0.06, 0.52, 0.88, 0.2),
+        base(3, 0.06, 0.76, 0.88, 0.2)
+      ];
+    case "diagonal_panels":
+      return [base(0, 0.05, 0.05, 0.9, 0.42, "hero"), {
+        ...base(1, 0.05, 0.53, 0.9, 0.42),
+        shape: "parallelogram",
+        polygon: [
+          { x: 0.2, y: 0.53 },
+          { x: 0.95, y: 0.53 },
+          { x: 0.8, y: 0.95 },
+          { x: 0.05, y: 0.95 }
+        ]
+      }];
+    case "hero_insets":
+      return [
+        base(0, 0.12, 0.34, 0.7, 0.52, "hero"),
+        base(1, 0.2, 0.06, 0.5, 0.18, "detail"),
+        base(2, 0.66, 0.72, 0.24, 0.18, "detail")
+      ];
+    case "freeform":
+      return [
+        base(0, 0.08, 0.1, 0.55, 0.62, "hero"),
+        { ...base(1, 0.62, 0.08, 0.3, 0.3, "detail"), shape: "floating_rect" },
+        base(2, 0.5, 0.66, 0.42, 0.26, "object")
+      ];
+    case "open_montage":
+    default:
+      return [
+        base(0, 0.1, 0.08, 0.8, 0.34, "hero"),
+        base(1, 0.08, 0.5, 0.46, 0.36),
+        base(2, 0.6, 0.56, 0.32, 0.26, "detail")
+      ];
+  }
+}
+function drawSlot(svg, slot, index2, opts) {
+  const isPoly = !!slot.polygon && slot.polygon.length >= 3 && slot.shape !== "rect";
+  let shapeEl;
+  if (isPoly) {
+    const pts = slot.polygon.map((p) => `${(p.x * VB).toFixed(1)},${(p.y * VB).toFixed(1)}`).join(" ");
+    shapeEl = svgEl("polygon", { points: pts });
+  } else {
+    shapeEl = svgEl("rect", {
+      x: (slot.x * VB).toFixed(1),
+      y: (slot.y * VB).toFixed(1),
+      width: (slot.width * VB).toFixed(1),
+      height: (slot.height * VB).toFixed(1),
+      rx: slot.shape === "floating_rect" ? 2 : 0.6
+    });
+  }
+  shapeEl.setAttribute("fill", ROLE_FILL[slot.role] ?? ROLE_FILL.support);
+  shapeEl.setAttribute("stroke", "var(--sti-wire-stroke, #5b8dff)");
+  shapeEl.setAttribute("stroke-width", slot.role === "hero" ? "1.6" : "1");
+  if (slot.border === "none") shapeEl.setAttribute("stroke-dasharray", "2 2");
+  svg.appendChild(shapeEl);
+  if (opts.showSafeAreas) {
+    for (const sa of slot.safeAreas ?? []) {
+      const r = svgEl("rect", {
+        x: (sa.x * VB).toFixed(1),
+        y: (sa.y * VB).toFixed(1),
+        width: (sa.width * VB).toFixed(1),
+        height: (sa.height * VB).toFixed(1),
+        fill: "rgba(255,176,91,0.10)",
+        stroke: "var(--sti-wire-safe, #ffb05b)",
+        "stroke-width": "0.7",
+        "stroke-dasharray": "2 1.5"
+      });
+      svg.appendChild(r);
+    }
+  }
+  {
+    const cx = (slot.x + slot.width / 2) * VB;
+    const cy = (slot.y + slot.height / 2) * VB;
+    const badge = svgEl("circle", {
+      cx: cx.toFixed(1),
+      cy: cy.toFixed(1),
+      r: 6,
+      fill: "var(--sti-wire-badge, #5b8dff)"
+    });
+    svg.appendChild(badge);
+    const label = svgEl("text", {
+      x: cx.toFixed(1),
+      y: (cy + 2.6).toFixed(1),
+      "text-anchor": "middle",
+      "font-size": "7.5",
+      fill: "#fff",
+      "font-weight": "bold"
+    });
+    label.textContent = String(index2 + 1);
+    svg.appendChild(label);
+  }
+}
+function renderLayoutPreview(plan, opts = {}) {
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${VB} ${VB}`,
+    width: opts.size ?? 96,
+    height: opts.size ?? 96,
+    class: "sti-layout-preview",
+    role: "img",
+    "aria-label": "漫画版面线框预览"
+  });
+  const bg = svgEl("rect", {
+    x: 0,
+    y: 0,
+    width: VB,
+    height: VB,
+    fill: "#fafafa"
+  });
+  svg.appendChild(bg);
+  const order = plan.readingOrder.length ? plan.readingOrder : plan.slots.map((_, i) => i + 1);
+  order.forEach((slotIdx, orderIdx) => {
+    const slot = plan.slots.find((s) => s.panelIndex === slotIdx - 1) ?? plan.slots[orderIdx];
+    if (slot) drawSlot(svg, slot, orderIdx, { ...opts });
+  });
+  return svg;
+}
+function styleWireframe(style, opts = {}) {
+  const slots = defaultSlots(style);
+  const pseudo = {
+    panelCount: slots.length,
+    readingOrder: slots.map((_, i) => i + 1),
+    slots
+  };
+  return renderLayoutPreview(pseudo, { ...opts, showSafeAreas: false });
+}
+const STYLES = [
+  "classic_grid",
+  "open_montage",
+  "diagonal_panels",
+  "hero_insets",
+  "freeform"
+];
+function normalizeLayoutStyle(v) {
+  return typeof v === "string" && STYLES.includes(v) ? v : "open_montage";
+}
+function normalizePanelCount(v) {
+  return v === 2 || v === 3 || v === 4 ? v : "auto";
+}
+function migrateLayoutChoice(v) {
+  const x = typeof v === "string" ? v : "";
+  switch (x) {
+    case "regular":
+      return "classic_grid";
+    case "inset":
+      return "hero_insets";
+    case "unframed":
+      return "hero_insets";
+    case "irregular":
+    case "auto":
+    default:
+      return "open_montage";
+  }
+}
+function resolveLayoutStyle(input) {
+  if (input.comicStyle) return normalizeLayoutStyle(input.comicStyle);
+  if (input.comicLayout) return migrateLayoutChoice(input.comicLayout);
+  return "freeform";
+}
+function resolvePanelCount(input) {
+  if (input.comicPanelCount !== void 0) return normalizePanelCount(input.comicPanelCount);
+  const old = normalizePanelCount(input.comicPanelsPerPage);
+  return old;
+}
+function defaultWhitespaceForStyle(style) {
+  switch (style) {
+    case "classic_grid":
+      return "compact";
+    case "open_montage":
+      return "airy";
+    case "diagonal_panels":
+      return "balanced";
+    case "hero_insets":
+      return "dramatic";
+    case "freeform":
+    default:
+      return "balanced";
+  }
+}
+function isStyleLocked(style) {
+  return style !== "freeform";
 }
 const ITEM = {
   id: "sti-menu-studio",
@@ -5149,6 +5375,53 @@ function planSelectRow(mode) {
     snap.plans.length === 0 ? "柏宝绘里还没有出图方案，请先在柏宝绘设置里建一套。" : snap.backend !== "nai" ? `柏宝绘当前出图渠道是「${snap.backend}」，按模式分配方案只对 NAI 生效——这样选会在生成时直接报错，不会白花钱。` : "出图前自动切到这套方案，出完切回原样；切不过去就停下报错（不会偷偷用旧方案烧钱）。"
   );
 }
+const COMIC_STYLE_CARDS = [
+  { id: "classic_grid", name: "传统四格", hint: "纵向等宽 / 2×2，阅读节奏稳定" },
+  { id: "open_montage", name: "开放拼版", hint: "大小格自由组合，主次分明" },
+  { id: "diagonal_panels", name: "斜切分格", hint: "斜边制造动势，适合冲突与速度" },
+  { id: "hero_insets", name: "主图 + 特写", hint: "大主画面 + 浮动细节格，大量留白" },
+  { id: "freeform", name: "自由构图", hint: "由 AI 按剧情设计版面并先出预览" }
+];
+function styleCardChooser(current) {
+  const wrap = document.createElement("div");
+  wrap.className = "sti-style-cards";
+  const paint2 = (selected) => {
+    wrap.querySelectorAll(".sti-style-card").forEach((card) => {
+      card.classList.toggle("selected", card.dataset.style === selected);
+    });
+  };
+  for (const item of COMIC_STYLE_CARDS) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "sti-style-card";
+    card.dataset.style = item.id;
+    if (item.id === current) card.classList.add("selected");
+    card.appendChild(styleWireframe(item.id, { size: 78, showOrder: false }));
+    const name = document.createElement("div");
+    name.className = "sti-style-card-name";
+    name.textContent = item.name;
+    card.appendChild(name);
+    const hint = document.createElement("div");
+    hint.className = "sti-style-card-hint";
+    hint.textContent = item.hint;
+    card.appendChild(hint);
+    card.addEventListener("click", () => {
+      patchSettings((st) => {
+        st.modes["comic"].comicStyle = item.id;
+        st.modes["comic"].comicLayout = item.id === "freeform" ? "auto" : legacyOf(item.id);
+        st.panelLayout = item.id === "freeform" ? "regular" : legacyOf(item.id);
+      });
+      paint2(item.id);
+    });
+    wrap.appendChild(card);
+  }
+  return wrap;
+}
+function legacyOf(style) {
+  if (style === "classic_grid") return "regular";
+  if (style === "hero_insets") return "inset";
+  return "irregular";
+}
 function renderComicSettings() {
   var _a;
   const s = getSettings(DEFAULT_SETTINGS);
@@ -5160,24 +5433,31 @@ function renderComicSettings() {
   head.textContent = "④ 正文漫画分镜";
   group.appendChild(head);
   const box = section("正文插图切成漫画格", "与三套小剧场并列；勾选「正文漫画分镜」时生效，图会按分镜插进正文。");
-  box.appendChild(selectRow(
-    "版面",
-    (comic == null ? void 0 : comic.comicLayout) ?? "auto",
-    [["auto", "自动（按剧情挑，推荐）"], ["regular", "规整分格"], ["irregular", "斜切分镜"], ["inset", "主图 + 嵌入格"], ["unframed", "无边框融白"]],
-    (v) => patchSettings((st) => {
-      st.modes["comic"].comicLayout = v;
-      st.panelLayout = v === "auto" ? "regular" : v;
-    }),
-    "自动：写 tag 的模型读过这一段剧情，由它逐页决定用哪一档（动作戏给拼版、只有人的独白给白底特写）。看不懂这几档就留着自动。"
-  ));
+  const currentStyle = resolveLayoutStyle(comic ?? {});
+  const styleLabel = document.createElement("div");
+  styleLabel.className = "sti-config-sublabel";
+  styleLabel.textContent = "版面风格（点选，线框即版面示意）";
+  box.appendChild(styleLabel);
+  box.appendChild(styleCardChooser(currentStyle));
   box.appendChild(selectRow(
     "每页格数",
-    String((comic == null ? void 0 : comic.comicPanelsPerPage) ?? 0),
-    [["0", "跟随版面"], ["2", "2 格"], ["3", "3 格"], ["4", "4 格"]],
+    String(normalizePanelCount((comic == null ? void 0 : comic.comicPanelCount) ?? (comic == null ? void 0 : comic.comicPanelsPerPage) ?? 0)),
+    [["auto", "自动（按剧情决定）"], ["2", "固定 2 格"], ["3", "固定 3 格"], ["4", "固定 4 格"]],
     (v) => patchSettings((st) => {
-      st.modes["comic"].comicPanelsPerPage = Number(v);
+      const count = v === "auto" ? "auto" : Number(v);
+      st.modes["comic"].comicPanelCount = count;
+      st.modes["comic"].comicPanelsPerPage = count === "auto" ? 0 : count;
     }),
-    "一页切几格。定死之后，提示词、构图词（2/3/4koma）与 nl 分区会一起对齐——以前是模型说几格就几格，规整档的 2koma 会把三四段内容压进两格。"
+    "格数独立于风格。固定后每页的 panels、版面 slots 与构图词（Nkoma）都会对齐；自动则交给 AI 按这一瞬间的信息量决定（仍是一页一次出图，格数为提示词引导，非硬保证）。"
+  ));
+  box.appendChild(selectRow(
+    "留白偏好",
+    (comic == null ? void 0 : comic.comicWhitespace) ?? "auto",
+    [["auto", "由版面决定（推荐）"], ["compact", "紧凑"], ["airy", "舒展"], ["dramatic", "大面积留白"]],
+    (v) => patchSettings((st) => {
+      st.modes["comic"].comicWhitespace = v;
+    }),
+    "留白默认跟着风格走（传统四格紧凑、主图+特写戏剧性），这里选了就以你的偏好为准。黑底页留黑、白底页留白，不按规定百分比硬填。"
   ));
   box.appendChild(selectRow(
     "最多页数",
@@ -6141,14 +6421,14 @@ function resolveOutfits(raw, personaName = "") {
   if (Array.isArray(raw)) {
     for (const item of raw) {
       if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-      const rec = item;
-      push2(rec.name, rec.outfit ?? rec.current ?? rec.clothing);
+      const rec2 = item;
+      push2(rec2.name, rec2.outfit ?? rec2.current ?? rec2.clothing);
     }
   } else if (typeof raw === "object") {
     for (const [name, value] of Object.entries(raw)) {
       if (value && typeof value === "object" && !Array.isArray(value)) {
-        const rec = value;
-        push2(rec.name ?? name, rec.outfit ?? rec.current ?? rec.clothing);
+        const rec2 = value;
+        push2(rec2.name ?? name, rec2.outfit ?? rec2.current ?? rec2.clothing);
       } else {
         push2(name, value);
       }
@@ -6203,6 +6483,292 @@ function buildOutfitBlock(input) {
     "固定外貌（发色 / 瞳色 / 体型）仍然只由角色库提供，不要写进 outfit。",
     lines.join("\n")
   ].join("\n");
+}
+const MIN_SIZE = 0.06;
+const EPS = 2e-3;
+const clamp01$1 = (n) => Math.max(0, Math.min(1, n));
+function needsPolygon(slot) {
+  return slot.shape === "parallelogram" || slot.shape === "triangle" || slot.shape === "trapezoid" || slot.shape === "custom_polygon";
+}
+function overlaps(a, b) {
+  const ax2 = a.x + a.width;
+  const ay2 = a.y + a.height;
+  const bx2 = b.x + b.width;
+  const by2 = b.y + b.height;
+  return a.x < bx2 - EPS && ax2 > b.x + EPS && a.y < by2 - EPS && ay2 > b.y + EPS;
+}
+function polygonSelfIntersects(pts) {
+  if (pts.length < 4) return false;
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const segIntersect = (p1, p2, p3, p4) => {
+    const d1 = cross(p3, p4, p1);
+    const d2 = cross(p3, p4, p2);
+    const d3 = cross(p1, p2, p3);
+    const d4 = cross(p1, p2, p4);
+    return (d1 > 0 && d2 < 0 || d1 < 0 && d2 > 0) && (d3 > 0 && d4 < 0 || d3 < 0 && d4 > 0);
+  };
+  const n = pts.length;
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      if (i === j || j === i + 1 || i === 0 && j === n - 1) continue;
+      if (segIntersect(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n])) return true;
+    }
+  }
+  return false;
+}
+function repairLayoutPlan(plan) {
+  const fixes = [];
+  const n = plan.slots.length;
+  const slots = plan.slots.map((s, i) => {
+    const x = clamp01$1(Number.isFinite(s.x) ? s.x : 0);
+    const y = clamp01$1(Number.isFinite(s.y) ? s.y : 0);
+    const rawW = Number.isFinite(s.width) ? s.width : 1;
+    const rawH = Number.isFinite(s.height) ? s.height : 1;
+    let width = Math.max(MIN_SIZE, Math.min(rawW, 1 - x));
+    let height = Math.max(MIN_SIZE, Math.min(rawH, 1 - y));
+    if (width !== s.width || height !== s.height || x !== s.x || y !== s.y) {
+      fixes.push(`格 ${i + 1} 的坐标/尺寸已夹回页面范围内`);
+    }
+    let polygon = s.polygon;
+    if (polygon && needsPolygon(s) && polygon.length >= 3) {
+      polygon = polygon.map((p) => ({
+        x: Math.max(x, Math.min(x + width, clamp01$1(Number.isFinite(p.x) ? p.x : x))),
+        y: Math.max(y, Math.min(y + height, clamp01$1(Number.isFinite(p.y) ? p.y : y)))
+      }));
+      fixes.push(`格 ${i + 1} 的 polygon 顶点已夹进自身 bounding box`);
+    }
+    return { ...s, x, y, width, height, ...polygon ? { polygon } : {} };
+  });
+  const seen = /* @__PURE__ */ new Set();
+  const order = [];
+  for (const v of plan.readingOrder) {
+    const k = Math.round(Number(v));
+    if (k >= 1 && k <= n && !seen.has(k)) {
+      seen.add(k);
+      order.push(k);
+    }
+  }
+  for (let k = 1; k <= n; k += 1) {
+    if (!seen.has(k)) order.push(k);
+  }
+  if (order.length !== plan.readingOrder.length || order.some((v, i) => v !== plan.readingOrder[i])) {
+    fixes.push("阅读顺序已修复为 1..N 的完整排列");
+  }
+  const outerMargin = Math.max(0, Math.min(0.5, clampNum(plan.whitespace.outerMargin, 0.04)));
+  const gutter = Math.max(0, Math.min(0.3, clampNum(plan.whitespace.gutter, 0.02)));
+  const reservedRegions = (plan.whitespace.reservedRegions ?? []).map((r) => ({
+    x: clamp01$1(clampNum(r.x, 0)),
+    y: clamp01$1(clampNum(r.y, 0)),
+    width: Math.max(0, Math.min(1, clampNum(r.width, 0))),
+    height: Math.max(0, Math.min(1, clampNum(r.height, 0)))
+  }));
+  return {
+    plan: {
+      ...plan,
+      slots,
+      readingOrder: order,
+      whitespace: { ...plan.whitespace, outerMargin, gutter, reservedRegions }
+    },
+    fixes
+  };
+}
+function clampNum(v, fallback) {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+function validateLayoutPlan(input) {
+  const { plan } = input;
+  const errors = [];
+  const warnings = [];
+  const fixes = [];
+  const slots = plan.slots ?? [];
+  const n = slots.length;
+  if (!Number.isInteger(plan.panelCount) || plan.panelCount < 1 || plan.panelCount > 8) {
+    errors.push(`panelCount 非法：${plan.panelCount}`);
+  }
+  if (plan.panelCount !== n) {
+    errors.push(`slots 数量（${n}）与 panelCount（${plan.panelCount}）不一致`);
+  }
+  if (input.expectedPanelCount && n !== input.expectedPanelCount) {
+    errors.push(`用户固定 ${input.expectedPanelCount} 格，但布局给出 ${n} 格`);
+  }
+  if (input.styleLocked && input.expectedStyle && plan.style !== input.expectedStyle) {
+    errors.push(`用户锁定风格 ${input.expectedStyle}，但布局写成了 ${plan.style}`);
+  }
+  const order = plan.readingOrder ?? [];
+  if (order.length !== n || new Set(order).size !== n || order.some((v) => v < 1 || v > n)) {
+    errors.push(`readingOrder 不是 1..${n} 的完整排列`);
+  }
+  slots.forEach((s, i) => {
+    const label = `格 ${i + 1}`;
+    if (s.x < 0 || s.y < 0 || s.x + s.width > 1 + EPS || s.y + s.height > 1 + EPS) {
+      errors.push(`${label} 超出页面（坐标必须在 0..1）`);
+    }
+    if (s.width < MIN_SIZE || s.height < MIN_SIZE) {
+      errors.push(`${label} 尺寸过小，读者看不清`);
+    }
+    if (needsPolygon(s)) {
+      const pts = s.polygon ?? [];
+      if (pts.length < 3) {
+        errors.push(`${label} 是 ${s.shape}，但没有给出至少 3 个 polygon 顶点`);
+      } else {
+        const out = pts.some((p) => p.x < s.x - EPS || p.x > s.x + s.width + EPS || p.y < s.y - EPS || p.y > s.y + s.height + EPS);
+        if (out) errors.push(`${label} 的 polygon 顶点超出了自身 bounding box`);
+        if (polygonSelfIntersects(pts)) errors.push(`${label} 的 polygon 自交`);
+      }
+    }
+    for (const sa of s.safeAreas ?? []) {
+      if (sa.x < 0 || sa.y < 0 || sa.x + sa.width > 1 + EPS || sa.y + sa.height > 1 + EPS) {
+        errors.push(`${label} 的安全区越出页面`);
+      }
+    }
+  });
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      if (!slots[i].overlapAllowed && !slots[j].overlapAllowed && overlaps(slots[i], slots[j])) {
+        errors.push(`格 ${i + 1} 与格 ${j + 1} 重叠，但都未声明允许重叠`);
+      }
+    }
+  }
+  for (const r of plan.whitespace.reservedRegions ?? []) {
+    if (r.width < EPS || r.height < EPS) continue;
+    slots.forEach((s, i) => {
+      if (overlaps(s, r) && s.role !== "hero") {
+        warnings.push(`格 ${i + 1} 压到了预留留白区（若这是有意的，可忽略）`);
+      }
+    });
+  }
+  if (input.panels && input.panels.length !== n) {
+    warnings.push(`panel 内容（${input.panels.length}）与 slot 数（${n}）不一致`);
+  }
+  if (input.dialogue) {
+    let lastPanel = 0;
+    for (const d of input.dialogue) {
+      if (typeof d.panel === "number") {
+        if (d.panel < 1 || d.panel > n) {
+          errors.push(`台词「${d.text.slice(0, 12)}」指向不存在的格 ${d.panel}`);
+        }
+        if (d.panel < lastPanel) warnings.push("台词的 panel 号倒退，请按阅读顺序检查");
+        lastPanel = d.panel;
+      }
+    }
+  }
+  return { ok: errors.length === 0, errors, warnings, fixes };
+}
+const SHAPES = [
+  "rect",
+  "parallelogram",
+  "triangle",
+  "trapezoid",
+  "custom_polygon",
+  "floating_rect"
+];
+const ROLES = ["hero", "support", "detail", "reaction", "object"];
+const BORDERS = ["none", "thin", "rough"];
+const INTENTS = ["compact", "balanced", "airy", "dramatic"];
+const READING = ["top_to_bottom", "left_to_right", "right_to_left"];
+const rec = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : null;
+const str = (v, max) => typeof v === "string" && v.trim() ? v.trim().slice(0, max) : void 0;
+const num = (v, fallback) => typeof v === "number" && Number.isFinite(v) ? v : fallback;
+function parseRect(v) {
+  const o = rec(v);
+  if (!o) return { x: 0, y: 0, width: 0, height: 0 };
+  return { x: num(o.x, 0), y: num(o.y, 0), width: num(o.width, 0), height: num(o.height, 0) };
+}
+function parsePoint(v) {
+  const o = rec(v);
+  if (!o) return null;
+  return { x: num(o.x, 0), y: num(o.y, 0) };
+}
+function parseSafeAreas(raw) {
+  if (!Array.isArray(raw)) return void 0;
+  const out = [];
+  for (const item of raw.slice(0, 8)) {
+    const o = rec(item);
+    if (!o) continue;
+    const type = o.type === "bubble" || o.type === "caption" || o.type === "keep_clear" ? o.type : "keep_clear";
+    out.push({ type, ...parseRect(o) });
+  }
+  return out.length ? out : void 0;
+}
+function parseSlot(raw, index2) {
+  const o = rec(raw);
+  if (!o) return null;
+  const shape = typeof o.shape === "string" && SHAPES.includes(o.shape) ? o.shape : "rect";
+  const polygon = Array.isArray(o.polygon) ? o.polygon.map(parsePoint).filter((p) => p !== null).slice(0, 12) : void 0;
+  const role = typeof o.role === "string" && ROLES.includes(o.role) ? o.role : index2 === 0 ? "hero" : "support";
+  const border = typeof o.border === "string" && BORDERS.includes(o.border) ? o.border : "thin";
+  return {
+    panelIndex: Math.max(0, Math.floor(num(o.panelIndex, index2))),
+    x: num(o.x, 0),
+    y: num(o.y, 0),
+    width: num(o.width, 0.3),
+    height: num(o.height, 0.3),
+    shape,
+    ...polygon && polygon.length >= 3 ? { polygon } : {},
+    zIndex: Math.floor(num(o.zIndex, index2)),
+    role,
+    border,
+    overlapAllowed: o.overlapAllowed === true,
+    ...(() => {
+      const sa = parseSafeAreas(o.safeAreas);
+      return sa ? { safeAreas: sa } : {};
+    })()
+  };
+}
+function parseVisualDirection(raw) {
+  const o = rec(raw);
+  if (!o) return void 0;
+  const readingOrder = READING.includes(String(o.readingOrder)) ? o.readingOrder : "top_to_bottom";
+  const whitespaceIntent = INTENTS.includes(String(o.whitespaceIntent)) ? o.whitespaceIntent : "balanced";
+  const direction = {
+    beatId: str(o.beatId, 80) ?? "",
+    visualFocus: str(o.visualFocus, 200) ?? "",
+    emotionalTone: str(o.emotionalTone, 120) ?? "",
+    pageRhythm: str(o.pageRhythm, 200) ?? "",
+    recommendedLayout: normalizeLayoutStyle(o.recommendedLayout),
+    recommendedPanelCount: Math.max(1, Math.min(8, Math.round(num(o.recommendedPanelCount, 3)))),
+    reason: str(o.reason, 300) ?? "",
+    whitespaceIntent,
+    readingOrder
+  };
+  const motif = str(o.visualMotif, 120);
+  if (motif) direction.visualMotif = motif;
+  return direction;
+}
+function parseLayoutPlan(raw, context = {}) {
+  const o = rec(raw);
+  if (!o) return void 0;
+  const body = rec(o.layoutPlan) ?? o;
+  if (!Array.isArray(body.slots)) return void 0;
+  const slots = body.slots.slice(0, 8).map(parseSlot).filter((s) => s !== null);
+  if (!slots.length) return void 0;
+  const ws = rec(body.whitespace) ?? {};
+  const intent = INTENTS.includes(String(ws.intent)) ? ws.intent : "balanced";
+  const reserved = Array.isArray(ws.reservedRegions) ? ws.reservedRegions.slice(0, 8).map(parseRect) : [];
+  const rawPlan = {
+    style: normalizeLayoutStyle(body.style),
+    panelCount: Math.max(1, Math.min(8, Math.round(num(body.panelCount, slots.length)))),
+    background: body.background === "black" || body.background === "transparent" || body.background === "scene" ? body.background : "white",
+    whitespace: {
+      intent,
+      outerMargin: num(ws.outerMargin, 0.04),
+      gutter: num(ws.gutter, 0.02),
+      reservedRegions: reserved
+    },
+    readingOrder: Array.isArray(body.readingOrder) ? body.readingOrder.map((v) => Math.round(num(v, 0))).slice(0, 8) : slots.map((_, i) => i + 1),
+    slots,
+    designRationale: str(body.designRationale, 400) ?? ""
+  };
+  const repaired = repairLayoutPlan(rawPlan);
+  const validation = validateLayoutPlan({
+    plan: repaired.plan,
+    ...context.expectedPanelCount !== void 0 ? { expectedPanelCount: context.expectedPanelCount } : {},
+    ...context.styleLocked !== void 0 ? { styleLocked: context.styleLocked } : {},
+    ...context.expectedStyle !== void 0 ? { expectedStyle: context.expectedStyle } : {},
+    ...context.dialogue ? { dialogue: context.dialogue } : {}
+  });
+  validation.fixes = [...repaired.fixes, ...validation.fixes];
+  return { plan: repaired.plan, validation };
 }
 const PANEL_BUBBLE_AREAS = [
   "tl",
@@ -6538,6 +7104,7 @@ function buildPanelRule(enabled, options) {
   if (options.dialogue === true) {
     parts.push(panelDialogueClause(options.dialogueMode ?? "json", normalizeDialoguePolicy(options.dialoguePolicy)));
   }
+  if (options.layoutDirective) parts.push(options.layoutDirective);
   return parts.join("\n\n");
 }
 function normalizeCharacters(raw) {
@@ -6719,10 +7286,57 @@ function parseComicPagePlan(input, options = {}) {
     const own = resolveOutfits(rawRecord.outfits ?? rawRecord.cast);
     if (own.size) page.outfits = [...own.values()].slice(0, 4);
     else if (batchOutfits.length) page.outfits = batchOutfits.map((item) => ({ ...item }));
+    const directionRaw = rawRecord.direction ?? (data && typeof data === "object" && !Array.isArray(data) ? data.direction : void 0);
+    const direction = parseVisualDirection(directionRaw);
+    if (direction) page.direction = direction;
+    const parsedLayout = parseLayoutPlan(rawRecord, {
+      ...options.layoutConstraints ?? {},
+      ...page.dialogue ? { dialogue: page.dialogue } : {}
+    });
+    if (parsedLayout) {
+      page.layoutPlan = parsedLayout.plan;
+      for (const e of parsedLayout.validation.errors) {
+        warnings.push(`第 ${i + 1} 页版面：${e}`);
+      }
+      for (const f of parsedLayout.validation.fixes) {
+        warnings.push(`第 ${i + 1} 页版面已自动修复：${f}`);
+      }
+    }
     pages.push(page);
   }
   warnings.push(...validateComicContinuity(pages));
   return { pages, warnings };
+}
+const STYLE_LABEL = {
+  classic_grid: "传统四格（纵向等宽 yonkoma / 或 2×2 规整网格）",
+  open_montage: "开放式拼版（大小不等、可错位、有主次，宽 gutter 与外边距）",
+  diagonal_panels: "斜切分格（斜边/梯形/平行四边形制造动势，1~2 条斜边即可）",
+  hero_insets: "主画面 + 浮动特写（一张大主格 + 1~2 个漂浮的细节格，大量负空间）",
+  freeform: "自由构图（由你按这一瞬间的视觉核心决定，但必须给出可验证的结构）"
+};
+const WHITE_LABEL = {
+  compact: "紧凑：格间窄、外边距小",
+  balanced: "平衡：适度留白，主次清楚",
+  airy: "舒展：宽 gutter、明显外边距与负空间",
+  dramatic: "戏剧性：主画面周围大面积留白，停顿感强"
+};
+const DIRECTOR_RULE = "【版面导演（先想清楚再排格子，这决定这一页好不好看）】\n先判断这一个连续 beat 的视觉核心：人物关系 / 动作接触点 / 表情 / 身体局部 / 关键物件 / 空间关系，只选真正增强叙事的镜头，不为凑格重复同一个半身，也不为让每格不同而编造新事件。\n建立视觉主次：一个主要焦点，其余格只做必要补充（极近特写/局部/物件/空镜都行）；不要求每格都有人、人数相同、等大、对齐或矩形。\n版面必须有明确阅读路径。斜切用于方向/冲突/速度/不稳定；浮动 inset 用于放大同一瞬间的细节；大面积留白用于停顿/孤独/余韵/强调——每种形式都要有叙事理由，不随机叠加装饰。\n先写 direction（视觉方案），再写 layout（几何 slots）；坐标一律 0~1 归一化，polygon 顶点落在自己格内。";
+function buildLayoutDirective(input) {
+  const { style, panelCount, whitespace } = input;
+  const locked = isStyleLocked(style);
+  const intent = whitespace === "auto" ? defaultWhitespaceForStyle(style) : whitespace;
+  const lines = [DIRECTOR_RULE];
+  lines.push(
+    `本批版面风格：${STYLE_LABEL[style]}。` + (locked ? "这是用户指定的风格，整批每一页都必须用它，不得擅自换成别的风格。" : "这是自由模式：你可以按每页 beat 在五种风格里挑最合适的一种，写在 direction.recommendedLayout。")
+  );
+  lines.push(
+    panelCount === "auto" ? "格数由你按 beat 决定（2~4 格）：素材只够一两个镜头就少排，不为凑数编剧情；写在 direction.recommendedPanelCount。" : `格数固定为 ${panelCount} 格：每页的 panels、layout.slots、layout.readingOrder 都必须正好是 ${panelCount} 个，不得多也不得少。`
+  );
+  lines.push(`留白倾向：${WHITE_LABEL[intent]}。黑底页保留黑色负空间，白底页保留白色负空间，不按规定百分比硬填。`);
+  lines.push(
+    '每页额外输出两个字段："direction":{"visualFocus":"视觉核心","emotionalTone":"情绪基调","pageRhythm":"页面节奏","recommendedLayout":"classic_grid|open_montage|diagonal_panels|hero_insets|freeform","recommendedPanelCount":数字,"reason":"为什么这么排","whitespaceIntent":"compact|balanced|airy|dramatic","readingOrder":"top_to_bottom|left_to_right|right_to_left"};"layout":{"style":同上,"panelCount":数字,"background":"white|black|transparent|scene","whitespace":{"intent":同上,"outerMargin":0~0.3,"gutter":0~0.15,"reservedRegions":[]},"readingOrder":[1,2,3],"slots":[{"panelIndex":0,"x":0,"y":0,"width":0.5,"height":0.5,"shape":"rect|parallelogram|triangle|trapezoid|custom_polygon|floating_rect","polygon":[{"x":0,"y":0}],"zIndex":0,"role":"hero|support|detail|reaction|object","border":"none|thin|rough","overlapAllowed":false}],"designRationale":"版面设计理由"}。direction/layout 只描述这**一页**，必须与本页 panels 一一对应；代码会校验格数、坐标和阅读顺序，不合格会退回重排。'
+  );
+  return lines.join("\n");
 }
 function extractJson(text) {
   const raw = stripThinkingBlocks(String(text ?? ""));
@@ -6889,7 +7503,14 @@ function buildComicSystemPrompt(options, overrides) {
     pageType: normalizePanelPageType(options.pageType),
     dialogue: options.dialogue,
     dialogueMode: options.dialogueMode,
-    dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy)
+    dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy),
+    ...options.layoutStyle ? {
+      layoutDirective: buildLayoutDirective({
+        style: options.layoutStyle,
+        panelCount: options.layoutPanelCount ?? "auto",
+        whitespace: options.layoutWhitespace ?? "auto"
+      })
+    } : {}
   };
   const rule = buildPanelRule(options.panelMode, ruleOptions);
   const choice = normalizeLayoutChoice(options.panelLayout);
@@ -6984,7 +7605,12 @@ async function generateComicPlan(input) {
   );
   try {
     const raw = await caller(system, user);
-    const parsed = parseComicPagePlan(raw, input.options.panelLayout === "auto" || !input.options.panelLayout ? {} : { fallbackLayout: normalizePanelLayout(input.options.panelLayout) });
+    const fallback = input.options.panelLayout === "auto" || !input.options.panelLayout ? {} : { fallbackLayout: normalizePanelLayout(input.options.panelLayout) };
+    const constraints = input.options.layoutStyle ? {
+      ...input.options.layoutStyle !== "freeform" ? { styleLocked: true, expectedStyle: input.options.layoutStyle } : { styleLocked: false },
+      ...input.options.layoutPanelCount && input.options.layoutPanelCount !== "auto" ? { expectedPanelCount: input.options.layoutPanelCount } : {}
+    } : {};
+    const parsed = parseComicPagePlan(raw, { ...fallback, layoutConstraints: constraints });
     if (parsed.pages.length === 0) {
       return {
         ok: false,
@@ -7103,8 +7729,8 @@ function parseOutfits(record) {
   if (Array.isArray(cast)) {
     for (const item of cast) {
       if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-      const rec = item;
-      push2(rec.name, rec.outfit ?? rec.current ?? rec.clothing);
+      const rec2 = item;
+      push2(rec2.name, rec2.outfit ?? rec2.current ?? rec2.clothing);
     }
   } else if (cast && typeof cast === "object") {
     for (const [name, outfit] of Object.entries(cast)) push2(name, outfit);
@@ -7118,9 +7744,9 @@ function parseLooks(record) {
   if (!Array.isArray(cast)) return out;
   for (const item of cast) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const rec = item;
-    const name = typeof rec.name === "string" ? rec.name.trim() : "";
-    const raw = rec.look ?? rec.appearance;
+    const rec2 = item;
+    const name = typeof rec2.name === "string" ? rec2.name.trim() : "";
+    const raw = rec2.look ?? rec2.appearance;
     const look = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
     if (!name || !look) continue;
     if (out.length >= 4) continue;
@@ -7164,9 +7790,9 @@ function parseStatusReply(raw, kind = "status") {
         return;
       }
       if (item && typeof item === "object" && !Array.isArray(item)) {
-        const rec = item;
-        const name = typeof rec.name === "string" ? rec.name.trim() : "";
-        const act = typeof rec.act === "string" ? rec.act.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+        const rec2 = item;
+        const name = typeof rec2.name === "string" ? rec2.name.trim() : "";
+        const act = typeof rec2.act === "string" ? rec2.act.replace(/\s+/g, " ").trim().slice(0, 200) : "";
         if (name && !roles.some((r) => r.name === name)) roles.push({ name, act });
       }
     };
@@ -7185,9 +7811,9 @@ function parseStatusReply(raw, kind = "status") {
           continue;
         }
         if (lineRaw && typeof lineRaw === "object" && !Array.isArray(lineRaw)) {
-          const rec = lineRaw;
-          const speaker = typeof rec.speaker === "string" ? rec.speaker.trim().slice(0, 16) : "";
-          const text2 = typeof rec.text === "string" ? rec.text.trim().slice(0, 60) : "";
+          const rec2 = lineRaw;
+          const speaker = typeof rec2.speaker === "string" ? rec2.speaker.trim().slice(0, 16) : "";
+          const text2 = typeof rec2.text === "string" ? rec2.text.trim().slice(0, 60) : "";
           if (text2) lines.push({ speaker, text: text2 });
         }
       }
@@ -9182,10 +9808,10 @@ function buildStripPanel(floor, kind, set, panel, total) {
     ph.textContent = "未出图";
     cell.appendChild(ph);
   }
-  const num = document.createElement("span");
-  num.className = "sti-cs-num";
-  num.textContent = `${panel.index + 1}/${total}`;
-  cell.appendChild(num);
+  const num2 = document.createElement("span");
+  num2.className = "sti-cs-num";
+  num2.textContent = `${panel.index + 1}/${total}`;
+  cell.appendChild(num2);
   shot.appendChild(cell);
   shot.appendChild(buildRerollButton(floor, kind, set, panel));
   figure.appendChild(shot);
@@ -10554,7 +11180,11 @@ async function runComic(task, ctx, deps) {
     charPrompts: comicNativeCharacters,
     includeChinese: deps.fullSettings.includeChinese,
     maxPages: modeSettings.comicMaxPages ?? 1,
-    panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage)
+    panelsPerPage: resolvePanelsPerPage(layout, modeSettings.comicPanelsPerPage),
+    // 新版面系统三维度（老设置经 adapter 迁移而来，不覆盖用户偏好）
+    layoutStyle: resolveLayoutStyle(modeSettings),
+    layoutPanelCount: resolvePanelCount(modeSettings),
+    layoutWhitespace: modeSettings.comicWhitespace ?? "auto"
   };
   let plan = await generateComicPlan({
     scene: sceneFromSegment(segment),
@@ -10728,6 +11358,10 @@ async function runComic(task, ctx, deps) {
         pageType,
         panelCount,
         panelTitles: composed.panelTitles,
+        // 新版面系统：把 LLM 的视觉方向 + 已校验几何随图存档。
+        // 显示层气泡与「版面设计」预览都以这份 slots 为真源，不再按 layout+count 猜格位。
+        ...page.direction ? { direction: page.direction } : {},
+        ...page.layoutPlan ? { layoutPlan: page.layoutPlan } : {},
         // 每格出场的人：显示层靠它把台词反查到正确的格（说话人证据 > 模型写的格号）
         panelCast: page.panels.map((panel) => (panel.characters ?? []).map((c) => c.name).filter(Boolean)),
         ...typeof result.seed === "number" ? { seed: result.seed } : {}

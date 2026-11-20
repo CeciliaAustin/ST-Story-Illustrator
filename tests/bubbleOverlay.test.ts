@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { comicOverlayPlan, normalizeDialogueEdits, artifactLayoutOf, artifactPageTypeOf } from '../src/manga/bubbleOverlay';
+import { comicOverlayPlan, normalizeDialogueEdits, artifactLayoutOf, artifactPageTypeOf, artifactSlotsOf } from '../src/manga/bubbleOverlay';
 import { DEFAULT_SETTINGS } from '../src/types';
 import type { VisualArtifact } from '../src/types';
 
@@ -114,5 +114,31 @@ describe('artifact 元数据还原', () => {
   it('脏档位回落 regular / auto', () => {
     expect(artifactLayoutOf(artifactOf({ layout: 'weird' }))).toBe('regular');
     expect(artifactPageTypeOf(artifactOf({ pageType: 'z' }))).toBe('auto');
+  });
+
+  it('有 layoutPlan 时用随图存档的真实格位（不是按档位猜）', () => {
+    const a = artifactOf({
+      layout: 'regular', panelCount: 3,
+      layoutPlan: {
+        slots: [
+          { panelIndex: 0, x: 0.05, y: 0.3, width: 0.6, height: 0.6 },
+          { panelIndex: 1, x: 0.7, y: 0.2, width: 0.25, height: 0.3 },
+          { panelIndex: 2, x: 0.7, y: 0.55, width: 0.25, height: 0.3 },
+        ],
+      },
+    });
+    const slots = artifactSlotsOf(a);
+    expect(slots).toHaveLength(3);
+    expect(slots[0]).toMatchObject({ x: 0.05, y: 0.3, width: 0.6, height: 0.6 });
+  });
+
+  it('没有 layoutPlan 时回落旧按档位推算（老 artifact 兼容）', () => {
+    const slots = artifactSlotsOf(artifactOf({ layout: 'regular', panelCount: 2 }));
+    expect(slots).toHaveLength(2);
+  });
+
+  it('layoutPlan 存在但无有效 slots 时也回落，不返回空', () => {
+    const slots = artifactSlotsOf(artifactOf({ layout: 'regular', panelCount: 2, layoutPlan: { slots: [] } }));
+    expect(slots).toHaveLength(2);
   });
 });

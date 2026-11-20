@@ -27,6 +27,7 @@ import type {
 } from '../types';
 import { stripThinkingBlocks } from '../prompt/think';
 import { resolveOutfits } from '../baibai/outfit';
+import { parseLayoutPlan, parseVisualDirection } from './layoutPlan';
 import type { StatusOutfit } from '../types';
 
 // ============================================================
@@ -542,6 +543,11 @@ export interface PanelRuleOptions {
   dialogue?: boolean;
   dialogueMode?: 'json' | 'tag';
   dialoguePolicy?: DialoguePolicy;
+  /**
+   * 新版面系统的导演指令（由 layoutDirective 生成）。给了就追加到规则末尾，
+   * 让 LLM 输出 direction/layout。老调用方不传则行为完全不变。
+   */
+  layoutDirective?: string;
 }
 
 /**
@@ -580,6 +586,8 @@ export function buildPanelRule(enabled: boolean, options: PanelRuleOptions): str
   if (options.dialogue === true) {
     parts.push(panelDialogueClause(options.dialogueMode ?? 'json', normalizeDialoguePolicy(options.dialoguePolicy)));
   }
+  // 新版面系统：导演指令放最后（它自带完整 schema 与硬边界）。
+  if (options.layoutDirective) parts.push(options.layoutDirective);
   return parts.join('\n\n');
 }
 
@@ -771,6 +779,15 @@ export interface ParseComicOptions {
    * 用户选了「规整四格」，模型漏写 layout 时不能按格数猜成拼版。
    */
   fallbackLayout?: PanelLayout;
+  /**
+   * 新版面系统：用户钉死的风格/格数，作为 layout 校验的硬约束。
+   * 不传表示自由模式，LLM 可自选风格与格数。
+   */
+  layoutConstraints?: {
+    expectedPanelCount?: number;
+    styleLocked?: boolean;
+    expectedStyle?: import('../types').ComicLayoutStyle;
+  };
 }
 
 /**
@@ -834,6 +851,28 @@ export function parseComicPagePlan(
     const own = resolveOutfits(rawRecord.outfits ?? rawRecord.cast);
     if (own.size) page.outfits = [...own.values()].slice(0, 4);
     else if (batchOutfits.length) page.outfits = batchOutfits.map(item => ({ ...item }));
+
+    // 新版面系统 Stage A/B：解析方向 + 几何，硬约束来自用户设置（Step 3）。
+    // 顶层 direction 是整批共用，页内 direction 覆盖；layout 只认页内。
+    const directionRaw = rawRecord.direction ?? (data && typeof data === 'object' && !Array.isArray(data)
+      ? (data as Record<string, unknown>).direction : undefined);
+    const direction = parseVisualDirection(directionRaw);
+    if (direction) page.direction = direction;
+
+    const parsedLayout = parseLayoutPlan(rawRecord, {
+      ...(options.layoutConstraints ?? {}),
+      ...(page.dialogue ? { dialogue: page.dialogue } : {}),
+    });
+    if (parsedLayout) {
+      page.layoutPlan = parsedLayout.plan;
+      // 校验不合格 → 变成可见 warning；plan 已就地做过安全修复（clamp/补排序）
+      for (const e of parsedLayout.validation.errors) {
+        warnings.push(`第 ${i + 1} 页版面：${e}`);
+      }
+      for (const f of parsedLayout.validation.fixes) {
+        warnings.push(`第 ${i + 1} 页版面已自动修复：${f}`);
+      }
+    }
     pages.push(page);
   }
   warnings.push(...validateComicContinuity(pages));

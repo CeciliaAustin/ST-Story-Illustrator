@@ -20,6 +20,9 @@ import type {
   PanelLayoutChoice,
   PanelPageType,
   DialoguePolicy,
+  ComicLayoutStyle,
+  ComicPanelCount,
+  ComicWhitespacePreference,
 } from '../types';
 import { stripThinkingBlocks } from '../prompt/think';
 import { renderPromptDoc, type PromptOverrideMap } from '../prompt/presets';
@@ -34,6 +37,7 @@ import {
   resolvePanelsPerPage,
   type PanelRuleOptions,
 } from './panelPlan';
+import { buildLayoutDirective } from './layoutDirective';
 
 // ============================================================
 // 通用：从 LLM 输出里提取 JSON
@@ -334,6 +338,13 @@ export interface ComicPlanOptions {
   maxPages: number;
   /** 追加到 user prompt 末尾的一次性要求（用于「上一次 tags 太空」的重试）。 */
   extraInstruction?: string;
+  /**
+   * 新版面系统三维度。都可选；不传时 buildComicSystemPrompt 不产出导演指令，
+   * 行为与旧版完全一致（向后兼容旧调用方与旧测试）。
+   */
+  layoutStyle?: ComicLayoutStyle;
+  layoutPanelCount?: ComicPanelCount;
+  layoutWhitespace?: ComicWhitespacePreference;
 }
 
 export function buildComicSystemPrompt(
@@ -351,6 +362,15 @@ export function buildComicSystemPrompt(
     dialogue: options.dialogue,
     dialogueMode: options.dialogueMode,
     dialoguePolicy: normalizeDialoguePolicy(options.dialoguePolicy),
+    ...(options.layoutStyle
+      ? {
+          layoutDirective: buildLayoutDirective({
+            style: options.layoutStyle,
+            panelCount: options.layoutPanelCount ?? 'auto',
+            whitespace: options.layoutWhitespace ?? 'auto',
+          }),
+        }
+      : {}),
   };
   const rule = buildPanelRule(options.panelMode, ruleOptions);
   // 自动档不钉格数：提示词里说「每页固定 N 格」会和「版面你挑」直接打架
