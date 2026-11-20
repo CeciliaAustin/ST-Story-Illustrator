@@ -58,8 +58,13 @@ describe('panelTagsForCount', () => {
     expect(panelTagsForCount('regular', 4).join(',')).not.toContain('2koma');
   });
 
-  it('其它档位不受影响', () => {
-    expect(panelTagsForCount('irregular', 4)).toEqual(panelTagsForCount('irregular', 2));
+  it('所有档位钉格数时都注入对应 koma（选 3 只画 2 的根因：旧版只认 regular）', () => {
+    expect(panelTagsForCount('irregular', 4).join(',')).toContain('4koma');
+    expect(panelTagsForCount('irregular', 2).join(',')).toContain('2koma');
+    expect(panelTagsForCount('inset', 3).join(',')).toContain('3koma');
+    expect(panelTagsForCount('unframed', 3).join(',')).toContain('3koma');
+    // 未钉格数（0）时仍不带任何 koma 词，保持自由出图
+    expect(panelTagsForCount('irregular', 0).join(',')).not.toMatch(/\dkoma/);
   });
 });
 

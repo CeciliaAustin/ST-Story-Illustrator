@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { pickAutoModes } from '../src/tasks/autoTrigger';
+import { pickAutoModes, isFreshGeneratedFloor } from '../src/tasks/autoTrigger';
 import { DEFAULT_SETTINGS } from '../src/types';
 import type { StoryIllustratorSettings } from '../src/types';
 
@@ -72,6 +72,19 @@ describe('pickAutoModes', () => {
   it('正在跑的模式不会被重复排', () => {
     const s = settingsWith({ illustration: { autoTrigger: true } });
     expect(pickAutoModes(s, 7, { ...empty, busy: key => key === '7:illustration' })).toEqual([]);
+  });
+
+  it('新聊天/刷新重渲历史：不在生成窗口内 → 不算新层（不会一进聊天就自动出图）', () => {
+    expect(isFreshGeneratedFloor({ generationActive: false, isAiStoryMessage: true })).toBe(false);
+    expect(isFreshGeneratedFloor({ generationActive: false, isAiStoryMessage: false })).toBe(false);
+  });
+
+  it('真实生成一层：在窗口内且是 AI 剧情层 → 算新层', () => {
+    expect(isFreshGeneratedFloor({ generationActive: true, isAiStoryMessage: true })).toBe(true);
+  });
+
+  it('生成窗口内到达的用户层/非剧情层 → 不算', () => {
+    expect(isFreshGeneratedFloor({ generationActive: true, isAiStoryMessage: false })).toBe(false);
   });
 
   it('彩蛋按概率：0 = 永不，100 = 必出，随机值落在区间内才出', () => {

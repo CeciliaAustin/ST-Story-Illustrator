@@ -35,13 +35,13 @@ export const LAYOUT_NL_HEAD: Record<PanelLayout, string> = {
  */
 export const LAYOUT_GAP_NOTE: Record<PanelLayout, string> = {
   regular:
-    'The gutters between panels are narrow, clean white bands about 3% of the page width; panels never overlap and the page is filled edge to edge.',
+    'One panel is the main hero image and the others are smaller; leave at least one area of clean empty negative space (white or black per the page tone), and do not force every panel to the same size or push them all to the page edges.',
   irregular:
-    'Every panel has its own thin black border with a narrow white gutter between panels; the page is filled edge to edge rather than floating in the middle.',
+    'One large hero panel dominates and the smaller panels are unequal in size and float around it; keep generous empty negative space between the hero and the small panels and along the page margins — let the composition breathe instead of filling every corner.',
   inset:
-    'The bordered close-up panels float on the white page with a wide, completely empty white gap between them and the main illustration (at least 5% of the page height); they never touch the characters or each other.',
+    'The bordered close-up panels float on the page with a wide, completely empty gap between them and the main illustration (at least 5% of the page height); they never touch the characters or each other, and the empty space stays empty.',
   unframed:
-    'Only the small inset panels have thin black borders, and each floats on clean white space with a wide empty margin; the main illustration has no frame at all and its white margins stay completely empty.',
+    'Only the small inset panels have thin black borders, each floating on clean negative space with a wide empty margin; the main illustration has no frame at all, and its surrounding empty space stays clean and uncluttered.',
 };
 
 /** 单格的画面内容：模型给了 nl 就用它，没有就用 shot + 动作拼一句。 */
@@ -129,8 +129,9 @@ export function buildPageNl(page: ComicPagePlan): string {
   parts.push(LAYOUT_GAP_NOTE[page.layout] ?? LAYOUT_GAP_NOTE.regular);
 
   if (!wrote) {
-    // 一格都没写出内容：给一句中性的分区提示，绝不把中文标题塞进英文 nl
-    parts.push('Each panel shows a different moment of the same scene, with a different shot distance.');
+    // 一格都没写出内容：给一句中性的提示。必须是「同一瞬间的不同镜头」，
+    // 绝不能像旧句那样写 different moment——那直接违任务书 §1，模型据此跳时拼盘。
+    parts.push('All panels capture the same continuous instant from different camera angles and shot distances — a main view plus close details of the same moment — with generous empty negative space left on the page.');
   }
   return parts.join(' ');
 }
@@ -154,18 +155,22 @@ export function collectPageDialogue(page: ComicPagePlan): ComicDialogue[] {
 export interface CastShortfall {
   pageIndex: number;
   title: string;
-  /** Base 声称几个人 */
+  /** 明确同框入镜、却缺外貌约束的人数 */
   declared: number;
   /** 实际能建出几个角色块 */
   blocks: number;
 }
 
 /**
- * 「Base 说 1girl,1boy，角色块却只有一个人」的体检。
+ * 「某一格明确要两人同框，但其中一人没有外貌约束」的体检（任务书 §3.3 重写）。
  *
- * 为什么要单独查一遍再重问：人数词是模型对画面的承诺，块是唯一的约束手段。
- * 只补代码侧（resolveCastNames）时，人设没进角色库、模型又没给 look，就补不出来；
- * 这种事只能在提示词层修（让它给 look），而一次重问远比出一张「另一个是陌生人」便宜。
+ * 旧版拿页级人数词（1girl,1boy）和整页角色块数强制对齐，逼模型把同一批人塞进每一格，
+ * 直接挡住了单人局部/双人局部/道具格。新口径：**只看真正写了 ≥2 人同框的那一格**——
+ * - 一格只写一个人 / 只有手脸 / 物件格 → 完全合法，不报；
+ * - 一格写了两个人，且这两人都能从库或 look 建出块 → 不报；
+ * - 一格写了两个人，但其中一人查不到库、又没有 look → 只报这一格，提示补资料。
+ *
+ * 用 resolveCastNames 按页/人设归一后再数，避免「你 / User / 人设名」被算成两个人。
  */
 export function findCastShortfall(
   pages: readonly ComicPagePlan[],
@@ -174,17 +179,28 @@ export function findCastShortfall(
 ): CastShortfall | null {
   if (options.nativeCharacters === false) return null;
   for (const page of pages) {
-    const declared = declaredPeople(String(page.tags ?? '').trim() || mergePanelTags(page));
-    if (declared < 2) continue;
+    // 这一页能建出的角色块名字（归一后），只用来判断「某格的人有没有外貌」
     const composed = composePagePrompt(page, [...characters], options);
-    // 只有「一条都没建出来」时不报：那种情况 Base 的人数由 NAI 自由分配，属于无库可依
-    if (composed.characters.length > 0 && composed.characters.length < declared) {
-      return {
-        pageIndex: page.pageIndex,
-        title: page.title,
-        declared,
-        blocks: composed.characters.length,
-      };
+    const covered = new Set(composed.characters.map(c => c.name.trim().toLowerCase()));
+    for (const panel of page.panels ?? []) {
+      const names = (panel.characters ?? [])
+        .map(c => String(c.name ?? '').trim())
+        .filter(Boolean);
+      // 单人格 / 局部格 / 物件格：不看人数词，直接跳过（任务书 §3.2）
+      if (names.length < 2) continue;
+      // 归一到「你 = 人设名」等别名后去重（不传 declared → 不会自动补齐人数）。
+      const resolved = resolveCastNames(
+        names,
+        [...characters],
+        { ...(options.personaName ? { personaName: options.personaName } : {}) },
+      ).cast;
+      const wanted = resolved.length;
+      if (wanted < 2) continue;
+      const have = resolved.filter(name => covered.has(name.trim().toLowerCase())).length;
+      // 只有「同框 ≥2 人却建不出 ≥2 块」才报；全无库（covered 空）交给 NAI 自由分配
+      if (covered.size > 0 && have < wanted) {
+        return { pageIndex: page.pageIndex, title: page.title, declared: wanted, blocks: have };
+      }
     }
   }
   return null;

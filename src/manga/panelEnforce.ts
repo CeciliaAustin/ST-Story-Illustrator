@@ -104,8 +104,17 @@ export function enforcePanelPrompt(
 
   const count = resolvePanelsPerPage(kind, panelsPerPage);
   const forbidden = new Set(PANEL_FORBIDDEN_BY_LAYOUT[kind]);
-  // 规整档选了 3/4 格：2koma 与目标格数直接打架，必须删掉（否则模型只画两格）
-  if (kind === 'regular' && count >= 3) forbidden.add('2koma');
+  // 用户钉死格数时：只有「与目标格数不同的 koma」才是冲突词，目标 koma 必须放行。
+  // 旧版对 irregular 等档禁掉全部 koma，连模型写对的 3koma 都删了 → 玄学漏格。
+  if (count >= 2 && count <= 4) {
+    const wanted = `${count}koma`;
+    for (const k of ['2koma', '3koma', '4koma']) {
+      if (k === wanted) forbidden.delete(k);
+      else forbidden.add(k);
+    }
+  } else if (kind === 'regular' && count >= 3) {
+    forbidden.add('2koma');
+  }
   // 场景词兜底只发生在白底两档：inset 全删；unframed 放行室内外锚 + 地点词限流 2 个。
   // 场景词全删会让模型连室内外都没锚，室内戏被画到室外（坑 6）。
   const stripScene = kind === 'inset' || kind === 'unframed';

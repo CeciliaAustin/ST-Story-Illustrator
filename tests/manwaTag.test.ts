@@ -119,4 +119,21 @@ describe('插入正文', () => {
     const r = await insertManwaTag({ floor: 0, chatId: 'c1', swipeId: 1, tag: buildManwaTag('p1') });
     expect(r).toEqual({ ok: false, reason: 'swipe-changed' });
   });
+
+  it('两页锚到不同台词 → 各插各的位置（任务书 §8：一页一个挂载点）', async () => {
+    setMes('「等等。」他拉住她。\n\n她回头看了一眼。\n\n然后门关上了。');
+    await insertManwaTag({ floor: 0, chatId: 'c1', swipeId: 0, tag: buildManwaTag('p1'), anchorText: '「等等。」他拉住她。' });
+    await insertManwaTag({ floor: 0, chatId: 'c1', swipeId: 0, tag: buildManwaTag('p2'), anchorText: '她回头看了一眼。' });
+    const mes = host.chat[0].mes as string;
+    const p1 = mes.indexOf('id>p1<');
+    const p2 = mes.indexOf('id>p2<');
+    const turn = mes.indexOf('她回头看了一眼。');
+    const door = mes.indexOf('然后门关上了。');
+    expect(p1).toBeGreaterThanOrEqual(0);
+    expect(p2).toBeGreaterThanOrEqual(0);
+    // p1 在第一句之后、p2 在第二句之后，二者不在同一处
+    expect(p1).toBeLessThan(turn);
+    expect(p2).toBeGreaterThan(turn);
+    expect(p2).toBeLessThan(door);
+  });
 });

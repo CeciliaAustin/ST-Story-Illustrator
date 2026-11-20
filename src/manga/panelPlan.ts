@@ -22,6 +22,8 @@ import type {
   ComicDialogue,
   ComicPanelPlan,
   ComicPagePlan,
+  ComicComposition,
+  ComicBeat,
 } from '../types';
 import { stripThinkingBlocks } from '../prompt/think';
 import { resolveOutfits } from '../baibai/outfit';
@@ -54,36 +56,55 @@ export const PANEL_TAGS_BY_LAYOUT: Record<PanelLayout, readonly string[]> = {
 const PANEL_FORBIDDEN_CLAUSE =
   '8. 不要写 speech bubble、text、english text、dialogue、caption —— 这些词会让画面出现气泡或对白条，而生成的字全是乱码，比留白难看得多。分镜靠画面说话。';
 
-/** 输出前自检通用条款（§3.2）。 */
+/**
+ * 连续性优先条款（任务书 §1，最高优先级）。
+ *
+ * 用户反馈「一页把两三个不连续的瞬间拼在一起、台词也不连贯」。根因是旧规则
+ * 只强调「相邻两格要有差异」，模型为了制造差异就跳到选段里另一件事、另一个
+ * 时间。这里把**时间/事件连续**立为最高约束，差异只允许在同一瞬间内部通过
+ * 镜头切面制造，绝不允许靠跳时、跳地点、换事件来制造。
+ */
+const CONTINUITY_CLAUSE =
+  '【连续性——这是最高优先级，压过下面一切构图/差异要求】\n' +
+  '一页只画**一个连续的瞬间**（one continuous beat），不是把选段里几个精彩时刻各摘一格拼成剧情摘要。\n' +
+  '- 所有格属于同一时间、同一地点（或明确同步的分屏）、同一件事。**禁止**第一格在早上第二格到晚上、' +
+  '第一格在房间第二格到街道、第一格争吵第二格几小时后和好。\n' +
+  '- 格与格只能切换**观察角度**：同一动作的不同景别、某人的眼睛/手/嘴角局部、交叠的手、被推过来的物件。' +
+  '可以静止不动只换镜头，不要求每格都发生新动作。\n' +
+  '- 允许紧邻的极短动作连续（起势 → 接触 → 即时反应），但不得跨越明显的剧情阶段。\n' +
+  '- 前后文只用来理解人物关系和代词，**不得**把前后文的事件画进本页。\n' +
+  '- 允许只画一个片段、一个表情、一个局部或一个道具，不强制每页都要「环境—动作—反应」齐全。\n' +
+  '- 判定标准：读者把几格连起来，应当觉得镜头在**同一件事上移动**，而不是剧情跳了一刀。';
+
+/** 输出前自检通用条款（§3.2 + 任务书 §7.3，去掉「相邻差异」旧自检）。 */
 const PANEL_SELF_CHECK =
   '【输出前自检，逐条核对后再输出】\n' +
-  '- tag 里是否原样包含了本档要求的构图词（含权重写法）？漏了必须补上。\n' +
-  '- nl 的第一句是否说清了版面？只描述画面内容而不提版面，等于没写。\n' +
-  '- 景别 tag 是否只有一个？\n' +
-  '- 每一格是否写了 nl，且相邻两格的镜头距离、信息点都不一样？（两格画同一个动作 = 白画一格）\n' +
+  '- 本页所有格是不是**同一个连续瞬间**？有没有任何一格跳了时间、地点或事件？（有就重写那一格）\n' +
+  '- 台词是不是都出自本页这一段、按原文顺序？有没有为了热闹编对白或改旁白？\n' +
+  '- 每格人物数量是否符合**这一格自己的镜头**（单人局部/双人局部/物件都合法），而不是把整页名单复制进每格？\n' +
+  '- 有没有一个主视觉格，其余格提供表情/手/局部/道具等补充信息？\n' +
+  '- 版面有没有主次、有没有一处明确留白？是不是所有格都被画成了同样大小？\n' +
+  '- 阅读顺序是否清楚？tag 里是否原样包含了本档构图词（含权重）？景别 tag 是否只有一个？\n' +
   '- 这是漫画分镜图，不是一张普通插画。任何一条不满足，就重写再输出。';
 
 /**
- * 分镜的「艺术性」条款：所有档位共用。
- *
- * 用户的原话是「两幅的动作都差不多，根本看不出区别，没有分镜的美感」。
- * 根因是规则只要求「两格要有差异」，却没告诉模型差异该体现在哪几个维度上，
- * 于是它每次都给两个半身、同一个动作、同一个机位——结构上合规，读起来是废页。
- * 这里把差异拆成可执行的四个维度（镜头距离 / 信息点 / 机位 / 谁在动），
- * 并要求每格必须自带 nl：没有 nl 的格，模型只会重复上一格的构图。
+ * 分镜的「艺术性」条款（任务书 §7.3 重写）：每格镜头切面不同，但**不要求事件不同**。
+ * 镜头变化靠景别/构图/局部，不靠跳时换事件。
  */
 const PANEL_ART_CLAUSE =
-  '【分镜设计（每一格都要过一遍，这是漫画好不好看的分水岭）】\n' +
-  '- **镜头距离要分配**：整页至少一格交代空间（wide shot / full body，看得到环境与两人的相对位置），' +
-  '至少一格推近（close-up 或 extreme close-up：脸、手、接触点、关键道具）。相邻两格不许用同一个景别。\n' +
-  '- **每格的信息点必须不同**：建立空间 / 动作发生 / 反应表情 / 细节放大，四种角色轮着来；' +
-  '同一页里四格才允许出现两次同类，而且必须换机位。\n' +
-  '- **禁止重播**：两格不许画同一个姿势、同一个动作。至少换掉「谁在动」「动的是哪只手/哪一侧」「镜头在人物哪一边」里的两项。\n' +
-  '- **每格都要写 nl**（一句，20~35 词），必须写清四件事：镜头距离 + 谁在画面哪一侧 + 正在做什么 + 画面的空白留在哪。' +
-  '只写「两人在桌边」这种没有镜头信息的句子，两格就会长得一模一样。\n' +
-  '- **留白是版面的一部分**：格间只留细黑 gutter，白底档的小格与主画之间留宽白边；人物不要填满每一个角，' +
-  '大面积空白不是浪费，是让读者的眼睛休息、也是气泡要落的地方。\n' +
-  '- **人物大小要有变化**：远景里人小、特写里脸大，不要每格都是半身居中。';
+  '【分镜设计（在同一瞬间里做出镜头美感，不是换事件）】\n' +
+  '- **镜头距离要有分配**：整页至少一格交代空间（wide shot / full body），至少一格推近' +
+  '（close-up / extreme close-up：脸、手、接触点、关键道具）。相邻格尽量不同景别——' +
+  '这是**镜头**的差异，不是时间的跳跃。\n' +
+  '- **每格的信息点不同**：主画面 / 表情反应 / 手部或局部 / 关键道具，按这一瞬间里真实存在的东西挑。' +
+  '一格只有一只手、一张嘴、一件物品都完全合法。\n' +
+  '- **每格人物数量由这一格的镜头决定**：单人、双人、双人局部、纯物件都可以，' +
+  '不要把所有出场人物都塞进每一格。某一格只出现一个人（甚至没有人）是对的。\n' +
+  '- **每格都要写 nl**（一句，20~35 词），写清：镜头距离 + 谁在画面哪一侧 + 这一瞬间他在做什么 + 空白留在哪。\n' +
+  '- **留白是版面的一部分**：至少留一处明确的空白/负空间，格间 gutter 可宽可窄、' +
+  '主画面与小格之间可留大块空白；不要把所有格铺成同尺寸矩形填满整页。\n' +
+  '- **人物大小要有主次**：主视觉格里人或脸大，特写格只放大一处；' +
+  '不要每格都是同样的半身居中、同样的面积。';
 
 /** 分格图不写角色坐标（仅 NAI + 角色块时追加，双保险）。 */
 const PANEL_NO_POS_CLAUSE =
@@ -115,8 +136,17 @@ export function resolvePanelsPerPage(layout: PanelLayoutChoice, value?: number):
  */
 export function panelTagsForCount(layout: PanelLayout, count: number): readonly string[] {
   const kind = normalizePanelLayout(layout);
-  if (kind === 'regular' && count >= 3) {
-    return ['1.4::multiple views::', '1.5::split screen::', `1.4::${count >= 4 ? 4 : 3}koma::`];
+  // 用户钉死了 2/3/4 格：把对应 koma 数词注入，否则模型经常少画格（选 3 只画 2）。
+  // 旧版只给 regular 档注入，irregular/inset/unframed 钉格数时没有任何数字词 → 漏格。
+  if (count >= 2 && count <= 4) {
+    const base = PANEL_TAGS_BY_LAYOUT[kind];
+    const koma = `1.4::${count}koma::`;
+    // 保留原有构图词的顺序（multiple views 仍排第一，测试与柏宝绘原版都依赖它），
+    // 只把 koma 数词替换进去或追加到末尾——位置不影响判重，却能压住实际格数。
+    if (base.some(tag => /\d+koma/.test(tag))) {
+      return base.map(tag => (/\d+koma/.test(tag) ? koma : tag));
+    }
+    return [...base, koma];
   }
   return PANEL_TAGS_BY_LAYOUT[kind];
 }
@@ -323,10 +353,10 @@ function regularRule(nlOn: boolean): string {
     '',
     `1. 构图 tag 必须写全这三个，原样照抄（含权重写法），一个都不能少，紧跟人数 tag、排在外貌之前：${compositionTags('regular')}。` +
       ' 不要写 panel layout、comic panel、manga（0 帖空 tag）；也不要写 comic（整本漫画语义，会拉成黑白网点）。',
-    '2. 两格讲同一件事的两层，二选一，一张图里不许混用：**递进**（上格动作前、下格结果）或 **拆解**（同瞬间，上格全身空间、下格推近脸或接触点；两格人物停在同一动作）。',
-    '3. 两格之间至少要有两个肉眼可辨的差异（人在做的事、画面里的东西、远近）；只有一个差异会被当噪声抹平。',
+    '2. 两格是**同一个连续瞬间**的两个切面，不许拼两件事：上格交代空间与全身，下格推近脸、手、接触点或道具；也可以是同一静止瞬间的两个观察角度。',
+    '3. 两格靠**镜头**拉开（远近、机位、局部），不是靠跳时间或换事件；同一动作画两遍也可，只要景别/局部不同。',
     '4. 景别 tag 仍然只写一个，用 cowboy shot 或 full body；两格各自的远近写在 nl 里。',
-    '5. 两格里出现的人必须一致，同一个人在两格保持同一套外观词。',
+    '5. 每格只放这一格镜头里真正入镜的人（可以只有一只手、一张脸）；入镜的人保持同一套外观词。',
     '6. 画幅写 portrait：上下两格各占一半高度，从上到下读。不要写 landscape。',
     '7. focus tag 属于整张图、不分格，全图最多 1~2 个。',
     PANEL_FORBIDDEN_CLAUSE,
@@ -358,10 +388,10 @@ function regularMultiRule(nlOn: boolean, count: number): string {
     '',
     `1. 构图 tag 必须写全这三个，原样照抄（含权重写法），一个都不能少，紧跟人数 tag、排在外貌之前：${compositionTags('regular').replace('2koma', `${n}koma`)}。`
       + ' 不要写 panel layout、comic panel、manga（0 帖空 tag）；也不要写 comic（整本漫画语义，会拉成黑白网点）。',
-    `2. 版面：${shape}。格间只留细黑 gutter（约页宽 3%），人物画大撑到格边，所有格合计覆盖页面九成以上。`,
-    '3. 相邻两格至少要有两个肉眼可辨的差异（人在做的事、画面里的东西、远近）；只有一个差异会被当噪声抹平。',
+    `2. 版面：${shape}。格间留黑 gutter；允许一处宽留白、允许格子不顶到页边；不要把每格都撑满铺到边。`,
+    '3. 所有格属于**同一连续瞬间**：靠镜头距离、机位、局部与道具区分，不靠跳时换事件；一格只有手/脸/物件都合法。',
     '4. 景别 tag 仍然只写一个，用 cowboy shot 或 full body；各格各自的远近写在 nl 里。',
-    `5. ${n} 格里出现的人必须一致，同一个人在所有格保持同一套外观词。`,
+    `5. 每格只放这一格镜头真正入镜的人；某一格只有一个人或没有人是对的，不要把全部出场者塞进每一格。`,
     `6. 画幅写 portrait：${n} 格按上面说的排法铺满整页。不要写 landscape。`,
     '7. focus tag 属于整张图、不分格，全图最多 1~2 个。',
     PANEL_FORBIDDEN_CLAUSE,
@@ -380,10 +410,10 @@ function irregularRule(nlOn: boolean): string {
     '',
     `1. 构图 tag 必须写全这两个，原样照抄（含权重写法）：${compositionTags('irregular')}。` +
       ' 不要写 2koma（钉成等分两格，与本模式打架）、4koma、panel layout、comic panel、manga、comic。',
-    '2. 2～4 格，大小必须不等：至少一格面积是另一格的两倍以上，或有一格细长条。禁止上下各一半 / 左右各一半等分。三种形态择一：大格+下方两条小格 / 左侧竖长条+右侧大格 / 上方宽格+下方一大一小。',
-    '3. 所有格讲同一件事的不同层，相邻两格至少两个肉眼可辨的差异；同一批人出现在每一格。',
+    '2. 2～4 格，大小必须不等：至少一格面积是另一格的两倍以上，或有一格细长条。禁止上下各一半 / 左右各一半等分。**优先选主次骨架**：一个大主格 + 一到两个浮动特写小格（顶部横条 / 右下局部格），其余格服务主格。',
+    '3. 所有格属于**同一连续瞬间**，靠镜头与局部区分，不是几件事的拼盘；每格只放这一格镜头真正入镜的人，不要把所有出场者复制进每格。',
     '4. 读法必须顺：从上到下、从左到右。',
-    '4a. 排版要满、白边要窄：格间只留细黑 gutter（约页宽 3%），人物画大撑到格边；所有格合计覆盖页面九成以上。',
+    '4a. 留白是版面的一部分：主格与小格之间、页面边缘可以留明显空白/负空间；不要把所有格撑满铺到边、不要做成九成覆盖的满版。',
     '5. 景别 tag 仍然只写一个；各格远近写在 nl 里。',
     '6. 画幅写 portrait：上方一大格占约三分之二高度，下方一到两条窄格；或左侧竖长条+右侧主格。不要上下各一半。',
     '7. focus tag 全图最多 1~2 个。',
@@ -475,21 +505,22 @@ function autoRule(nlOn: boolean, panels: number): string {
     table,
     '2. 挑法（按顺序判断）：① 这段有明确地点、道具、两人以上的互动 → **regular 或 irregular**，不要用白底档；' +
       '② 只有人、只有情绪、没有地点可画 → inset（白底为主）或 unframed（跨页感）；③ 拿不准 → regular。',
-    '3. **格数默认 3 格**：两拍就说完的用 2 格，有明确的三段（建立空间 → 动作/接触 → 反应或细节）用 3 格，' +
-      '情绪爆点最多 4 格。只画 2 格时，那 2 格必须承担不同的信息（不是同一个动作画两遍）。',
+    '3. **格数跟随这一瞬间能提供的切面，不硬凑**：只有一个值得看的瞬间就用 2 格（主画面 + 一处特写），' +
+      '有空间/接触/反应三个切面用 3 格，最多 4 格。素材只够两格就不要为了凑三格编出另一个瞬间——' +
+      '把已有画面拆成主画面 + 局部/道具特写来补足格数。',
     '3a. 有台词的一页**不要为了留白换档位**：在 regular/irregular 里让人物偏下、格内上方留出安静空白就够了；' +
       '把有餐厅、教室、街道的页改成白底档，等于把剧情发生的世界全删了。',
-    '3b. 无论哪一档，格与格之间只留细黑 gutter（约页宽 3%）；白底档里特写小格与主画之间必须留出宽白边（至少约页高 5%），' +
-      '小格绝不贴在主画上，也不许把每一格都塞满——留白是版面的一部分。',
+    '3b. 留白是版面的一部分：让**一处主格大、其余格小**，主格与小格之间、页面边缘留明显空白/负空间；' +
+      '不要把每格都做成同尺寸矩形、也不要铺满整页。版面优先「主画面 + 浮动特写格」的主次骨架。',
     panels >= 2
       ? `4. **每页固定 ${panels} 格**：不管选哪一档，版面都必须真的切出 ${panels} 格，panels 条数与 nl 分区句数也必须是 ${panels}。`
       : '4. 格数 2～4（默认 3）。**同一页的 layout、panels 条数、nl 里的分区句数必须三者一致**：说 3 格就真的画 3 格，不能拿两格模板套三段内容。',
     '5. 构图词只照抄你选的那一档那几行，原样保留 1.4:: 这类权重写法；**不要把两档的构图词混着写**（混写必然画出四不像的版面）。',
     '6. 多页时相邻两页不要用同一档，同一档也别连续画同样的格数，节奏会平。',
     '7. 景别 tag 整页只写一个；各格远近写在每格自己的 shot 与 nl 里。',
-    '8. 同一批人在每一格保持同一套外观词；focus tag 全图最多 1~2 个。' +
-      '**page.tags 的人数词必须和 characters 条数对得上**：写了 `1girl, 1boy` 就要有两个角色块，' +
-      '否则另一个人的脸没有任何约束，画出来就是陌生人。',
+    '8. 每个入镜的人保持同一套外观词；focus tag 全图最多 1~2 个。' +
+      '**人数按每格镜头实际需要写**：单人局部格就写一个人、双人互动格才写两个人、物件格不写人数；' +
+      'page.tags 的人数词描述的是**主画面**，不要把全页出现过的所有人都数进去，更不要强制每格同人数。',
     PANEL_FORBIDDEN_CLAUSE,
     ninth,
   ].join('\n');
@@ -541,7 +572,8 @@ export function buildPanelRule(enabled: boolean, options: PanelRuleOptions): str
     }
   }
 
-  const parts: string[] = [body, PANEL_ART_CLAUSE, PANEL_SELF_CHECK];
+  // 连续性条款放最前：任务书 §1 要求它压过所有构图/差异/格数要求。
+  const parts: string[] = [CONTINUITY_CLAUSE, body, PANEL_ART_CLAUSE, PANEL_SELF_CHECK];
   if (options.backend === 'nai' && options.charPrompts === true) {
     parts.push(PANEL_NO_POS_CLAUSE);
   }
@@ -596,6 +628,38 @@ function normalizePageLayout(
   return panelCount >= 3 ? 'irregular' : 'regular';
 }
 
+const COMPOSITIONS: readonly ComicComposition[] = [
+  'single', 'single_detail', 'duo', 'duo_detail',
+  'object', 'environment_detail', 'split_scene',
+];
+
+function normalizeComposition(raw: unknown): ComicComposition | undefined {
+  return typeof raw === 'string' && (COMPOSITIONS as readonly string[]).includes(raw.trim())
+    ? raw.trim() as ComicComposition
+    : undefined;
+}
+
+function normalizeBeat(raw: unknown): ComicBeat | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const str = (v: unknown, max: number): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : undefined;
+  const beat: ComicBeat = {};
+  const timeScope = str(o.timeScope, 80);
+  const location = str(o.location, 80);
+  const event = str(o.event, 200);
+  const continuityNote = str(o.continuityNote, 200);
+  if (timeScope) beat.timeScope = timeScope;
+  if (location) beat.location = location;
+  if (event) beat.event = event;
+  if (continuityNote) beat.continuityNote = continuityNote;
+  if (Array.isArray(o.dialogueOrder)) {
+    const order = o.dialogueOrder.filter(s => typeof s === 'string').map(s => String(s).slice(0, 60)).slice(0, 8);
+    if (order.length) beat.dialogueOrder = order;
+  }
+  return Object.keys(beat).length ? beat : undefined;
+}
+
 function normalizePanel(raw: unknown, index: number): ComicPanelPlan | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
@@ -604,6 +668,7 @@ function normalizePanel(raw: unknown, index: number): ComicPanelPlan | null {
   return {
     index: typeof o.index === 'number' && Number.isFinite(o.index) ? Math.max(0, Math.floor(o.index)) : index,
     title: typeof o.title === 'string' ? o.title.trim().slice(0, 120) : `第 ${index + 1} 格`,
+    ...(() => { const c = normalizeComposition(o.composition); return c ? { composition: c } : {}; })(),
     characters: normalizeCharacters(o.characters),
     mood: typeof o.mood === 'string' ? o.mood.trim().slice(0, 120) : '',
     ...(typeof o.shot === 'string' && o.shot.trim() ? { shot: o.shot.trim().slice(0, 60) } : {}),
@@ -653,11 +718,51 @@ function normalizePage(
       ? Math.max(0, Math.floor(o.pageIndex)) : pageIndex,
     title: typeof o.title === 'string' ? o.title.trim().slice(0, 120) : `第 ${pageIndex + 1} 页`,
     layout: normalizePageLayout(o.layout, panels.length, fallbackLayout),
+    ...(() => { const b = normalizeBeat(o.beat); return b ? { beat: b } : {}; })(),
     ...(pageTags ? { tags: pageTags } : {}),
     ...(pageNl ? { nl: pageNl } : {}),
     ...(pageDialogue.length ? { dialogue: pageDialogue } : {}),
     panels,
   };
+}
+
+/**
+ * 连续性体检（任务书 §6 / §7.3）：把「跳时 / 台词乱序 / 空格凑数」变成可见 warning。
+ * 不丢弃任何页（宽松），只在预览/日志里提示，让模型重问或用户改选段。
+ */
+export function validateComicContinuity(pages: readonly ComicPagePlan[]): string[] {
+  const warnings: string[] = [];
+  const JUMP_WORDS = /(later|afterwards|hours later|next (?:day|morning|night)|another (?:scene|day)|yesterday|tomorrow|第二天|几小时后|第二天早上|后来|隔天)/i;
+  pages.forEach((page, pi) => {
+    const prefix = `第 ${pi + 1} 页`;
+    // 跳时词：出现在 nl / beat 里就要复核（"later" 出现在对话引用里也可能误报，故只提示）
+    const nlText = [page.nl, ...(page.panels ?? []).map(p => p.nl ?? '')].join(' ');
+    if (JUMP_WORDS.test(nlText)) {
+      warnings.push(`${prefix}的画面描述里出现跳时词（later/几小时后…），请确认它仍是同一个连续瞬间。`);
+    }
+    // 空格凑数：一格既没有 nl / 动作 / 信息点，台词也没有
+    (page.panels ?? []).forEach((panel, i) => {
+      const hasContent = Boolean(
+        (panel.nl ?? '').trim() || (panel.subject ?? '').trim()
+        || (panel.characters ?? []).some(c => (c.act ?? '').trim())
+        || (panel.dialogue ?? []).length
+        || (panel.tags ?? '').trim(),
+      );
+      if (!hasContent) warnings.push(`${prefix}第 ${i + 1} 格是空的（没有镜头/动作/道具），可能是在凑格数。`);
+    });
+    // 台词 panel 归属乱序：dialogue 里的 panel 号倒退
+    const dlg = page.dialogue ?? [];
+    let lastPanel = 0;
+    let outOfOrder = false;
+    for (const d of dlg) {
+      if (typeof d.panel === 'number') {
+        if (d.panel < lastPanel) outOfOrder = true;
+        lastPanel = d.panel;
+      }
+    }
+    if (outOfOrder) warnings.push(`${prefix}的台词格号前后倒退，请按阅读顺序检查对白归属。`);
+  });
+  return warnings;
 }
 
 export interface ParseComicOptions {
@@ -731,5 +836,6 @@ export function parseComicPagePlan(
     else if (batchOutfits.length) page.outfits = batchOutfits.map(item => ({ ...item }));
     pages.push(page);
   }
+  warnings.push(...validateComicContinuity(pages));
   return { pages, warnings };
 }

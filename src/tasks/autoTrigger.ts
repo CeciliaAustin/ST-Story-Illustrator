@@ -13,6 +13,22 @@ import type { CreationMode, StoryIllustratorSettings } from '../types';
 /** 小剧场的三个 bucket（与 theater/store 的 Bucket 对齐）。 */
 export type TheaterBucket = 'status' | 'bonus' | 'manga';
 
+/**
+ * 一条到达的消息是否算「刚 roll 出来的新层」。
+ *
+ * 背景：SillyTavern 在**打开聊天 / 切聊天 / 刷新 / 切 swipe** 时会把整段历史重新
+ * 渲染一遍，每条历史消息都会走一遍 `MESSAGE_RECEIVED` + 渲染事件。若把它们当新层，
+ * 用户「一进新聊天就自动开始出图」。真正的判据是：这条消息必须落在一次真实的
+ * 生成窗口内（`GENERATION_STARTED` → `GENERATION_ENDED`），并且是 AI 剧情层。
+ * 打开历史聊天时没有生成窗口，自然被这里挡掉。
+ */
+export function isFreshGeneratedFloor(input: {
+  generationActive: boolean;
+  isAiStoryMessage: boolean;
+}): boolean {
+  return input.generationActive === true && input.isAiStoryMessage === true;
+}
+
 export interface AutoTriggerContext {
   /** 这一层是否已经有该 bucket 的小剧场作品 */
   hasStory: (kind: TheaterBucket) => boolean;

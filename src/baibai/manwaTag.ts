@@ -218,6 +218,28 @@ export type InsertManwaResult =
 type Ctx = ReturnType<typeof getContext> & Record<string, unknown>;
 
 /**
+ * 新的漫画 tag 应该插在正文的哪个位置。
+ *
+ * 规则：从锚点行之后到「下一个非空文本行」之间，若已经排着漫画 tag（同一批页锚到
+ * 同一句台词），就排到那串 tag 的末尾，保持页序；否则直接插在锚点行之后，让这一页
+ * 真正待在它自己的台词旁边。这样多页不同 beat 不会全堆到一处。
+ */
+export function insertionPointAfterLineTags(text: string, anchorAt: number): number {
+  const base = lineEndAfter(text, anchorAt);
+  const re = new RegExp(MANWA_TAG_REGEX.source, 'gi');
+  let cursor = base;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const tagLineStart = text.lastIndexOf('\n', match.index) + 1;
+    // 只认紧跟在锚点行之后的连续 tag 块（允许中间空行/空白）
+    const between = text.slice(cursor, tagLineStart);
+    if (between.trim()) break;
+    if (match.index + match[0].length > cursor) cursor = match.index + match[0].length;
+  }
+  return cursor;
+}
+
+/**
  * 把漫画 tag 插到正文里（CAS：排队期间换了聊天/楼层/swipe 就放弃）。
  *
  * 位置规则与插图不同，这里可以更宽松：`<bbi_manwa>` 不参与柏宝绘的槽位编号，
@@ -254,15 +276,12 @@ export async function insertManwaTag(input: InsertManwaInput): Promise<InsertMan
   const range = anchorText && anchorText.length >= 2 ? findAnchorRange(currentText, anchorText) : null;
   const anchorAt = range ? lineEndAfter(currentText, range.end) : -1;
 
-  // 同一批多页都挂在同一段选段后面：后插的必须排在**已有漫画 tag 之后**，
-  // 否则每一页都插在锚点行末、把上一页顶到下面去 → 卡片顺序是反的。
-  const tail = lastManwaTagEnd(currentText);
-
   let nextText: string;
   let position: 'after-anchor' | 'appended';
   if (anchorAt >= 0) {
-    // 插在选段所在**行之后**（或已有漫画 tag 之后）：插在字中间会把一句话劈成两段
-    const insertAt = tail > anchorAt ? lineEndAfter(currentText, tail) : anchorAt;
+    // 任务书 §8：每页各自锚到本页台词处。多页只有锚到**同一行**时才需要保持页序
+    // （后插的排在已有 tag 之后）；锚到不同行时各插各的，不要一律堆到最后一个 tag。
+    const insertAt = insertionPointAfterLineTags(currentText, anchorAt);
     const head = currentText.slice(0, insertAt).replace(/[ \t]+$/, '');
     nextText = head + snippet + currentText.slice(insertAt);
     position = 'after-anchor';

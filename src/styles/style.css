@@ -2501,3 +2501,49 @@
   font-size: 11px;
   opacity: 0.8;
 }
+
+/* ============================================================
+   小屏 / 手机适配（iqoo 等）：浮层面板不被地址栏与输入栏遮挡
+   - vh 在手机浏览器里含地址栏，面板按 vh 居中会被底部工具栏切掉；用 dvh 兜底。
+   - 面板整体略上移，给底部输入栏留出空间；高度按可视区收缩并可滚动。
+   - 勾选/按钮触控区加大，长文本允许换行，不再撑破窄屏。
+   ============================================================ */
+@supports (height: 100dvh) {
+  .sti-selection-panel,
+  .sti-config-panel { max-height: 82dvh; }
+  .sti-lightbox { max-height: 94dvh; }
+}
+
+@media (max-width: 700px) {
+  .sti-selection-panel,
+  .sti-config-panel {
+    width: 96vw !important;
+    max-width: 96vw !important;
+    top: 8dvh !important;
+    bottom: auto !important;
+    transform: translateX(-50%) !important;
+    max-height: 76dvh !important;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .sti-selection-panel { overflow-y: auto; }
+
+  /* 面板内容里任何固定宽度的行都允许换行，不再横向溢出被裁掉 */
+  .sti-panel-content,
+  .sti-mode-selector { padding-left: 12px; padding-right: 12px; }
+  .sti-mode-item { padding: 9px 10px; gap: 10px; }
+  .sti-mode-name { white-space: normal; overflow-wrap: anywhere; }
+  .sti-mode-hint { white-space: normal; }
+  .sti-panel-actions { flex-wrap: wrap; justify-content: stretch; gap: 8px; }
+  .sti-panel-actions .sti-btn { flex: 1 1 auto; min-height: 40px; }
+  .sti-btn { min-height: 38px; padding: 8px 14px; }
+
+  /* 生成面板里的渠道选择、范围行等：窄屏纵向堆叠 */
+  .sti-range-row .sti-floor-select { flex-basis: 100%; min-width: 0; }
+  .sti-exclude-list { max-height: 22dvh; }
+
+  /* 灯箱：小屏用近全屏，工具栏可横向滚动不裁切 */
+  .sti-lightbox { width: 96vw; max-width: 96vw; max-height: 88dvh; top: 6dvh; }
+  .sti-lightbox-toolbar { flex-wrap: wrap; gap: 6px; }
+}

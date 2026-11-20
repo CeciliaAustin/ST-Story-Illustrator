@@ -53,8 +53,9 @@ describe('buildPageNl', () => {
     // 没有 nl 也不能空句：用 act / title 兜底，并按分区引导词落到对应格
     expect(nl).toContain('五条悟 勾肩');
     expect(nl).toContain('五条悟 开门');
-    // 用户点名过的「空白处没了」：留白/格间必须是独立一句，不能只靠版面首句
-    expect(nl).toContain('gutter');
+    // 用户点名过的「空白处没了」：留白必须是独立一句，且用主次+负空间措辞
+    //（任务书删掉了旧的「窄 gutter/九成覆盖」满版规则）
+    expect(nl).toMatch(/negative space|empty|hero image/i);
   });
 });
 
@@ -106,11 +107,11 @@ describe('composePagePrompt', () => {
     expect(out.characters[0].tag).toContain('sunglasses');
   });
 
-  it('页级 nl 存在时原样用，只在缺留白说法时补一句 gutter', () => {
+  it('页级 nl 存在时原样用，只在缺留白说法时补一句留白/负空间', () => {
     const p = page({ nl: 'A custom layout sentence. In the upper panel, something.' });
     const nl = composePagePrompt(p, library).nl;
     expect(nl.startsWith('A custom layout sentence. In the upper panel, something.')).toBe(true);
-    expect(nl).toContain('gutters between panels');
+    expect(nl).toMatch(/negative space|empty|hero image/i);
   });
 
   it('页级 nl 自己写了 gutter 时不重复追加', () => {

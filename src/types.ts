@@ -492,9 +492,27 @@ export interface ComicDialogue {
   y?: number;
 }
 
+/**
+ * 这一格的镜头类型，由 LLM 按当前 beat 的叙事需要自由选择（任务书 §3.1）。
+ * 一格可以是单人、单人局部、双人、双人局部、物件、环境细节或同步分屏；
+ * **不是**「整页人物清单的复制」——页级角色集合仅在角色块里提供外貌约束。
+ */
+export type ComicComposition =
+  | 'single'
+  | 'single_detail'
+  | 'duo'
+  | 'duo_detail'
+  | 'object'
+  | 'environment_detail'
+  | 'split_scene';
+
 export interface ComicPanelPlan {
   index: number;
   title: string;
+  /**
+   * 这一格的镜头类型。缺省由 nl / characters 推断，老计划没有也不影响显示。
+   */
+  composition?: ComicComposition;
   /**
    * 这一格出场的人。`look` 只给**角色库里没有**的人用（模型按正文/柏宝书补的
    * 英文外貌），有库条目的留空——库是权威，不许改写。
@@ -513,10 +531,30 @@ export interface ComicPanelPlan {
   dialogue?: ComicDialogue[];
 }
 
+/**
+ * 一页选定的「连续瞬间」（single continuous beat）。
+ * 整页所有格都属于同一时间、同一事件；格与格只切观察角度 / 景别 / 局部。
+ * 前后文只用于理解人物与代词，不得作为本页新增事件（任务书 §1 / §6）。
+ */
+export interface ComicBeat {
+  /** 这一瞬间的定格时间范围（同一时刻/紧邻动作，不得跳时） */
+  timeScope?: string;
+  /** 地点 */
+  location?: string;
+  /** 正在发生的一件事 */
+  event?: string;
+  /** 为什么这几格属于同一瞬间（给校验与预览看） */
+  continuityNote?: string;
+  /** 本页台词在原文里的先后顺序（按文本顺序） */
+  dialogueOrder?: string[];
+}
+
 export interface ComicPagePlan {
   pageIndex: number;
   title: string;
   layout: PanelLayout;
+  /** 本页选定的连续瞬间；老计划没有也能正常出图。 */
+  beat?: ComicBeat;
   /**
    * 整页共用的一套英文 tag（一张图 = 一页，不是一格一张）。
    * 新版模型输出才有；旧计划没有时由 pageCompose 从各格 tag 合并兜底。

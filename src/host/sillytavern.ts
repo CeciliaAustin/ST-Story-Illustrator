@@ -253,6 +253,7 @@ export function getEventTypes(): Record<string, string> {
     // 硬编码兜底（确保关键事件存在）
     MESSAGE_RECEIVED: fromST.MESSAGE_RECEIVED ?? 'message_received',
     MESSAGE_SENT: fromST.MESSAGE_SENT ?? 'message_sent',
+    GENERATION_STARTED: fromST.GENERATION_STARTED ?? 'generation_started',
     GENERATION_ENDED: fromST.GENERATION_ENDED ?? 'generation_ended',
     CHARACTER_MESSAGE_RENDERED: fromST.CHARACTER_MESSAGE_RENDERED ?? 'character_message_rendered',
     USER_MESSAGE_RENDERED: fromST.USER_MESSAGE_RENDERED ?? 'user_message_rendered',

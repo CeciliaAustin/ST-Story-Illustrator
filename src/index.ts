@@ -53,7 +53,7 @@ import {
 } from './types';
 import { TaskQueue } from './tasks/taskQueue';
 import { createTaskRunner, createVisualTask, MODE_LABEL } from './tasks/workflow';
-import { pickAutoModes } from './tasks/autoTrigger';
+import { pickAutoModes, isFreshGeneratedFloor } from './tasks/autoTrigger';
 
 // ============================================================
 // 模块状态
@@ -65,6 +65,12 @@ const cleanupFunctions: Array<() => void> = [];
 let queue: TaskQueue | null = null;
 /** 状态条跟踪的是哪一条任务（换任务时重新计时的依据） */
 let runTaskId = '';
+/**
+ * 是否处在一次真实的「生成一层」窗口内（GENERATION_STARTED → GENERATION_ENDED）。
+ * 打开 / 切换 / 刷新聊天时 ST 会重渲整段历史，每条都会发 MESSAGE_RECEIVED，
+ * 但没有生成窗口——用它把「历史重渲」和「刚 roll 的新层」分开。
+ */
+let generationActive = false;
 
 // ============================================================
 // 扩展入口
@@ -256,9 +262,16 @@ function registerEvents(): void {
     hideSelectionPanel();
     // 上一条聊天里没等到渲染的标记必须清掉：楼层号在另一条聊天里没有意义
     autoPending.clear();
+    generationActive = false;
     queue?.cancelAll();
   });
   cleanupFunctions.push(offChatChanged);
+
+  // 生成窗口：只有在这段窗口内到达的 AI 层才算「刚 roll 出来的新层」。
+  // 刷新页面时若正好有生成在进行，APP_READY 之后才注册监听，可能错过 STARTED——
+  // 那层就按老逻辑不自动出图，用户手动出图即可，绝不为了「补上」误伤历史重渲。
+  cleanupFunctions.push(on(events.GENERATION_STARTED, () => { generationActive = true; }));
+  cleanupFunctions.push(on(events.GENERATION_ENDED, () => { generationActive = false; }));
 
   const offDeleted = on(events.MESSAGE_DELETED, () => {
     hideToolbar();
@@ -279,7 +292,13 @@ function registerEvents(): void {
   const offReceived = on(events.MESSAGE_RECEIVED, (...args: unknown[]) => {
     const floor = extractFloorFromEventArg(args[0]);
     if (floor < 0) return;
-    if (!isAiStoryMessage(getMessage(floor))) return;
+    // 必须同时满足：处在真实生成窗口内 + 是 AI 剧情层。
+    // 少了 generationActive 这道门，打开聊天 / 切 swipe 时 ST 重渲历史，
+    // 每条历史都会被打成「新层」，用户一进新聊天就自动开始出图。
+    if (!isFreshGeneratedFloor({
+      generationActive,
+      isAiStoryMessage: isAiStoryMessage(getMessage(floor)),
+    })) return;
     autoPending.add(floor);
   });
   cleanupFunctions.push(offReceived);

@@ -308,6 +308,22 @@ function cardFailureMessage(result: { reason: string; message?: string }): strin
 // 漫画分镜模式
 // ============================================================
 
+/**
+ * 这一页该锚到正文的哪一句话（任务书 §8：一页一个 source range，一个挂载点）。
+ *
+ * 优先用本页台词原文——它是从选段里逐字摘出来的，在楼层正文里找得到；
+ * 台词可能是半句，取前 24 字足够定位又不至于跨过多个句子。没有台词时退回 beat.event
+ * （模型对这一瞬间的概括，偶尔命中），最后才退回选段开头（旧行为）。
+ */
+export function pickPageAnchorText(page: ComicPagePlan, segmentText: string): string {
+  const clean = (s: unknown): string => String(s ?? '').replace(/\s+/g, ' ').trim();
+  const firstLine = (page.dialogue ?? []).map(d => clean(d.text)).find(Boolean);
+  if (firstLine) return firstLine.slice(0, 24);
+  const beatEvent = clean(page.beat?.event);
+  if (beatEvent && segmentText.includes(beatEvent)) return beatEvent.slice(0, 24);
+  return segmentText.slice(0, 120);
+}
+
 async function runComic(
   task: VisualTask,
   ctx: QueueRunContext,
@@ -409,7 +425,8 @@ async function runComic(
     }
   }
 
-  // 人数体检：Base 说「两个人」而角色块只建出一个 —— 那条「永远只有 char」的根因。
+  // 人数体检（任务书 §3.3 新口径）：只在「某一格明确写了两人同框、其中一人却没有外貌
+  // 约束」时重问。单人格 / 双人局部 / 物件格一律放过，不再拿页级人数词强制每格同人。
   // 代码能补的（人设进库 / 库内固定双人）上面 composePagePrompt 已经补了；
   // 补不出来的情况只能让模型补 `look`，所以这里重问一次，并把它错在哪讲清楚。
   const castGap = findCastShortfall(plan.data, characters.characters, {
@@ -419,8 +436,8 @@ async function runComic(
   });
   if (castGap) {
     console.warn(
-      `[ST-Story-Illustrator] 第 ${castGap.pageIndex + 1} 页 Base 声称 ${castGap.declared} 人，` +
-        `但只建出 ${castGap.blocks} 个角色块，重问一次分镜。`,
+      `[ST-Story-Illustrator] 第 ${castGap.pageIndex + 1} 页有一格明确写了 ${castGap.declared} 人同框，` +
+        `但只建出 ${castGap.blocks} 个有外貌的角色块，重问一次分镜。`,
     );
     plan = await generateComicPlan({
       scene: sceneFromSegment(segment),
@@ -429,11 +446,12 @@ async function runComic(
       options: {
         ...planOptions,
         extraInstruction:
-          `上一版第 ${castGap.pageIndex + 1} 页的 tags 写了 ${castGap.declared} 个人，` +
-          `但 panels[].characters 只写了 ${castGap.blocks} 个——画面里那个人会成为没有外貌约束的陌生人。` +
-          '这次必须让「人数词 = characters 条数」：每个出场的人各写一条，' +
-          '角色库里没有的那位（通常是用户扮演的「你」）**必须给它 look**（英文外貌短语：发色/瞳色/体型/当前着装），' +
-          '取自【角色参考】或【本聊天的人物对应】里的人设摘要；实在拿不到外貌就把人数词改成 1，绝不写空。',
+          `上一版第 ${castGap.pageIndex + 1} 页有一格写了 ${castGap.declared} 人同框，` +
+          `但只有 ${castGap.blocks} 人有外貌约束——那个人会成为画得随便的陌生人。` +
+          '只修这一格：要么给缺外貌的那位（通常是用户扮演的「你」）补 look' +
+          '（英文短语：发色/瞳色/体型/当前着装，取自【角色参考】/人设摘要），' +
+          '要么把这一格改成单人/局部镜头——**不要把两个人都塞进本页每一格**。' +
+          '其它单人局部格、道具格保持原样。',
       },
       caller: makeModeLlmCaller(deps.fullSettings, 'comic'),
       promptOverrides: deps.fullSettings.promptOverrides,
@@ -450,7 +468,7 @@ async function runComic(
         mode: 'comic',
         floor,
         text:
-          `第 ${after.pageIndex + 1} 页写着 ${after.declared} 个人，但只能给出 ${after.blocks} 个角色词。` +
+          `第 ${after.pageIndex + 1} 页有一格写着 ${after.declared} 人同框，但只能给出 ${after.blocks} 个有外貌的角色词。` +
           `多半是柏宝绘角色库里没有「${personaName || '你'}」这一条（或没填外貌），模型也补不出英文外貌。` +
           '到柏宝绘「角色管理」给人设建一条（1girl/1boy + 发色/瞳色/体型），之后这一页就会有两个完整的人。',
       });
@@ -605,13 +623,17 @@ async function runComic(
     // 位置由 tag 决定，不再靠猜「选段落在哪一段」；柏宝绘重写 .mes_text 也打不掉它
     // （正则会在下一次渲染时把锚点重建出来）。
     const tag = manwaTagReady ? buildManwaTag(artifact.id) : '';
+    // 每页各自锚到「本页对应的台词/动作结束处」，不再全页共用一个选段开头：
+    // 用本页第一句台词的原文去楼层正文里定位（台词是原文里真实存在的字，最可靠）；
+    // 没台词时退回本页 beat.event / 该格 subject，最后才退回选段开头。
+    const pageAnchorText = pickPageAnchorText(page, segment.text);
     const inserted = tag ? await insertManwaTag({
       floor,
       chatId: task.chatId,
       swipeId: segment.messages[0]?.swipeId ?? 0,
       ...(segment.messages[0]?.sendDate ? { sendDate: segment.messages[0].sendDate } : {}),
       tag,
-      anchorText: segment.text.slice(0, 120),
+      anchorText: pageAnchorText,
     }) : { ok: false as const, reason: 'no-context' as const };
     if (inserted.ok) {
       // 记下「这一页的 tag 原文」：重画只换图，不重插 tag

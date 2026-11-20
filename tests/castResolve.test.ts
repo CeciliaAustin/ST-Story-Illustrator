@@ -157,26 +157,52 @@ describe('composePagePrompt：两个人就要两块角色词', () => {
     expect(composed.characters).toHaveLength(2);
   });
 
-  it('人数对不上且补不出来时，体检报告能指到具体页', () => {
+  it('同一格明确两人同框、其中一人无外貌 → 体检指到具体页', () => {
     const p = page({
       panels: [
         {
           index: 0,
           title: '',
-          characters: [{ name: 'Elias', act: 'leaning across the table' }],
+          // 这一格明确写了 Elias +「你」两人同框
+          characters: [
+            { name: 'Elias', act: 'leaning across the table' },
+            { name: '你', act: 'holding a small silver spoon' },
+          ],
           mood: '',
           tags: '',
         },
       ],
     });
-    // 库里只有 Elias，人设不在库、也没 look → 补不出第二块
+    // 库里只有 Elias，人设不在库、也没 look → 同框的第二块补不出来
     const gap = findCastShortfall([p], [elias], { personaName: 'Sissy' });
     expect(gap).toEqual({ pageIndex: 0, title: '露台午餐', declared: 2, blocks: 1 });
   });
 
-  it('人数对得上时体检通过', () => {
-    const gap = findCastShortfall([page()], [elias, sissy], { personaName: 'Sissy' });
-    expect(gap).toBeNull();
+  it('单人格 / 局部格即使页级人数词写着两人也不报（任务书 §3.3：不许强制每格同人）', () => {
+    const p = page({
+      panels: [
+        { index: 0, title: '', characters: [{ name: 'Elias', act: 'close-up of his eyes' }], mood: '', tags: '' },
+      ],
+    });
+    expect(findCastShortfall([p], [elias], { personaName: 'Sissy' })).toBeNull();
+  });
+
+  it('同框两人都有库条目时体检通过', () => {
+    const p = page({
+      panels: [
+        {
+          index: 0,
+          title: '',
+          characters: [
+            { name: 'Elias', act: 'leaning across the table' },
+            { name: 'Sissy', act: 'holding a small silver spoon' },
+          ],
+          mood: '',
+          tags: '',
+        },
+      ],
+    });
+    expect(findCastShortfall([p], [elias, sissy], { personaName: 'Sissy' })).toBeNull();
   });
 });
 
