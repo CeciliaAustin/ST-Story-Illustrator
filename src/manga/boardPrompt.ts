@@ -64,6 +64,23 @@ export const PANEL_TAGS_BY_LAYOUT: Record<BoardLayout, readonly string[]> = {
   ],
 };
 
+/**
+ * 「白底 / 无框插画」语义的词。
+ *
+ * 这些是柏宝绘原版**白底档**专用词：它假定「整页就是一张白纸上的无框插画」。
+ * 一旦走「一页多格、页面由代码排版」的路线，这些词就是**语义错误**——
+ * `white background` 在 NAI 里是「整张画布不要背景」，模型会连格内背景一起抹掉；
+ * `无边框中央插画` 会把主画面降级成独立插画而不是一个漫画格。
+ * 所以逐格/声明式路线要整组剥掉（见 enforcePanelPrompt 的 declarative 选项）。
+ */
+export const WHITE_GROUND_TAGS: readonly string[] = [
+  'white background',
+  '无边框中央插画',
+  '主场景周围没有长方形包围',
+  '第二场景周围没有长方形画框',
+  '人物自然融入白色空间',
+];
+
 /** 等分 N 格的 koma 词：**只对 regular 档成立**。 */
 export function regularKomaTag(count: 2 | 3 | 4): string {
   return `1.4::${count}koma::`;
@@ -161,7 +178,7 @@ export interface EnforceResult {
 export function enforcePanelPrompt(
   prompt: string,
   layout: BoardLayout,
-  options: { koma?: 2 | 3 | 4 } = {},
+  options: { koma?: 2 | 3 | 4; declarative?: boolean } = {},
 ): EnforceResult {
   const kind = normalizeBoardLayout(layout);
   const source = String(prompt ?? '').trim();
@@ -170,7 +187,7 @@ export function enforcePanelPrompt(
   // regular 档的等分格数由格数决定：用户选三格就补 3koma，删掉 2koma / 4koma。
   // 这是"固定格数"在 NAI 上唯一真正生效的写法（koma 词是格数的语义本身）。
   const koma = kind === 'regular' ? options.koma : undefined;
-  const required = koma
+  let required = koma
     ? ['1.4::multiple views::', regularKomaTag(koma), '1.5::split screen::']
     : [...PANEL_TAGS_BY_LAYOUT[kind]];
   const forbidden = new Set<string>(
@@ -178,6 +195,16 @@ export function enforcePanelPrompt(
       ? ([2, 3, 4] as const).filter(n => n !== koma).map(n => `${n}koma`)
       : PANEL_FORBIDDEN_BY_LAYOUT[kind],
   );
+  // declarative：一页多格由「结构描述 + 代码排版」表达，不再用白底词。
+  // 白底词会被当成"整张画布没背景"，正好抹掉每一格自己的场景。
+  if (options.declarative === true) {
+    required = required.filter(tag => !WHITE_GROUND_TAGS.includes(bareTagOf(tag)));
+    for (const tag of WHITE_GROUND_TAGS) forbidden.add(tag);
+    // 仍需一个"多格"信号：白底档原本靠 white background 暗示多格，剥掉后要补回来
+    if (!koma && kind === 'inset' && !required.some(t => bareTagOf(t) === 'multiple views')) {
+      required = ['1.4::multiple views::', ...required];
+    }
+  }
   // 场景词兜底只发生在白底两档：inset 全删；unframed 放行室内外锚 + 地点词限流 2 个。
   const stripScene = kind === 'inset' || kind === 'unframed';
   const sceneLimit = kind === 'unframed';
@@ -194,6 +221,9 @@ export function enforcePanelPrompt(
     // 只记词族会漏判 → 重复注入。
     present.add(bare);
     if (JUNK_TAGS.includes(bare) && isPlainSegment(text)) { removed.push(text); continue; }
+    // 禁用词先于「是否分格词族」判定：白底词不在词族里，
+    // 放在词族之后会被 kept 原样留下（等于没禁）。
+    if (isPlainSegment(text) && forbidden.has(bare)) { removed.push(text); continue; }
     if (!PANEL_FAMILY.includes(bare)) {
       if (sceneLimit && isPlainSegment(text)) {
         if (SCENE_ANCHOR_TAGS.includes(bare)) { kept.push(text); continue; }
@@ -330,14 +360,15 @@ export function boardAreaLeads(layout: BoardLayout, pageType: BoardPageType, cou
     return ['In the large main panel', 'In the narrow panel', 'In the small panel', 'In the bottom strip'];
   }
   if (kind === 'inset') {
-    return ['In the main illustration', 'In the narrow panel across the top', 'In the small framed panel in the bottom right corner', 'In the small framed panel'];
+    // 主画面是一个**漫画格**，不是一张无框插画 —— 措辞会影响模型怎么理解它
+    return ['In the large main panel', 'In the narrow panel across the top', 'In the small framed panel in the bottom right corner', 'In the small framed panel'];
   }
   // unframed
   const pt = normalizeBoardPageType(pageType);
-  if (pt === 'c') return ['In the main illustration', 'In the tall narrow panel along the right edge'];
-  if (pt === 'd') return ['In the main illustration', 'In the small framed panel in the bottom right corner'];
-  if (pt === 'b') return ['In the main illustration', 'In the narrow panel across the top'];
-  return ['In the main illustration', 'In the narrow panel across the top', 'In the floating panel in the bottom right area'];
+  if (pt === 'c') return ['In the large main panel', 'In the tall narrow panel along the right edge'];
+  if (pt === 'd') return ['In the large main panel', 'In the small framed panel in the bottom right corner'];
+  if (pt === 'b') return ['In the large main panel', 'In the narrow panel across the top'];
+  return ['In the large main panel', 'In the narrow panel across the top', 'In the floating panel in the bottom right area'];
 }
 
 const MOSTLY_CJK = /[\u3400-\u9fff\uf900-\ufaff]/g;

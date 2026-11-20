@@ -43,7 +43,7 @@ import { buildBoardGeneration } from '../manga/stylePrompt';
 import { enforcePanelPrompt } from '../manga/boardPrompt';
 import { resolveSourceDialogue, reconcileDialogueDetailed } from '../manga/sourceDialogue';
 import { hasStoryContent } from '../manga/panelRelevance';
-import { composePagePrompt, findCastShortfall, buildBoardNl } from '../manga/pageCompose';
+import { composePagePrompt, findCastShortfall, buildDeclarativePageNl } from '../manga/pageCompose';
 import { pageSlotsFor } from '../manga/pageSlots';
 import { buildPanelShots } from '../manga/panelShot';
 import { assemblePageBlob } from '../manga/pageAssemble';
@@ -558,14 +558,21 @@ async function runComic(
       selectedText: segment.text,
       ...(personaName ? { personaName } : {}),
     });
+    // 整页兜底也要守住语义：**不再用 `white background` 和「无框插画」**。
+    // 那是「整张白纸上画一张无框插画」的写法 —— 模型会把格内背景一起抹掉，
+    // 主画面也退化成独立插画而不是一个漫画格。这里改成声明式：
+    // 告诉模型「这一页由 N 个独立画格组成」，底色只出现在格间空隙（由代码画）。
     const fallbackEnforced = enforcePanelPrompt(
       composed.prompt,
       board.layout,
-      board.koma ? { koma: board.koma } : {},
+      {
+        ...(board.koma ? { koma: board.koma } : {}),
+        declarative: true,
+      },
     );
     const fallbackPrompt = fallbackEnforced.prompt;
     const fallbackNl = wantComicNl
-      ? buildBoardNl(
+      ? buildDeclarativePageNl(
         {
           layout: board.layout,
           pageType: board.pageType,

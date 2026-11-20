@@ -142,7 +142,7 @@ export function buildPageNl(page: ComicPagePlan): string {
     // 绝不能像旧句那样写 different moment——那直接违任务书 §1，模型据此跳时拼盘。
     parts.push('All panels capture the same continuous instant from different camera angles and shot distances — a main view plus close details of the same moment — with generous empty negative space left on the page.');
   }
-  return parts.join(' ');
+  return parts.length ? `${parts.join('. ')}.` : '';
 }
 
 /**
@@ -167,7 +167,8 @@ export function panelNlContentOnly(
     const lead = leads[Math.min(index, leads.length - 1)];
     parts.push(lead.endsWith('shows') ? `${lead} ${body}` : `${lead}, ${body}`);
   });
-  return parts.join(' ');
+  // 各格之间要有句号：整段是"一句话到底"时，模型容易只挑其中一格画。
+  return parts.length ? `${parts.join('. ')}.` : '';
 }
 
 /** 一页必须是「同一个连续瞬间」：这是本插件与"拼盘式多格"的分界线。 */
@@ -196,8 +197,72 @@ export function buildBoardNl(
   return [head, body, CONTINUOUS_INSTANT_NOTE].filter(Boolean).join(' ');
 }
 
-/** 整页台词：页级优先，没有就从各格合并（上限 4 条由解析层保证）。 */
-export function collectPageDialogue(page: ComicPagePlan): ComicDialogue[] {
+const NL_COUNT_WORD: Record<number, string> = {
+  1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six',
+};
+
+/** 各档的「格位怎么排」一句。只说结构，不说底色（底色由代码画）。 */
+function panelArrangementClause(layout: BoardLayout, count: number): string {
+  const n = NL_COUNT_WORD[count] ?? String(count);
+  switch (layout) {
+    case 'regular':
+      return `arranged as ${n} stacked panels of equal width, read from top to bottom`;
+    case 'irregular': {
+      if (count <= 1) return 'arranged as a single main panel';
+      const rest = NL_COUNT_WORD[count - 1] ?? String(count - 1);
+      return count === 2
+        ? 'arranged in an asymmetrical open composition — one large main panel plus one smaller panel'
+        : `arranged in an asymmetrical open composition — one large main panel plus ${rest} smaller panels of different sizes`;
+    }
+    case 'unframed':
+      return 'arranged as one main panel that fills the page plus small separately framed close-up panels floating over its margins';
+    case 'inset':
+    default: {
+      if (count <= 1) return 'arranged as a single main panel with generous space around it';
+      const rest = NL_COUNT_WORD[count - 1] ?? String(count - 1);
+      return count === 2
+        ? 'arranged in an open composition — one large main panel in the upper area plus one small close-up panel placed in the free space around it'
+        : `arranged in an open composition — one large main panel in the upper area plus ${rest} small close-up panels placed in the free space around it`;
+    }
+  }
+}
+
+/**
+ * 声明式整页 nl：**说「这一页由 N 个独立画格组成」，而不是「一张白底插画」**。
+ *
+ * 为什么必须单独有一份（用户实地指出过语义偏差）：
+ * - `white background` 表达的是**画面底色**，不是格与格之间的留白。写进去，
+ *   模型会把整张画布（连格子内部）一起抹成纯白，人物飘在纸上没有场景。
+ * - “an unframed character illustration + one or two small panels” 把主画面
+ *   降级成「独立插画 + 装饰细节」，格数也就无从谈起。
+ *
+ * 这份 nl 把三个概念分开写死：页面底色 = 格间与页边的空隙；格内背景 = 每格自己的场景；
+ * 主画面 = 一个完整的漫画格。只在「整页一次出图」的兜底路径使用——
+ * 正常路径是逐格出图 + 代码排版，根本不需要模型画分格。
+ */
+export function buildDeclarativePageNl(
+  board: {
+    layout: BoardLayout;
+    pageType: BoardPageType;
+    panelCount: number;
+    whitespace?: 'compact' | 'balanced' | 'airy' | 'dramatic';
+    diagonal?: boolean;
+  },
+  page: ComicPagePlan,
+): string {
+  const count = page.panels?.length || board.panelCount || 1;
+  const n = NL_COUNT_WORD[count] ?? String(count);
+  const head = count <= 1
+    ? 'A one-panel manga page: a single framed comic panel on the page.'
+    : `A ${n}-panel manga page built from ${n} separate, individually framed comic panels, ${panelArrangementClause(board.layout, count)}.`;
+  const structure = count <= 1
+    ? 'The panel keeps its own scene background.'
+    : 'Each panel has its own visible panel border and its own full scene background. The panels are independent comic panels, not a single illustration with decorative details or inset objects. The only empty area is the gap between panels and the page margin, and that gap is the page background — it is not a request to remove the background inside any panel.';
+  const body = panelNlContentOnly(page, board);
+  return [head, structure, body, CONTINUOUS_INSTANT_NOTE].filter(Boolean).join(' ');
+}
+
+/** 整页台词：页级优先，没有就从各格合并（上限 4 条由解析层保证）。 */export function collectPageDialogue(page: ComicPagePlan): ComicDialogue[] {
   if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
   const out: ComicDialogue[] = [];
   const panels = page.panels ?? [];

@@ -235,7 +235,10 @@ describe('reconcileHeadcount：人数词以角色块为准', () => {
 describe('区域引导词：每格落在自己那一区', () => {
   it('inset 三格的顺序是 主图 → 顶部条 → 右下格', () => {
     const leads = boardAreaLeads('inset', 'auto', 3);
-    expect(leads[0]).toMatch(/main illustration/i);
+    // 「主画面」必须说成 large main panel：它在这一档里是一个漫画格，
+    // 说成 illustration 会让模型把它画成无框独立插画（用户实地指出过）。
+    expect(leads[0]).toMatch(/large main panel/i);
+    expect(leads[0]).not.toMatch(/illustration/i);
     expect(leads[1]).toMatch(/top/i);
     expect(leads[2]).toMatch(/bottom right/i);
   });

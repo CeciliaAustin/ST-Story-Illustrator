@@ -9256,8 +9256,26 @@ ${user}`
 }
 const PAGE_WIDTH = 832;
 const PAGE_HEIGHT = 1216;
-const MARGIN = 0.045;
-const GUTTER = 0.01;
+const DEFAULT_MARGIN = 0.045;
+const DEFAULT_GUTTER = 0.01;
+const WHITESPACE_METRICS = {
+  compact: { margin: 0.03, gutter: 8e-3 },
+  balanced: { margin: DEFAULT_MARGIN, gutter: DEFAULT_GUTTER },
+  airy: { margin: 0.075, gutter: 0.016 },
+  dramatic: { margin: 0.105, gutter: 0.022 }
+};
+function resolveMetrics(options, layout) {
+  const clamp2 = (v, fallback, max) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+    return Math.max(0, Math.min(max, v));
+  };
+  const preset = layout === "irregular" ? WHITESPACE_METRICS.compact : WHITESPACE_METRICS[options.whitespace ?? "balanced"] ?? WHITESPACE_METRICS.balanced;
+  return {
+    margin: clamp2(options.margin, preset.margin, 0.3),
+    gutter: clamp2(options.gutter, preset.gutter, 0.1),
+    ...options.panelBorder ? { border: options.panelBorder } : {}
+  };
+}
 function clampSlot(slot) {
   const x = Math.max(0, Math.min(1, slot.x));
   const y = Math.max(0, Math.min(1, slot.y));
@@ -9265,48 +9283,50 @@ function clampSlot(slot) {
   const height = Math.max(0.02, Math.min(1 - y, slot.height));
   return { ...slot, x, y, width, height };
 }
-function regularSlots(count) {
+function regularSlots(count, m) {
+  const { margin, gutter } = m;
   if (count <= 1) {
-    return [{ panelIndex: 0, x: MARGIN, y: MARGIN, width: 1 - MARGIN * 2, height: 1 - MARGIN * 2, border: "thin" }];
+    return [{ panelIndex: 0, x: margin, y: margin, width: 1 - margin * 2, height: 1 - margin * 2, border: "thin" }];
   }
-  const usable = 1 - MARGIN * 2 - GUTTER * (count - 1);
+  const usable = 1 - margin * 2 - gutter * (count - 1);
   const h = usable / count;
   return Array.from({ length: count }, (_, i) => ({
     panelIndex: i,
-    x: MARGIN,
-    y: MARGIN + i * (h + GUTTER),
-    width: 1 - MARGIN * 2,
+    x: margin,
+    y: margin + i * (h + gutter),
+    width: 1 - margin * 2,
     height: h,
     border: "thin"
   }));
 }
-function irregularSlots(count) {
+function irregularSlots(count, m) {
+  const { margin, gutter } = m;
   if (count <= 1) {
-    return [{ panelIndex: 0, x: MARGIN, y: MARGIN, width: 1 - MARGIN * 2, height: 1 - MARGIN * 2, border: "thin" }];
+    return [{ panelIndex: 0, x: margin, y: margin, width: 1 - margin * 2, height: 1 - margin * 2, border: "thin" }];
   }
-  const usableW = 1 - MARGIN * 2;
-  const usableH = 1 - MARGIN * 2;
+  const usableW = 1 - margin * 2;
+  const usableH = 1 - margin * 2;
   const heroW = count === 2 ? usableW * 0.64 : usableW * 0.57;
-  const sideW = usableW - heroW - GUTTER;
+  const sideW = usableW - heroW - gutter;
   const slots = [
-    { panelIndex: 0, x: MARGIN, y: MARGIN, width: heroW, height: usableH, border: "thin" }
+    { panelIndex: 0, x: margin, y: margin, width: heroW, height: usableH, border: "thin" }
   ];
   const rest = count - 1;
-  const totalGap = GUTTER * (rest - 1);
+  const totalGap = gutter * (rest - 1);
   const weights = Array.from({ length: rest }, (_, i) => 1 / (i + 1.25));
   const weightSum = weights.reduce((a, b) => a + b, 0);
-  let cursor = MARGIN;
+  let cursor = margin;
   for (let i = 0; i < rest; i += 1) {
     const h = (usableH - totalGap) * weights[i] / weightSum;
     slots.push({
       panelIndex: i + 1,
-      x: MARGIN + heroW + GUTTER,
+      x: margin + heroW + gutter,
       y: cursor,
       width: sideW,
       height: h,
       border: "thin"
     });
-    cursor += h + GUTTER;
+    cursor += h + gutter;
   }
   return slots;
 }
@@ -9362,13 +9382,14 @@ function unframedSlots(count) {
 function pageSlotsFor(layout, count, options = {}) {
   const n = Math.max(1, Math.min(6, Math.floor(count) || 1));
   const airy = options.whitespace === "airy" || options.whitespace === "dramatic" || options.whitespace === void 0;
+  const metrics = resolveMetrics(options, layout);
   let slots;
   switch (layout) {
     case "regular":
-      slots = regularSlots(n);
+      slots = regularSlots(n, metrics);
       break;
     case "irregular":
-      slots = irregularSlots(n);
+      slots = irregularSlots(n, metrics);
       break;
     case "unframed":
       slots = unframedSlots(n);
@@ -9378,6 +9399,7 @@ function pageSlotsFor(layout, count, options = {}) {
       slots = insetSlots(n, airy);
       break;
   }
+  if (metrics.border) slots = slots.map((slot) => ({ ...slot, border: metrics.border }));
   const capacity = slots.length;
   if (n > capacity) {
     for (let i = capacity; i < n; i += 1) {
@@ -11068,6 +11090,13 @@ const PANEL_TAGS_BY_LAYOUT = {
     "1.4::white background::"
   ]
 };
+const WHITE_GROUND_TAGS = [
+  "white background",
+  "无边框中央插画",
+  "主场景周围没有长方形包围",
+  "第二场景周围没有长方形画框",
+  "人物自然融入白色空间"
+];
 function regularKomaTag(count) {
   return `1.4::${count}koma::`;
 }
@@ -11185,10 +11214,17 @@ function enforcePanelPrompt(prompt, layout, options = {}) {
   const source = String(prompt ?? "").trim();
   if (!source) return { prompt: source, removed: [], added: [] };
   const koma = kind === "regular" ? options.koma : void 0;
-  const required = koma ? ["1.4::multiple views::", regularKomaTag(koma), "1.5::split screen::"] : [...PANEL_TAGS_BY_LAYOUT[kind]];
+  let required = koma ? ["1.4::multiple views::", regularKomaTag(koma), "1.5::split screen::"] : [...PANEL_TAGS_BY_LAYOUT[kind]];
   const forbidden = new Set(
     koma ? [2, 3, 4].filter((n) => n !== koma).map((n) => `${n}koma`) : PANEL_FORBIDDEN_BY_LAYOUT[kind]
   );
+  if (options.declarative === true) {
+    required = required.filter((tag) => !WHITE_GROUND_TAGS.includes(bareTagOf(tag)));
+    for (const tag of WHITE_GROUND_TAGS) forbidden.add(tag);
+    if (!koma && kind === "inset" && !required.some((t) => bareTagOf(t) === "multiple views")) {
+      required = ["1.4::multiple views::", ...required];
+    }
+  }
   const stripScene = kind === "inset" || kind === "unframed";
   const sceneLimit = kind === "unframed";
   let locationKept = 0;
@@ -11201,6 +11237,10 @@ function enforcePanelPrompt(prompt, layout, options = {}) {
     const bare2 = bareTagOf(text);
     present.add(bare2);
     if (JUNK_TAGS.includes(bare2) && isPlainSegment(text)) {
+      removed.push(text);
+      continue;
+    }
+    if (isPlainSegment(text) && forbidden.has(bare2)) {
       removed.push(text);
       continue;
     }
@@ -11287,13 +11327,13 @@ function boardAreaLeads(layout, pageType, count) {
     return ["In the large main panel", "In the narrow panel", "In the small panel", "In the bottom strip"];
   }
   if (kind === "inset") {
-    return ["In the main illustration", "In the narrow panel across the top", "In the small framed panel in the bottom right corner", "In the small framed panel"];
+    return ["In the large main panel", "In the narrow panel across the top", "In the small framed panel in the bottom right corner", "In the small framed panel"];
   }
   const pt = normalizeBoardPageType(pageType);
-  if (pt === "c") return ["In the main illustration", "In the tall narrow panel along the right edge"];
-  if (pt === "d") return ["In the main illustration", "In the small framed panel in the bottom right corner"];
-  if (pt === "b") return ["In the main illustration", "In the narrow panel across the top"];
-  return ["In the main illustration", "In the narrow panel across the top", "In the floating panel in the bottom right area"];
+  if (pt === "c") return ["In the large main panel", "In the tall narrow panel along the right edge"];
+  if (pt === "d") return ["In the large main panel", "In the small framed panel in the bottom right corner"];
+  if (pt === "b") return ["In the large main panel", "In the narrow panel across the top"];
+  return ["In the large main panel", "In the narrow panel across the top", "In the floating panel in the bottom right area"];
 }
 const PERSON_TAG = /^(?:\d+\s*(?:girl|boy|other)s?|\d+\s*people|couple|solo)$/i;
 function declaredPersonsOf(base) {
@@ -11544,7 +11584,7 @@ function buildPageNl(page) {
   if (!wrote) {
     parts.push("All panels capture the same continuous instant from different camera angles and shot distances — a main view plus close details of the same moment — with generous empty negative space left on the page.");
   }
-  return parts.join(" ");
+  return parts.length ? `${parts.join(". ")}.` : "";
 }
 function panelNlContentOnly(page, board) {
   var _a, _b;
@@ -11556,20 +11596,45 @@ function panelNlContentOnly(page, board) {
     const lead = leads[Math.min(index2, leads.length - 1)];
     parts.push(lead.endsWith("shows") ? `${lead} ${body}` : `${lead}, ${body}`);
   });
-  return parts.join(" ");
+  return parts.length ? `${parts.join(". ")}.` : "";
 }
 const CONTINUOUS_INSTANT_NOTE = "All panels capture the same continuous instant from different camera angles and shot distances.";
-function buildBoardNl(board, page) {
+const NL_COUNT_WORD = {
+  1: "one",
+  2: "two",
+  3: "three",
+  4: "four",
+  5: "five",
+  6: "six"
+};
+function panelArrangementClause(layout, count) {
+  const n = NL_COUNT_WORD[count] ?? String(count);
+  switch (layout) {
+    case "regular":
+      return `arranged as ${n} stacked panels of equal width, read from top to bottom`;
+    case "irregular": {
+      if (count <= 1) return "arranged as a single main panel";
+      const rest = NL_COUNT_WORD[count - 1] ?? String(count - 1);
+      return count === 2 ? "arranged in an asymmetrical open composition — one large main panel plus one smaller panel" : `arranged in an asymmetrical open composition — one large main panel plus ${rest} smaller panels of different sizes`;
+    }
+    case "unframed":
+      return "arranged as one main panel that fills the page plus small separately framed close-up panels floating over its margins";
+    case "inset":
+    default: {
+      if (count <= 1) return "arranged as a single main panel with generous space around it";
+      const rest = NL_COUNT_WORD[count - 1] ?? String(count - 1);
+      return count === 2 ? "arranged in an open composition — one large main panel in the upper area plus one small close-up panel placed in the free space around it" : `arranged in an open composition — one large main panel in the upper area plus ${rest} small close-up panels placed in the free space around it`;
+    }
+  }
+}
+function buildDeclarativePageNl(board, page) {
   var _a;
-  const head = boardNlHead({
-    layout: board.layout,
-    pageType: board.pageType,
-    panelCount: ((_a = page.panels) == null ? void 0 : _a.length) || board.panelCount,
-    ...board.whitespace ? { whitespace: board.whitespace } : {},
-    ...board.diagonal ? { diagonal: true } : {}
-  });
+  const count = ((_a = page.panels) == null ? void 0 : _a.length) || board.panelCount || 1;
+  const n = NL_COUNT_WORD[count] ?? String(count);
+  const head = count <= 1 ? "A one-panel manga page: a single framed comic panel on the page." : `A ${n}-panel manga page built from ${n} separate, individually framed comic panels, ${panelArrangementClause(board.layout, count)}.`;
+  const structure = count <= 1 ? "The panel keeps its own scene background." : "Each panel has its own visible panel border and its own full scene background. The panels are independent comic panels, not a single illustration with decorative details or inset objects. The only empty area is the gap between panels and the page margin, and that gap is the page background — it is not a request to remove the background inside any panel.";
   const body = panelNlContentOnly(page, board);
-  return [head, body, CONTINUOUS_INSTANT_NOTE].filter(Boolean).join(" ");
+  return [head, structure, body, CONTINUOUS_INSTANT_NOTE].filter(Boolean).join(" ");
 }
 function collectPageDialogue(page) {
   if (page.dialogue && page.dialogue.length > 0) return page.dialogue;
@@ -12394,15 +12459,17 @@ async function runComic(task, ctx, deps) {
     const fallbackEnforced = enforcePanelPrompt(
       composed.prompt,
       board.layout,
-      board.koma ? { koma: board.koma } : {}
+      {
+        ...board.koma ? { koma: board.koma } : {},
+        declarative: true
+      }
     );
     const fallbackPrompt = fallbackEnforced.prompt;
-    const fallbackNl = wantComicNl ? buildBoardNl(
+    const fallbackNl = wantComicNl ? buildDeclarativePageNl(
       {
         layout: board.layout,
         pageType: board.pageType,
         panelCount: board.panelCount,
-        whitespace: whitespaceIntent,
         ...board.diagonal ? { diagonal: true } : {}
       },
       pageForCompose

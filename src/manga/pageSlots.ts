@@ -9,7 +9,14 @@
  *   3. 格数没有任何程序级保证。
  *
  * 逐格出图之后这些问题全部消失：格子是**代码画的**，背景是**每格自己的图**，
- * 白底只是页面上没被格子占到的区域（= 框外留白）。
+ * 页面底色只是没被格子占到的区域（= 框外留白）。
+ *
+ * **三层必须分开（对齐用户点出的语义偏差）**：
+ *   Page background  页面底色   → pageAssemble 的 `background`（纸的颜色，不是"白底 tag"）
+ *   Panel background 格内背景   → 每格自己那张图的场景（代码不碰）
+ *   Gutter          格间隙/页边 → 本文件的 margin / gutter（纯几何，可独立调）
+ * 这三样都不是自然语言能可靠表达的，只能由代码画；一旦混进提示词，
+ * 模型就会把"格间留白"理解成"整张画布没有背景"。
  *
  * 坐标一律用 0..1 归一化：x/y 是左上角，width/height 是占比。
  * 输出顺序 = 阅读顺序 = panelIndex 顺序；面积最大的格固定给 panelIndex 0（主图）。
@@ -32,14 +39,59 @@ export interface PageSlot {
 export const PAGE_WIDTH = 832;
 export const PAGE_HEIGHT = 1216;
 
-/** 页边距（框外留白的下限）。 */
-const MARGIN = 0.045;
-/** 格间 gutter（黑线两侧的间隙）。 */
-const GUTTER = 0.01;
+/** 页边距默认值（框外留白的下限）。 */
+export const DEFAULT_MARGIN = 0.045;
+/** 格间 gutter 默认值（格子与格子之间的间隙）。 */
+export const DEFAULT_GUTTER = 0.01;
 
 export interface SlotOptions {
   /** 留白意图：airy/dramatic 时 inset 档把主图收得更小，页边更宽。 */
   whitespace?: 'compact' | 'balanced' | 'airy' | 'dramatic';
+  /** 页边空白（0..0.3）。不传走默认值；这是"页面底色露出多少"的唯一旋钮。 */
+  margin?: number;
+  /** 格间隙（0..0.1）。与 margin 分开：格间距大 ≠ 页边宽。 */
+  gutter?: number;
+  /** 边框全局覆盖。不传按档位默认（inset 主格无框、其余细框）。 */
+  panelBorder?: SlotBorder;
+}
+
+/** 一次排版用的几何参数（内部统一口径，避免各档各写一份常量）。 */
+interface SlotMetrics {
+  margin: number;
+  gutter: number;
+  border?: SlotBorder;
+}
+
+/**
+ * 留白意图 → 页边/格间隙的默认值。
+ *
+ * 为什么留白要在这里落地：用户选「大面积留白」时，过去只有 inset 档的主图会缩小，
+ * 传统四格 / 开放拼版的页边和格间隙纹丝不动 —— 于是"留白"这个选项对它们等于没选。
+ * 留白是**几何**，就该在这里以数值生效，而不是靠提示词里的形容词。
+ */
+const WHITESPACE_METRICS: Record<'compact' | 'balanced' | 'airy' | 'dramatic', { margin: number; gutter: number }> = {
+  compact: { margin: 0.03, gutter: 0.008 },
+  balanced: { margin: DEFAULT_MARGIN, gutter: DEFAULT_GUTTER },
+  airy: { margin: 0.075, gutter: 0.016 },
+  dramatic: { margin: 0.105, gutter: 0.022 },
+};
+
+function resolveMetrics(options: SlotOptions, layout: BoardLayout): SlotMetrics {
+  const clamp = (v: number | undefined, fallback: number, max: number): number => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
+    return Math.max(0, Math.min(max, v));
+  };
+  // 开放拼版的档位语义就是「铺满、白边窄」：留白意图不改它的页边，
+  // 否则「选开放拼版又想要大片白边」会得到一个既不像拼版也不像留白的中间态。
+  // 真要宽页边，走 inset 档（UI 文案已这么写），或显式传 margin。
+  const preset = layout === 'irregular'
+    ? WHITESPACE_METRICS.compact
+    : (WHITESPACE_METRICS[options.whitespace ?? 'balanced'] ?? WHITESPACE_METRICS.balanced);
+  return {
+    margin: clamp(options.margin, preset.margin, 0.3),
+    gutter: clamp(options.gutter, preset.gutter, 0.1),
+    ...(options.panelBorder ? { border: options.panelBorder } : {}),
+  };
 }
 
 function clampSlot(slot: PageSlot): PageSlot {
@@ -51,17 +103,18 @@ function clampSlot(slot: PageSlot): PageSlot {
 }
 
 /** 等分横排（传统四格 / 2koma / 3koma 的原始形态）。 */
-function regularSlots(count: number): PageSlot[] {
+function regularSlots(count: number, m: SlotMetrics): PageSlot[] {
+  const { margin, gutter } = m;
   if (count <= 1) {
-    return [{ panelIndex: 0, x: MARGIN, y: MARGIN, width: 1 - MARGIN * 2, height: 1 - MARGIN * 2, border: 'thin' }];
+    return [{ panelIndex: 0, x: margin, y: margin, width: 1 - margin * 2, height: 1 - margin * 2, border: 'thin' }];
   }
-  const usable = 1 - MARGIN * 2 - GUTTER * (count - 1);
+  const usable = 1 - margin * 2 - gutter * (count - 1);
   const h = usable / count;
   return Array.from({ length: count }, (_, i) => ({
     panelIndex: i,
-    x: MARGIN,
-    y: MARGIN + i * (h + GUTTER),
-    width: 1 - MARGIN * 2,
+    x: margin,
+    y: margin + i * (h + gutter),
+    width: 1 - margin * 2,
     height: h,
     border: 'thin' as SlotBorder,
   }));
@@ -71,34 +124,35 @@ function regularSlots(count: number): PageSlot[] {
  * 开放拼版：大格 + 小格不等分配，铺满整页（这一档本来就不留白）。
  * 主格固定占左列，其余在右列竖排，高度按比例递减 —— 保证面积不相等。
  */
-function irregularSlots(count: number): PageSlot[] {
+function irregularSlots(count: number, m: SlotMetrics): PageSlot[] {
+  const { margin, gutter } = m;
   if (count <= 1) {
-    return [{ panelIndex: 0, x: MARGIN, y: MARGIN, width: 1 - MARGIN * 2, height: 1 - MARGIN * 2, border: 'thin' }];
+    return [{ panelIndex: 0, x: margin, y: margin, width: 1 - margin * 2, height: 1 - margin * 2, border: 'thin' }];
   }
-  const usableW = 1 - MARGIN * 2;
-  const usableH = 1 - MARGIN * 2;
+  const usableW = 1 - margin * 2;
+  const usableH = 1 - margin * 2;
   const heroW = count === 2 ? usableW * 0.64 : usableW * 0.57;
-  const sideW = usableW - heroW - GUTTER;
+  const sideW = usableW - heroW - gutter;
   const slots: PageSlot[] = [
-    { panelIndex: 0, x: MARGIN, y: MARGIN, width: heroW, height: usableH, border: 'thin' },
+    { panelIndex: 0, x: margin, y: margin, width: heroW, height: usableH, border: 'thin' },
   ];
   const rest = count - 1;
-  const totalGap = GUTTER * (rest - 1);
+  const totalGap = gutter * (rest - 1);
   // 递减权重：越往下越矮，形成「大小格」的节奏，而不是等分
   const weights = Array.from({ length: rest }, (_, i) => 1 / (i + 1.25));
   const weightSum = weights.reduce((a, b) => a + b, 0);
-  let cursor = MARGIN;
+  let cursor = margin;
   for (let i = 0; i < rest; i += 1) {
     const h = ((usableH - totalGap) * weights[i]) / weightSum;
     slots.push({
       panelIndex: i + 1,
-      x: MARGIN + heroW + GUTTER,
+      x: margin + heroW + gutter,
       y: cursor,
       width: sideW,
       height: h,
       border: 'thin',
     });
-    cursor += h + GUTTER;
+    cursor += h + gutter;
   }
   return slots;
 }
@@ -182,14 +236,18 @@ export function pageSlotsFor(
 ): PageSlot[] {
   const n = Math.max(1, Math.min(6, Math.floor(count) || 1));
   const airy = options.whitespace === 'airy' || options.whitespace === 'dramatic' || options.whitespace === undefined;
+  const metrics = resolveMetrics(options, layout);
   let slots: PageSlot[];
   switch (layout) {
-    case 'regular': slots = regularSlots(n); break;
-    case 'irregular': slots = irregularSlots(n); break;
+    case 'regular': slots = regularSlots(n, metrics); break;
+    case 'irregular': slots = irregularSlots(n, metrics); break;
     case 'unframed': slots = unframedSlots(n); break;
     case 'inset':
     default: slots = insetSlots(n, airy); break;
   }
+  // 边框独立于档位：用户想"每格都带框"或"全都不带框"只改这一个参数，
+  // 不用换版面档（对齐「边框/间距/底色应分别控制」）。
+  if (metrics.border) slots = slots.map(slot => ({ ...slot, border: metrics.border as SlotBorder }));
   // 该档容量不足时（例如 inset 只有 4 个位），多出来的格并进最后一格，绝不重叠
   const capacity = slots.length;
   if (n > capacity) {
