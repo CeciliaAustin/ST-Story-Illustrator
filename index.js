@@ -5391,9 +5391,9 @@ function planSelectRow(mode) {
 }
 const COMIC_STYLE_CARDS = [
   { id: "classic_grid", name: "传统四格", hint: "纵向等宽 / 2×2，阅读节奏稳定" },
-  { id: "open_montage", name: "开放拼版", hint: "大小格自由组合，主次分明" },
+  { id: "open_montage", name: "开放拼版", hint: "大小格自由组合、铺满整页（不留白边）" },
   { id: "diagonal_panels", name: "斜切分格", hint: "斜边制造动势，适合冲突与速度" },
-  { id: "hero_insets", name: "主图 + 特写", hint: "大主画面 + 浮动细节格，大量留白" },
+  { id: "hero_insets", name: "主图 + 特写", hint: "一张主图 + 带框特写格；留白多=白底居中，留白少=主图铺到底" },
   { id: "freeform", name: "自由构图", hint: "由 AI 按剧情设计版面并先出预览" }
 ];
 function styleCardChooser(current) {
@@ -5471,7 +5471,7 @@ function renderComicSettings() {
     (v) => patchSettings((st) => {
       st.modes["comic"].comicWhitespace = v;
     }),
-    "留白默认跟着风格走（传统四格紧凑、主图+特写戏剧性），这里选了就以你的偏好为准。黑底页留黑、白底页留白，不按规定百分比硬填。"
+    "留白默认跟着风格走（传统四格紧凑、主图+特写大面积留白），这里选了就以你的偏好为准。「开放拼版」本身是铺满页面的不等格拼版，留白偏好对它不起作用——要大片白边请选「主图 + 特写」。"
   ));
   box.appendChild(selectRow(
     "最多页数",
